@@ -221,37 +221,22 @@ impl ImageSampler {
         }
     }
 
-    /// The bytes a decode of this source would read, for a caller that
-    /// decodes outside this sampler (the page's distinct images in
-    /// parallel). `None` when the sampler does not decode or the source
-    /// already has its samples.
-    pub fn bytes_to_decode(
-        &self,
-        doc: &StaticDocument,
-        node: NodeId,
-        layer: &ImageLayer,
-        source: &ImageSource,
-    ) -> Option<Vec<u8>> {
-        if self.mode == ImageSamples::CacheOnly || self.has_samples(source) {
-            return None;
-        }
-        source_bytes(source, &layer_url(doc, node, layer))
-    }
-
     /// Decode the page's distinct images that the color rule would sample,
     /// in parallel, before the rules run: the cold cost of a page with
     /// several photos falls from their sum to about the slowest one. Only
     /// an image the gates up to the decode let through (text over a
     /// `url()` ground that is not decoration) and that no cache holds is
-    /// decoded, on at most four threads; a hook, which never decodes, skips
-    /// this. The in-page parallelism does not reach across the files of a
-    /// directory scan, which the persistent cache covers on repeat runs.
+    /// decoded, on at most four threads, each of which reads its own files,
+    /// so no more than four images' bytes are in memory at once however
+    /// many a page names; a hook, which never decodes, skips this. The
+    /// in-page parallelism does not reach across the files of a directory
+    /// scan, which the persistent cache covers on repeat runs.
     pub fn decode_ahead(&self, doc: &StaticDocument) {
         if self.mode != ImageSamples::Decode {
             return;
         }
         let mut sources: Vec<Rc<ImageSource>> = Vec::new();
-        let mut jobs: Vec<Vec<u8>> = Vec::new();
+        let mut jobs: Vec<DecodeJob> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         for el in doc.query_selector_all("*") {
             if el.direct_text().trim().is_empty() {
@@ -260,13 +245,15 @@ impl ImageSampler {
             let Some((ground, source)) = crate::adapters::sampled_ground(&el, self) else {
                 continue;
             };
-            if !seen.insert(source.key.clone()) {
+            if !seen.insert(source.key.clone()) || self.has_samples(&source) {
                 continue;
             }
-            if let Some(bytes) = self.bytes_to_decode(doc, ground.node, &ground.layer, &source) {
-                sources.push(source);
-                jobs.push(bytes);
-            }
+            let job = match &source.path {
+                Some(path) => DecodeJob::File(path.clone()),
+                None => DecodeJob::Data(layer_url(doc, ground.node, &ground.layer).trim().to_string()),
+            };
+            sources.push(source);
+            jobs.push(job);
         }
         if jobs.len() < 2 {
             // One image decodes where it is needed.
@@ -277,20 +264,22 @@ impl ImageSampler {
             .clamp(1, 4)
             .min(jobs.len());
         let per = jobs.len().div_ceil(threads);
-        let results: Vec<Option<Samples>> = std::thread::scope(|scope| {
+        let results: Vec<Option<Option<Samples>>> = std::thread::scope(|scope| {
             let handles: Vec<_> = jobs
                 .chunks(per)
-                .map(|chunk| {
-                    scope.spawn(move || chunk.iter().map(|b| decode_samples(b)).collect::<Vec<_>>())
-                })
+                .map(|chunk| scope.spawn(move || chunk.iter().map(DecodeJob::run).collect::<Vec<_>>()))
                 .collect();
             handles
                 .into_iter()
                 .flat_map(|h| h.join().unwrap_or_default())
                 .collect()
         });
-        for (source, samples) in sources.iter().zip(results) {
-            self.store(source, samples.map(Rc::new));
+        for (source, result) in sources.iter().zip(results) {
+            // A read that failed says nothing about the bytes and is not
+            // stored; the rules will ask again.
+            if let Some(samples) = result {
+                self.store(source, samples.map(Rc::new));
+            }
         }
     }
 
@@ -407,6 +396,25 @@ impl ImageSampler {
             height,
             cached: RefCell::new(entry.map(|e| e.samples.map(Rc::new))),
         })
+    }
+}
+
+/// One image of [`ImageSampler::decode_ahead`]: where its bytes come from,
+/// read inside the worker that decodes it.
+enum DecodeJob {
+    File(String),
+    Data(String),
+}
+
+impl DecodeJob {
+    /// `None` when the bytes could not be read, `Some(None)` when they do
+    /// not decode.
+    fn run(&self) -> Option<Option<Samples>> {
+        let bytes = match self {
+            DecodeJob::File(path) => read_bounded(path)?,
+            DecodeJob::Data(url) => data_uri_bytes(url)?,
+        };
+        Some(decode_samples(&bytes))
     }
 }
 

@@ -3,6 +3,7 @@
 //! must keep the skip, or one ground it must read, and would fail against
 //! the first version of the path.
 
+use base64::Engine;
 use impeccable_html::image_sampling::ImageSamples;
 use impeccable_html::{detect_html_source, DetectHtmlOptions};
 use std::path::PathBuf;
@@ -601,15 +602,21 @@ fn a_page_with_several_photos_decodes_them_ahead() {
     for name in ["a.png", "b.png", "c.png"] {
         site.png(name, 320, 200, LIGHT);
     }
-    let css = ".a { background: url(a.png); } .b { background: url(b.png); } .c { background: url(c.png); } p { color: #fdfdfd; }";
-    let body = "<div class=a><p>One</p></div><div class=b><p>Two</p></div><div class=c><p>Three</p></div>";
-    let found = site.contrast(css, body);
-    assert_eq!(found.len(), 3, "{found:?}");
-    for name in ["a.png", "b.png", "c.png"] {
+    // Files are read inside the worker that decodes them; a data URI's
+    // bytes come from the page itself. One of each kind here.
+    let data = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(image_png(320, 200, LIGHT))
+    );
+    let css = format!(".a {{ background: url(a.png); }} .b {{ background: url(b.png); }} .c {{ background: url(c.png); }} .d {{ background: url({data}); }} p {{ color: #fdfdfd; }}");
+    let body = "<div class=a><p>One</p></div><div class=b><p>Two</p></div><div class=c><p>Three</p></div><div class=d><p>Four</p></div>";
+    let found = site.contrast(&css, body);
+    assert_eq!(found.len(), 4, "{found:?}");
+    for name in ["a.png", "b.png", "c.png", "data:image/png"] {
         assert!(found.iter().any(|f| f.contains(&format!(" on {name};"))), "{found:?}");
     }
-    // And the hook then reads all three from the cache.
-    assert_eq!(site.contrast_as(css, body, ImageSamples::CacheOnly).len(), 3);
+    // And the hook then reads all four from the cache.
+    assert_eq!(site.contrast_as(&css, body, ImageSamples::CacheOnly).len(), 4);
 }
 
 /// The measured ratio a sampled snippet reports.
