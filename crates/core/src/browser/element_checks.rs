@@ -230,8 +230,8 @@ fn sole_visible_label_of_control(dom: &dyn Dom, el: ElId) -> bool {
 
 /// Whether the text a visitor sees in `control` is `el`'s text, whitespace
 /// aside: the control's text with the text of every descendant that renders
-/// none taken out (a box at `display: none` or `visibility: hidden`, an SVG
-/// `<title>`, a script, a style or a template).
+/// none taken out (a box at `display: none`, an SVG `<title>`, a script, a
+/// style or a template, and the own text of a box at `visibility: hidden`).
 fn visible_text_is(dom: &dyn Dom, control: ElId, el: ElId) -> bool {
     let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
     let own = squash(&dom.text_content(el));
@@ -244,19 +244,28 @@ fn visible_text_is(dom: &dyn Dom, control: ElId, el: ElId) -> bool {
         if n == el || dom.contains(n, el) || dom.contains(el, n) || removed.iter().any(|&r| dom.contains(r, n)) {
             continue;
         }
-        let renders_none = matches!(tag_lower(dom, n).as_str(), "title" | "script" | "style" | "template")
-            || dom.style(n, "display") == "none"
-            || matches!(dom.style(n, "visibility").as_str(), "hidden" | "collapse");
-        if !renders_none {
+        // A box that renders none hides its whole subtree. `visibility:
+        // hidden` hides only the box's own text, since a descendant can set
+        // `visibility: visible` again and paint; each descendant answers for
+        // itself (visibility inherits, so a hidden one reads hidden too).
+        let subtree = matches!(tag_lower(dom, n).as_str(), "title" | "script" | "style" | "template")
+            || dom.style(n, "display") == "none";
+        let own_only = !subtree && matches!(dom.style(n, "visibility").as_str(), "hidden" | "collapse");
+        let hidden = if subtree {
+            vec![squash(&dom.text_content(n))]
+        } else if own_only {
+            dom.direct_text_nodes(n).iter().map(|t| squash(t)).collect()
+        } else {
             continue;
-        }
-        let hidden = squash(&dom.text_content(n));
-        if !hidden.is_empty() {
-            if let Some(at) = visible.find(&hidden) {
-                visible.replace_range(at..at + hidden.len(), "");
+        };
+        for h in hidden.iter().filter(|h| !h.is_empty()) {
+            if let Some(at) = visible.find(h.as_str()) {
+                visible.replace_range(at..at + h.len(), "");
             }
         }
-        removed.push(n);
+        if subtree {
+            removed.push(n);
+        }
     }
     visible == own
 }
@@ -5865,6 +5874,13 @@ mod tests {
         d.set_style(helper, "display", "none");
         assert!(!colors(&d, label).is_empty(), "{:?}", colors(&d, label));
         d.set_styles(helper, &[("display", "inline"), ("visibility", "hidden")]);
+        assert!(!colors(&d, label).is_empty(), "{:?}", colors(&d, label));
+        // A child of the hidden span that shows itself again is read.
+        let shown = d.add(Some(helper), "span");
+        d.add_text(shown, "Now");
+        d.set_style(shown, "visibility", "visible");
+        assert!(colors(&d, label).is_empty(), "{:?}", colors(&d, label));
+        d.set_style(shown, "visibility", "hidden");
         assert!(!colors(&d, label).is_empty(), "{:?}", colors(&d, label));
         d.set_style(helper, "visibility", "visible");
         assert!(colors(&d, label).is_empty(), "{:?}", colors(&d, label));
