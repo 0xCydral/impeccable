@@ -197,7 +197,7 @@ fn sole_visible_label_of_control(dom: &dyn Dom, el: ElId) -> bool {
     };
     let text = |n: ElId| collapse_ws(js::trim(&dom.text_content(n)));
     let own = text(el);
-    if own.is_empty() || text(control) != own {
+    if own.is_empty() || !visible_text_is(dom, control, el) {
         return false;
     }
     let is_picture =
@@ -226,6 +226,39 @@ fn sole_visible_label_of_control(dom: &dyn Dom, el: ElId) -> bool {
         .into_iter()
         .filter(|&n| n != el && !dom.contains(n, el))
         .all(|n| !(paints(n) && (!dom.contains(el, n) || is_picture(n) || text(n).is_empty())))
+}
+
+/// Whether the text a visitor sees in `control` is `el`'s text, whitespace
+/// aside: the control's text with the text of every descendant that renders
+/// none taken out (a box at `display: none` or `visibility: hidden`, an SVG
+/// `<title>`, a script, a style or a template).
+fn visible_text_is(dom: &dyn Dom, control: ElId, el: ElId) -> bool {
+    let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
+    let own = squash(&dom.text_content(el));
+    let mut visible = squash(&dom.text_content(control));
+    if visible == own {
+        return true;
+    }
+    let mut removed: Vec<ElId> = Vec::new();
+    for n in dom.query_all(Some(control), "*").unwrap_or_default() {
+        if n == el || dom.contains(n, el) || dom.contains(el, n) || removed.iter().any(|&r| dom.contains(r, n)) {
+            continue;
+        }
+        let renders_none = matches!(tag_lower(dom, n).as_str(), "title" | "script" | "style" | "template")
+            || dom.style(n, "display") == "none"
+            || matches!(dom.style(n, "visibility").as_str(), "hidden" | "collapse");
+        if !renders_none {
+            continue;
+        }
+        let hidden = squash(&dom.text_content(n));
+        if !hidden.is_empty() {
+            if let Some(at) = visible.find(&hidden) {
+                visible.replace_range(at..at + hidden.len(), "");
+            }
+        }
+        removed.push(n);
+    }
+    visible == own
 }
 
 /// JS `Math.round(x)` rendered as `${...}`.
@@ -5519,6 +5552,13 @@ mod tests {
         assert!(!low_contrast(&colors(&d, word)).is_empty(), "{:?}", colors(&d, word));
         assert!(!super::caught_mid_reveal(&d, word));
         d.set_style(wrap, "animationPlayState", "paused");
+        // Review of #1044: a loop that adds to the box's own opacity never
+        // takes it out of sight, so the row is at rest and fades.
+        d.set_style(wrap, "animationComposition", "add");
+        assert!(!low_contrast(&colors(&d, word)).is_empty(), "{:?}", colors(&d, word));
+        assert!(!super::caught_mid_reveal(&d, word));
+        d.set_style(wrap, "animationComposition", "replace");
+        assert!(super::caught_mid_reveal(&d, word));
         // A loop that only breathes, and a paused loop at full opacity, are
         // at rest.
         d.keyframes.insert(
@@ -5816,6 +5856,19 @@ mod tests {
         d.set_rect(label, 0.0, 0.0, 40.0, 20.0);
         d.set_styles(label, &[("backgroundColor", "rgba(0, 0, 0, 0)"), ("color", "rgb(255, 255, 255)"), ("fontSize", "14px"), ("fontWeight", "400")]);
         assert!(!colors(&d, label).is_empty(), "{:?}", colors(&d, label));
+        // Review of #1044: text the control holds but does not render (a
+        // span at `display: none`, one at `visibility: hidden`) is not part
+        // of what a visitor reads, so the label is still the whole of it;
+        // the same words shown are not.
+        let helper = d.add(Some(button), "span");
+        d.add_text(helper, "Help");
+        d.set_style(helper, "display", "none");
+        assert!(!colors(&d, label).is_empty(), "{:?}", colors(&d, label));
+        d.set_styles(helper, &[("display", "inline"), ("visibility", "hidden")]);
+        assert!(!colors(&d, label).is_empty(), "{:?}", colors(&d, label));
+        d.set_style(helper, "visibility", "visible");
+        assert!(colors(&d, label).is_empty(), "{:?}", colors(&d, label));
+        d.set_style(helper, "display", "none");
         let bars = d.add(Some(button), "span");
         visible(&mut d, bars);
         d.set_rect(bars, 48.0, 3.0, 20.0, 14.0);

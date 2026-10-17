@@ -1551,15 +1551,19 @@ pub(crate) fn loops_in_motion(dom: &dyn Dom, el: ElId) -> bool {
 /// visitor reaches it; the capture read a row at 0.21, a frame of the loop
 /// and not the state it shows. A paused box is not running, so
 /// [`loops_in_motion`] never sees it. A box at full opacity, a loop that
-/// only breathes, and keyframes the capture could not read answer no.
+/// only breathes, a loop that adds to or accumulates on the box's own
+/// opacity, and keyframes the capture could not read answer no.
 pub(crate) fn paused_mid_loop(dom: &dyn Dom, el: ElId) -> bool {
     let opacity = js::parse_float(&dom.style(el, "opacity"));
     if !(opacity.is_finite() && opacity < 0.999) {
         return false;
     }
+    // Under `add` or `accumulate` the frames combine with the box's own
+    // opacity, so a frame at 0 does not take it out of sight.
     sole_opacity_entry(dom, el).is_some_and(|entry| {
         entry.iterations == "infinite"
             && entry.play_state == "paused"
+            && (entry.composition.is_empty() || entry.composition == "replace")
             && dom
                 .keyframes(&entry.name)
                 .is_some_and(|frames| frames.iter().filter_map(frame_opacity).any(|o| o <= LOOP_VANISH_OPACITY))

@@ -104,6 +104,9 @@ pub struct DecorativeTextFacts {
     /// The element is, or sits in, an interactive control whose whole text
     /// is this element's text: the element is the control's label.
     pub control_label: bool,
+    /// The element is, or sits in, an interactive control, whatever else the
+    /// control's text holds.
+    pub in_control: bool,
     /// A small square or round box that paints itself holds this text and
     /// nothing else, centred in it ([`avatar_sized`], [`centred_in`]).
     pub avatar_box: bool,
@@ -162,7 +165,10 @@ pub fn classify_decorative_text(f: &DecorativeTextFacts) -> Option<DecorativeSha
     if (f.mockup_ancestor || f.framed_demo) && !is_sentence_copy(&f.text) {
         return Some(DecorativeShape::Mockup);
     }
-    if !f.control_label
+    // Any text inside a control is part of what the control says, a site
+    // name beside other words in a link included.
+    if !f.in_control
+        && !f.control_label
         && is_wordmark_size(f.font_size_px, f.largest_h1_px)
         && f.shown_opacity <= WORDMARK_MAX_OPACITY
         && names_the_site(&f.text, &f.site_names)
@@ -536,6 +542,8 @@ mod tests {
         assert_eq!(shape(&ghost("Record faster", 222.0, 64.0, 0.1)), None);
         assert_eq!(shape(&ghost("Movie", 222.0, 64.0, 0.1)), None);
         assert_eq!(shape(&DecorativeTextFacts { control_label: true, ..ghost("Screen Movie", 222.0, 64.0, 0.1) }), None);
+        // Review of #1044: part of a link's label, beside its other words.
+        assert_eq!(shape(&DecorativeTextFacts { in_control: true, ..ghost("Screen Movie", 222.0, 64.0, 0.1) }), None);
         // An adapter that reads no layout leaves the size at 0.
         assert_eq!(shape(&ghost("Screen Movie", 0.0, 0.0, 0.0)), None);
         assert!(!names_the_site("Sc", &["sc".to_string()]));

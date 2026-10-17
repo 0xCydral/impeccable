@@ -206,8 +206,8 @@ fn site_names(dom: &dyn Dom) -> Vec<String> {
 /// What the `Dom` says about one element's text.
 pub fn decorative_text_facts_dom(dom: &dyn Dom, el: ElId) -> DecorativeTextFacts {
     let text = collapsed_text(dom, el);
-    let control_label = closest_or_none(dom, el, CONTROL_SELECTOR)
-        .is_some_and(|c| collapsed_text(dom, c) == text);
+    let control = closest_or_none(dom, el, CONTROL_SELECTOR);
+    let control_label = control.is_some_and(|c| collapsed_text(dom, c) == text);
     let (picture_ancestor, mockup_ancestor) = marked_mockup(dom, el);
     let font_size_px = pf0(&dom.style(el, "fontSize"));
     // The page's `h1` sizes decide only type between the h1 path's floor and
@@ -239,6 +239,7 @@ pub fn decorative_text_facts_dom(dom: &dyn Dom, el: ElId) -> DecorativeTextFacts
         font_family: dom.style(el, "fontFamily"),
         in_heading: closest_or_none(dom, el, HEADING_SELECTOR).is_some(),
         control_label,
+        in_control: control.is_some(),
         signature_marked: marked_signature(dom, el),
         mockup_ancestor,
         picture_ancestor,
