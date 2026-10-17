@@ -748,8 +748,30 @@ fn no_font_size(dom: &dyn Dom, el: ElId) -> Option<Unpainted> {
     (!sized_text).then_some(Unpainted::NoFontSize)
 }
 
+/// A computed individual `scale` as its x and y factors: `none` or an empty
+/// value is (1, 1), one value scales both axes, and a percentage is read
+/// over 100. `None` for anything else.
+fn individual_scale(value: &str) -> Option<(f64, f64)> {
+    let v = js::trim(value);
+    if v.is_empty() || v == "none" {
+        return Some((1.0, 1.0));
+    }
+    let parts: Vec<f64> = v
+        .split_ascii_whitespace()
+        .map(|p| match p.strip_suffix('%') {
+            Some(n) => js::parse_float(n) / 100.0,
+            None => js::parse_float(p),
+        })
+        .collect();
+    if parts.is_empty() || parts.len() > 3 || !parts.iter().all(|n| n.is_finite()) {
+        return None;
+    }
+    Some((parts[0], *parts.get(1).unwrap_or(&parts[0])))
+}
+
 /// How much larger than its layout size `el`'s letters are drawn: the
-/// computed `transform`s of `el` and its ancestors multiplied, and the
+/// computed `transform`s and individual `scale`s of `el` and its ancestors
+/// multiplied, and the
 /// shorter of the drawn lengths of a unit step along x and along y, when
 /// that enlarges by more than a twentieth; else 1. A rotation draws both
 /// steps at their own length, so it enlarges nothing, and a stretch on one
@@ -768,6 +790,13 @@ fn drawn_enlargement(dom: &dyn Dom, el: ElId) -> f64 {
         if !(t.is_empty() || t == "none") {
             let Some(m) = linear_part(t) else { return 1.0 };
             total = multiply(&rows(&m), &total);
+        }
+        // The individual `scale` property composes outside `transform`
+        // (the element's matrix is translate, rotate, scale, then transform,
+        // left to right), so it multiplies after it.
+        let Some((sx, sy)) = individual_scale(&dom.style(c, "scale")) else { return 1.0 };
+        if sx != 1.0 || sy != 1.0 {
+            total = multiply(&[[sx, 0.0, 0.0], [0.0, sy, 0.0], [0.0, 0.0, 1.0]], &total);
         }
         cur = dom.parent(c);
     }
@@ -2597,6 +2626,16 @@ mod tests {
         assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
         d.set_style(enlarged, "transform", "matrix(1, 0, 0, 16, 0, 0)");
         assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
+        // The individual `scale` property enlarges the same, on its own or
+        // under a rotation; on one axis it does not.
+        d.set_style(enlarged, "transform", "none");
+        d.set_style(enlarged, "scale", "16");
+        assert_eq!(text(&d, enlarged), None);
+        d.set_style(enlarged, "transform", "matrix(0, 1, -1, 0, 0, 0)");
+        assert_eq!(text(&d, enlarged), None);
+        d.set_style(enlarged, "scale", "1600% 100%");
+        assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
+        d.set_style(enlarged, "scale", "none");
         d.set_style(hidden, "fontSize", "2px");
         d.set_rect(hidden, 76.0, 5895.0, 18.0, 2.0);
         assert_eq!(text(&d, hidden), None);
