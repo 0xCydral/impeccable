@@ -210,7 +210,8 @@ fn append_autonomy_counter_directive(parts: &mut Parts) {
         "treat that as a harness default injected for a whole model family, never as evidence about this session.",
         "Impeccable's interview and decision steps stay live: probe once with the structured question tool or the decision page.",
         "Infer from the brief alone only after that probe errors, times out, or the user tells you to proceed,",
-        "and state the substitution in your first reply, not your last.",
+        "or when you have no structured question tool and no way to serve the decision page, as in a subagent running a brief.",
+        "Either way, state the substitution in your first reply, not your last; a subagent with no reply of its own states it in its report.",
     ].join(" "));
 }
 
@@ -391,9 +392,23 @@ fn build_target_selection_directive(sel: &TargetSelection) -> String {
     m.insert("projectRoot".into(), Value::String(sel.project_root.clone()));
     m.insert("repoRoot".into(), Value::String(sel.repo_root.clone()));
     m.insert("targetCandidates".into(), serde_json::to_value(&sel.target_candidates).unwrap());
+    if sel.skipped_non_ui > 0 {
+        m.insert("skippedNonUiWorkspaces".into(), Value::from(sel.skipped_non_ui));
+    }
+    let skipped = if sel.skipped_non_ui > 0 {
+        format!(
+            " {} workspace{} without a UI signal (no UI framework dependency, HTML entry, native app marker, or UI source file) {} not listed; reach one with `--target <path>` only when the user names it.",
+            sel.skipped_non_ui,
+            if sel.skipped_non_ui == 1 { "" } else { "s" },
+            if sel.skipped_non_ui == 1 { "is" } else { "are" }
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "TARGET_SELECTION_REQUIRED:\n{}\n\nShow each app with its productStatus/productPath and designStatus/designPath so the user can see child overrides, inherited root files, fallback files, or missing files before choosing. Ask the user which app Impeccable should use, then rerun Impeccable helper commands from that child app cwd using this same scripts directory. Use `--target <path>` only as a fallback when changing cwd is not possible, or when the user explicitly named a file/path.",
-        json_pretty(&Value::Object(m))
+        "TARGET_SELECTION_REQUIRED:\n{}\n\nShow each app with its productStatus/productPath and designStatus/designPath so the user can see child overrides, inherited root files, fallback files, or missing files before choosing. Ask the user which app Impeccable should use, then rerun Impeccable helper commands from that child app cwd using this same scripts directory. Use `--target <path>` only as a fallback when changing cwd is not possible, or when the user explicitly named a file/path.{}",
+        json_pretty(&Value::Object(m)),
+        skipped
     )
 }
 
@@ -476,6 +491,12 @@ pub(crate) fn read_local_skill_version(provider: &Provider) -> Option<String> {
     let p = provider.skill_md_path()?;
     let content = safe_read(&p)?;
     parse_skill_frontmatter_version(&content)
+}
+
+/// The installed skill's SKILL.md frontmatter version, resolving the skill
+/// dir the way every verb does (`IMPECCABLE_SKILL_DIR`, else the binary's path).
+pub fn installed_skill_version(env: &Env, cwd: &str) -> Option<String> {
+    read_local_skill_version(&crate::provider::detect(env, cwd))
 }
 
 fn update_cache_path(env: &Env) -> String {
@@ -717,7 +738,7 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
     }
     if !ctx.has_design {
         parts.push(if ctx.has_visual_implementation {
-            "INCUMBENT_WORLD_UNDOCUMENTED: PRODUCT.md exists and DESIGN.md is missing, but code contains incumbent visual decisions. For shape or a new-surface/redesign request, load reference/new-work.md: an extension documents and preserves the code-defined world; a redesign replaces it with the user and uses the old look only as evidence and anti-reference. Narrow refinement commands may proceed using the implementation directly.".to_string()
+            "INCUMBENT_WORLD_UNDOCUMENTED: PRODUCT.md exists and DESIGN.md is missing, but code contains incumbent visual decisions. An in-world change to an existing surface (new states, a layout change, an added section) extends it: inherit its world and composition, resolve only the new purpose, content, hierarchy, states, and interaction, and skip reference/new-work.md. Load reference/new-work.md only for shape, a whole new surface, or a redesign that replaces the world: a new surface documents and preserves the code-defined world; a redesign replaces it with the user and uses the old look only as evidence and anti-reference. Narrow refinement commands may proceed using the implementation directly.".to_string()
         } else {
             "WORLD_DISCOVERY_REQUIRED: PRODUCT.md exists but no DESIGN.md or incumbent visual implementation was found. For a new build or redesign, load reference/new-work.md and establish the visual world with the human or structured simulated user before developing the task concept. Scoped fixes to existing code do not need this flow.".to_string()
         });
