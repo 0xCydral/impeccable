@@ -748,19 +748,22 @@ fn no_font_size(dom: &dyn Dom, el: ElId) -> Option<Unpainted> {
     (!sized_text).then_some(Unpainted::NoFontSize)
 }
 
-/// How much larger than its layout box `el` is drawn: the smaller of its
-/// on-screen width over its layout width and its on-screen height over its
-/// layout height, when a transform enlarges it on both axes by more than a
-/// twentieth, else 1 (also when a layout size was not recorded). A rotation
-/// grows one side of the bounding box and shrinks the other, so a wide 1px
-/// line turned upright reads as not enlarged.
+/// How much larger than its layout box `el` is drawn, when a transform
+/// enlarges it by more than a twentieth, else 1 (also when a layout size was
+/// not recorded). The bounding box's longer side is read against the layout
+/// box's longer side and the shorter against the shorter, and the smaller
+/// ratio is the enlargement: a rotation alone leaves the longer side no
+/// longer than the layout box's two sides together, so a wide 1px line turned
+/// upright reads as not enlarged, while `rotate(90deg) scale(16)` reads 16.
 fn drawn_enlargement(dom: &dyn Dom, el: ElId) -> f64 {
     let r = dom.rect(el);
     let (lw, lh) = (dom.offset_width(el), dom.offset_height(el));
     if !(lw.is_finite() && lw > 0.0 && lh.is_finite() && lh > 0.0 && r.width.is_finite() && r.height.is_finite()) {
         return 1.0;
     }
-    let scale = (r.width / lw).min(r.height / lh);
+    let (d_long, d_short) = (r.width.max(r.height), r.width.min(r.height));
+    let (l_long, l_short) = (lw.max(lh), lw.min(lh));
+    let scale = (d_long / l_long).min(d_short / l_short);
     if scale > 1.05 { scale } else { 1.0 }
 }
 
@@ -2562,7 +2565,9 @@ mod tests {
         d.el_mut(enlarged).offset_height = 1.0;
         d.add_text(enlarged, "Scaled label");
         assert_eq!(text(&d, enlarged), None);
-        d.el_mut(enlarged).offset_height = 16.0;
+        // Stretched on one axis only (a 160 by 1px box under `scaleY(16)`),
+        // the letters stay a pixel wide: no enlargement.
+        d.el_mut(enlarged).offset_width = 160.0;
         assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
         // A 160 by 1px line turned upright has a tall bounding box but the
         // same letters: no enlargement.
@@ -2570,6 +2575,13 @@ mod tests {
         d.el_mut(enlarged).offset_width = 160.0;
         d.el_mut(enlarged).offset_height = 1.0;
         assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
+        // Turned at 45 degrees, its box is about 114 by 114: no enlargement.
+        d.set_rect(enlarged, 76.0, 400.0, 113.8, 113.8);
+        assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
+        // Turned upright and drawn sixteen times larger, it paints 16px
+        // letters.
+        d.set_rect(enlarged, 76.0, 400.0, 16.0, 2560.0);
+        assert_eq!(text(&d, enlarged), None);
         d.set_style(hidden, "fontSize", "2px");
         d.set_rect(hidden, 76.0, 5895.0, 18.0, 2.0);
         assert_eq!(text(&d, hidden), None);
