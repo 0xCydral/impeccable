@@ -748,16 +748,19 @@ fn no_font_size(dom: &dyn Dom, el: ElId) -> Option<Unpainted> {
     (!sized_text).then_some(Unpainted::NoFontSize)
 }
 
-/// How much larger than its layout box `el` is drawn: its on-screen height
-/// over its layout height when a transform enlarges it by more than a
-/// twentieth, else 1 (also when the layout height was not recorded).
+/// How much larger than its layout box `el` is drawn: the smaller of its
+/// on-screen width over its layout width and its on-screen height over its
+/// layout height, when a transform enlarges it on both axes by more than a
+/// twentieth, else 1 (also when a layout size was not recorded). A rotation
+/// grows one side of the bounding box and shrinks the other, so a wide 1px
+/// line turned upright reads as not enlarged.
 fn drawn_enlargement(dom: &dyn Dom, el: ElId) -> f64 {
-    let layout = dom.offset_height(el);
-    let drawn = dom.rect(el).height;
-    if !(layout.is_finite() && layout > 0.0 && drawn.is_finite()) {
+    let r = dom.rect(el);
+    let (lw, lh) = (dom.offset_width(el), dom.offset_height(el));
+    if !(lw.is_finite() && lw > 0.0 && lh.is_finite() && lh > 0.0 && r.width.is_finite() && r.height.is_finite()) {
         return 1.0;
     }
-    let scale = drawn / layout;
+    let scale = (r.width / lw).min(r.height / lh);
     if scale > 1.05 { scale } else { 1.0 }
 }
 
@@ -2555,10 +2558,17 @@ mod tests {
         let enlarged = d.add(Some(body), "span");
         d.set_style(enlarged, "fontSize", "1px");
         d.set_rect(enlarged, 76.0, 400.0, 160.0, 16.0);
+        d.el_mut(enlarged).offset_width = 10.0;
         d.el_mut(enlarged).offset_height = 1.0;
         d.add_text(enlarged, "Scaled label");
         assert_eq!(text(&d, enlarged), None);
         d.el_mut(enlarged).offset_height = 16.0;
+        assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
+        // A 160 by 1px line turned upright has a tall bounding box but the
+        // same letters: no enlargement.
+        d.set_rect(enlarged, 76.0, 400.0, 1.0, 160.0);
+        d.el_mut(enlarged).offset_width = 160.0;
+        d.el_mut(enlarged).offset_height = 1.0;
         assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
         d.set_style(hidden, "fontSize", "2px");
         d.set_rect(hidden, 76.0, 5895.0, 18.0, 2.0);
