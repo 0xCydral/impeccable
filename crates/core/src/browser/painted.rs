@@ -777,8 +777,8 @@ fn individual_scale(value: &str) -> Option<(f64, f64)> {
 /// steps at their own length, so it enlarges nothing, and a stretch on one
 /// axis (`scaleX(2)`) leaves the letters as thin as they were the other way;
 /// `rotate(90deg) scale(16)` draws 16px letters. A transform that does not
-/// read as a matrix, or a chain deeper than the walk reads, counts as no
-/// enlargement.
+/// read as a matrix, an individual `rotate`, or a chain deeper than the walk
+/// reads counts as no enlargement.
 fn drawn_enlargement(dom: &dyn Dom, el: ElId) -> f64 {
     const MAX_ANCESTORS: usize = 64;
     let mut total = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
@@ -794,6 +794,12 @@ fn drawn_enlargement(dom: &dyn Dom, el: ElId) -> f64 {
         // The individual `scale` property composes outside `transform`
         // (the element's matrix is translate, rotate, scale, then transform,
         // left to right), so it multiplies after it.
+        // An individual `rotate` sits between them and is not read here, so
+        // a box that sets one claims no enlargement.
+        let rotate = dom.style(c, "rotate");
+        if !matches!(js::trim(&rotate), "" | "none") {
+            return 1.0;
+        }
         let Some((sx, sy)) = individual_scale(&dom.style(c, "scale")) else { return 1.0 };
         if sx != 1.0 || sy != 1.0 {
             total = multiply(&[[sx, 0.0, 0.0], [0.0, sy, 0.0], [0.0, 0.0, 1.0]], &total);
@@ -2635,7 +2641,10 @@ mod tests {
         assert_eq!(text(&d, enlarged), None);
         d.set_style(enlarged, "scale", "1600% 100%");
         assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
-        d.set_style(enlarged, "scale", "none");
+        // An individual `rotate` is not composed, so it claims nothing.
+        d.set_styles(enlarged, &[("transform", "none"), ("scale", "16"), ("rotate", "90deg")]);
+        assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
+        d.set_styles(enlarged, &[("scale", "none"), ("rotate", "none")]);
         d.set_style(hidden, "fontSize", "2px");
         d.set_rect(hidden, 76.0, 5895.0, 18.0, 2.0);
         assert_eq!(text(&d, hidden), None);
