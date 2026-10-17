@@ -497,6 +497,10 @@ pub struct PatternContext {
     pub dark_page: Option<bool>,
 }
 
+/// How many candidates a one-candidate rule offers the `stands` gate of
+/// [`check_html_patterns_picking`] before it reports none.
+pub const PICK_MAX_CANDIDATES: usize = 16;
+
 static CUSTOM_PROP_DECL_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(--[A-Za-z0-9_-]+)\s*:\s*$").expect("CUSTOM_PROP_DECL_RE"));
 
@@ -544,7 +548,12 @@ pub fn check_html_patterns_with(
 /// `stands` accepts. A rendering engine passes its selector and paint gates,
 /// so a candidate whose rule matches nothing it shows (a rule inside an
 /// `@media` block that does not apply) does not hide a later one that
-/// does. The file engines accept every candidate, which is the first.
+/// does. The file engines accept every candidate, which is the first. Each
+/// rule offers `stands` at most [`PICK_MAX_CANDIDATES`] candidates: every
+/// offer resolves a selector over the style text before it and the engine
+/// then queries the page for it, so an unbounded walk over a large
+/// stylesheet whose candidates all sit in rules nothing matches is
+/// quadratic in the stylesheet.
 pub fn check_html_patterns_picking(
     html: &str,
     corpora: Option<&HtmlPatternCorpora>,
@@ -672,7 +681,11 @@ pub fn check_html_patterns_picking(
     // declaration is read, so a pulse never hides a bounce declared after it.
     // Every bounce-named token in a declaration's list is read the same way,
     // so a pulse listed first never hides a bounce listed after it.
+    let mut offered = 0usize;
     for bm in BOUNCE_ANIM_RE.captures_iter(style_text) {
+        if offered == PICK_MAX_CANDIDATES {
+            break;
+        }
         let list = &bm[1];
         let mut labels: Vec<String> = COMMA_WS_SPLIT_RE
             .split(list)
@@ -693,13 +706,18 @@ pub fn check_html_patterns_picking(
             format!("animation: {}", label),
             enclosing_css_selector(style_text, bm.get(0).unwrap().start()),
         );
+        offered += 1;
         if stands(&finding) {
             findings.push(finding);
             break;
         }
     }
 
+    let mut offered = 0usize;
     for bm in BEZIER_RE.captures_iter(style_text) {
+        if offered == PICK_MAX_CANDIDATES {
+            break;
+        }
         let y1 = parse_float(&bm[2]);
         let y2 = parse_float(&bm[4]);
         if y1 < -0.1 || y1 > 1.1 || y2 < -0.1 || y2 > 1.1 {
@@ -714,6 +732,7 @@ pub fn check_html_patterns_picking(
                 ),
                 enclosing_css_selector(style_text, bm.get(0).unwrap().start()),
             );
+            offered += 1;
             if stands(&finding) {
                 findings.push(finding);
                 break;
@@ -740,6 +759,7 @@ pub fn check_html_patterns_picking(
         glow_hits
             .iter()
             .map(|h| pf("dark-glow", h.snippet.clone(), enclosing_css_selector(style_text, h.index)))
+            .take(PICK_MAX_CANDIDATES)
             .find(|f| stands(f)),
     );
     let halo_hits = scan_css_text_for_radial_halo_with(style_text, context.dark_page);
@@ -747,6 +767,7 @@ pub fn check_html_patterns_picking(
         halo_hits
             .iter()
             .map(|h| pf("radial-halo", h.snippet.clone(), enclosing_css_selector(style_text, h.index)))
+            .take(PICK_MAX_CANDIDATES)
             .find(|f| stands(f)),
     );
 
@@ -765,6 +786,7 @@ pub fn check_html_patterns_picking(
                     enclosing_css_selector(style_text, sm.start()),
                 )
             })
+            .take(PICK_MAX_CANDIDATES)
             .find(|f| stands(f)),
     );
 
@@ -774,6 +796,7 @@ pub fn check_html_patterns_picking(
         grid_hits
             .iter()
             .map(|h| pf("codex-grid-background", h.snippet.clone(), enclosing_css_selector(style_text, h.index)))
+            .take(PICK_MAX_CANDIDATES)
             .find(|f| stands(f)),
     );
 
@@ -1056,6 +1079,37 @@ mod tests {
 @keyframes sk-bounceDelay{0%,100%{transform:scale(0)}50%{transform:scale(1)}}\
 @keyframes sk-bounceDelay2{0%,100%{opacity:0}50%{opacity:1}}";
         assert!(bounce(pulses).is_empty());
+    }
+
+    /// Review of #1042: each one-candidate rule offers the gate a bounded
+    /// number of candidates, so a large stylesheet whose candidates all sit
+    /// in rules the page does not show costs a fixed number of selector
+    /// reads per rule, not one per candidate.
+    #[test]
+    fn picking_offers_each_rule_a_bounded_number_of_candidates() {
+        let mut css = String::new();
+        for i in 0..200 {
+            css.push_str(&format!(
+                ".gone{i} {{ box-shadow: 0 0 16px rgba(26, 58, 214, 0.8); background: repeating-linear-gradient(45deg,#000 0 2px,#fff 2px 4px); transition: transform .3s cubic-bezier(.2,1.4,.4,1); animation: bounce-in 1s }}\n"
+            ));
+        }
+        let offers = std::cell::RefCell::new(std::collections::HashMap::<String, usize>::new());
+        let found = check_html_patterns_picking(
+            &format!("<style>{css}</style>"),
+            None,
+            &PatternContext::default(),
+            &|f| {
+                *offers.borrow_mut().entry(f.id.clone()).or_default() += 1;
+                false
+            },
+        );
+        assert!(found.iter().all(|f| !matches!(f.id.as_str(), "dark-glow" | "repeating-stripes-gradient" | "bounce-easing")));
+        let offers = offers.into_inner();
+        for id in ["dark-glow", "repeating-stripes-gradient"] {
+            assert_eq!(offers.get(id).copied(), Some(PICK_MAX_CANDIDATES), "{id}");
+        }
+        // Two forms, the animation name and the curve, each bounded.
+        assert_eq!(offers.get("bounce-easing").copied(), Some(2 * PICK_MAX_CANDIDATES));
     }
 
     /// observations-1004 row 25 (incredible.one 10048475): a bounce curve
