@@ -731,15 +731,34 @@ const FALLBACK_HOST_TAGS: &[&str] = &["audio", "canvas", "iframe", "video"];
 /// is a dot, not a letter: uni-hannover.de hides a "Die LUH auf Mastodon"
 /// link with an inline `font-size: 1px` in a static 9x1 box that no clip
 /// removes. A size that does not parse keeps the finding. The subtree is read
-/// only once the element's own size is that small.
+/// only once the element's own size is that small. A size a transform draws
+/// larger is read at the drawn size ([`drawn_enlargement`]): `font-size: 1px`
+/// under `transform: scale(16)` paints 16px letters.
 fn no_font_size(dom: &dyn Dom, el: ElId) -> Option<Unpainted> {
     if !at_most_1px(&dom.style(el, "fontSize")) {
+        return None;
+    }
+    let drawn = js::parse_float(&dom.style(el, "fontSize")) * drawn_enlargement(dom, el);
+    if !(drawn <= 1.0) {
         return None;
     }
     let sized_text = dom.query_all(Some(el), "*").unwrap_or_default().into_iter().any(|d| {
         has_direct_text_longer_than(dom, d, 0) && !at_most_1px(&dom.style(d, "fontSize"))
     });
     (!sized_text).then_some(Unpainted::NoFontSize)
+}
+
+/// How much larger than its layout box `el` is drawn: its on-screen height
+/// over its layout height when a transform enlarges it by more than a
+/// twentieth, else 1 (also when the layout height was not recorded).
+fn drawn_enlargement(dom: &dyn Dom, el: ElId) -> f64 {
+    let layout = dom.offset_height(el);
+    let drawn = dom.rect(el).height;
+    if !(layout.is_finite() && layout > 0.0 && drawn.is_finite()) {
+        return 1.0;
+    }
+    let scale = drawn / layout;
+    if scale > 1.05 { scale } else { 1.0 }
 }
 
 /// A computed `font-size` that parses to 1px or less: a size no glyph can be
@@ -2531,6 +2550,16 @@ mod tests {
         d.add_text(hidden, "Die LUH auf Mastodon");
         assert_eq!(text(&d, hidden), Some(Unpainted::NoFontSize));
         assert!(at_most_1px("1px"));
+        // The same 1px text drawn sixteen times larger by a transform paints
+        // readable letters.
+        let enlarged = d.add(Some(body), "span");
+        d.set_style(enlarged, "fontSize", "1px");
+        d.set_rect(enlarged, 76.0, 400.0, 160.0, 16.0);
+        d.el_mut(enlarged).offset_height = 1.0;
+        d.add_text(enlarged, "Scaled label");
+        assert_eq!(text(&d, enlarged), None);
+        d.el_mut(enlarged).offset_height = 16.0;
+        assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
         d.set_style(hidden, "fontSize", "2px");
         d.set_rect(hidden, 76.0, 5895.0, 18.0, 2.0);
         assert_eq!(text(&d, hidden), None);

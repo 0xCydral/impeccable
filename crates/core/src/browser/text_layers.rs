@@ -767,8 +767,30 @@ fn fill_covers(
     if !r.all_finite() {
         return false;
     }
-    let radius = largest_corner_radius(&dom.style(fill, "borderRadius"));
-    let Some(radius) = radius else { return false };
+    // A rounded overflow clip between the fill and the sibling cuts the
+    // fill's corners as its own radius would: a square fill inside a rounded
+    // `overflow: hidden` card leaves the text under the card's corners.
+    let Some(mut radius) = largest_corner_radius(&dom.style(fill, "borderRadius")) else {
+        return false;
+    };
+    if fill != sib {
+        let mut cur = dom.parent(fill);
+        while let Some(c) = cur {
+            if super::painted::clips_contents(&dom.style(c, "display")) {
+                let (ox, oy) = super::painted::overflow_axes(dom, c);
+                if super::painted::clips(&ox) || super::painted::clips(&oy) {
+                    let Some(cr) = largest_corner_radius(&dom.style(c, "borderRadius")) else {
+                        return false;
+                    };
+                    radius = radius.max(cr);
+                }
+            }
+            if c == sib {
+                break;
+            }
+            cur = dom.parent(c);
+        }
+    }
     let inset = 0.3 * radius;
     let covers = r.left + inset <= text.left + 1.0
         && r.top + inset <= text.top + 1.0
