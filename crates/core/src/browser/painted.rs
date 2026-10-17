@@ -748,23 +748,36 @@ fn no_font_size(dom: &dyn Dom, el: ElId) -> Option<Unpainted> {
     (!sized_text).then_some(Unpainted::NoFontSize)
 }
 
-/// How much larger than its layout box `el` is drawn, when a transform
-/// enlarges it by more than a twentieth, else 1 (also when a layout size was
-/// not recorded). The bounding box's longer side is read against the layout
-/// box's longer side and the shorter against the shorter, and the smaller
-/// ratio is the enlargement: a rotation alone leaves the longer side no
-/// longer than the layout box's two sides together, so a wide 1px line turned
-/// upright reads as not enlarged, while `rotate(90deg) scale(16)` reads 16.
+/// How much larger than its layout size `el`'s letters are drawn: the
+/// computed `transform`s of `el` and its ancestors multiplied, and the
+/// shorter of the drawn lengths of a unit step along x and along y, when
+/// that enlarges by more than a twentieth; else 1. A rotation draws both
+/// steps at their own length, so it enlarges nothing, and a stretch on one
+/// axis (`scaleX(2)`) leaves the letters as thin as they were the other way;
+/// `rotate(90deg) scale(16)` draws 16px letters. A transform that does not
+/// read as a matrix, or a chain deeper than the walk reads, counts as no
+/// enlargement.
 fn drawn_enlargement(dom: &dyn Dom, el: ElId) -> f64 {
-    let r = dom.rect(el);
-    let (lw, lh) = (dom.offset_width(el), dom.offset_height(el));
-    if !(lw.is_finite() && lw > 0.0 && lh.is_finite() && lh > 0.0 && r.width.is_finite() && r.height.is_finite()) {
+    const MAX_ANCESTORS: usize = 64;
+    let mut total = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let mut cur = Some(el);
+    for _ in 0..MAX_ANCESTORS {
+        let Some(c) = cur else { break };
+        let t = dom.style(c, "transform");
+        let t = js::trim(&t);
+        if !(t.is_empty() || t == "none") {
+            let Some(m) = linear_part(t) else { return 1.0 };
+            total = multiply(&rows(&m), &total);
+        }
+        cur = dom.parent(c);
+    }
+    if cur.is_some() {
         return 1.0;
     }
-    let (d_long, d_short) = (r.width.max(r.height), r.width.min(r.height));
-    let (l_long, l_short) = (lw.max(lh), lw.min(lh));
-    let scale = (d_long / l_long).min(d_short / l_short);
-    if scale > 1.05 { scale } else { 1.0 }
+    let x = (total[0][0] * total[0][0] + total[1][0] * total[1][0]).sqrt();
+    let y = (total[0][1] * total[0][1] + total[1][1] * total[1][1]).sqrt();
+    let scale = x.min(y);
+    if scale.is_finite() && scale > 1.05 { scale } else { 1.0 }
 }
 
 /// A computed `font-size` that parses to 1px or less: a size no glyph can be
@@ -2557,31 +2570,33 @@ mod tests {
         assert_eq!(text(&d, hidden), Some(Unpainted::NoFontSize));
         assert!(at_most_1px("1px"));
         // The same 1px text drawn sixteen times larger by a transform paints
-        // readable letters.
+        // readable letters, turned upright too.
         let enlarged = d.add(Some(body), "span");
         d.set_style(enlarged, "fontSize", "1px");
         d.set_rect(enlarged, 76.0, 400.0, 160.0, 16.0);
-        d.el_mut(enlarged).offset_width = 10.0;
-        d.el_mut(enlarged).offset_height = 1.0;
         d.add_text(enlarged, "Scaled label");
+        d.set_style(enlarged, "transform", "matrix(16, 0, 0, 16, 0, 0)");
         assert_eq!(text(&d, enlarged), None);
-        // Stretched on one axis only (a 160 by 1px box under `scaleY(16)`),
-        // the letters stay a pixel wide: no enlargement.
-        d.el_mut(enlarged).offset_width = 160.0;
-        assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
-        // A 160 by 1px line turned upright has a tall bounding box but the
-        // same letters: no enlargement.
-        d.set_rect(enlarged, 76.0, 400.0, 1.0, 160.0);
-        d.el_mut(enlarged).offset_width = 160.0;
-        d.el_mut(enlarged).offset_height = 1.0;
-        assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
-        // Turned at 45 degrees, its box is about 114 by 114: no enlargement.
-        d.set_rect(enlarged, 76.0, 400.0, 113.8, 113.8);
-        assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
-        // Turned upright and drawn sixteen times larger, it paints 16px
-        // letters.
-        d.set_rect(enlarged, 76.0, 400.0, 16.0, 2560.0);
+        d.set_style(enlarged, "transform", "matrix(0, 16, -16, 0, 0, 0)");
         assert_eq!(text(&d, enlarged), None);
+        // A scale set on an ancestor counts the same.
+        let wrap = d.add(Some(body), "div");
+        let inner = d.add(Some(wrap), "span");
+        d.set_style(inner, "fontSize", "1px");
+        d.set_rect(inner, 76.0, 600.0, 160.0, 16.0);
+        d.add_text(inner, "Scaled label");
+        d.set_style(wrap, "transform", "matrix3d(16, 0, 0, 0, 0, 16, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)");
+        assert_eq!(text(&d, inner), None);
+        // A rotation alone, and a stretch on one axis (`scaleX(2)`,
+        // `scaleY(16)`), leave the letters a pixel thin.
+        d.set_style(enlarged, "transform", "matrix(0, 1, -1, 0, 0, 0)");
+        assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
+        d.set_style(enlarged, "transform", "matrix(0.707107, 0.707107, -0.707107, 0.707107, 0, 0)");
+        assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
+        d.set_style(enlarged, "transform", "matrix(2, 0, 0, 1, 0, 0)");
+        assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
+        d.set_style(enlarged, "transform", "matrix(1, 0, 0, 16, 0, 0)");
+        assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
         d.set_style(hidden, "fontSize", "2px");
         d.set_rect(hidden, 76.0, 5895.0, 18.0, 2.0);
         assert_eq!(text(&d, hidden), None);
