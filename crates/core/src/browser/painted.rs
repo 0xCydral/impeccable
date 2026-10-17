@@ -769,16 +769,47 @@ fn individual_scale(value: &str) -> Option<(f64, f64)> {
     Some((parts[0], *parts.get(1).unwrap_or(&parts[0])))
 }
 
+/// A computed individual `rotate` as a turn about z, in radians: `none` or
+/// an empty value is 0, and an angle alone, `z <angle>` or `0 0 1 <angle>`
+/// turns about z. `None` for a turn about another axis or a value that does
+/// not parse.
+fn individual_rotate_z(value: &str) -> Option<f64> {
+    let v = js::to_lower_case(js::trim(value));
+    if v.is_empty() || v == "none" {
+        return Some(0.0);
+    }
+    let parts: Vec<&str> = v.split_ascii_whitespace().collect();
+    let angle = match parts.as_slice() {
+        [a] => *a,
+        ["z", a] => *a,
+        [x, y, z, a] if js::parse_float(x) == 0.0 && js::parse_float(y) == 0.0 && js::parse_float(z) > 0.0 => *a,
+        _ => return None,
+    };
+    let (n, per_unit) = if let Some(n) = angle.strip_suffix("deg") {
+        (n, std::f64::consts::PI / 180.0)
+    } else if let Some(n) = angle.strip_suffix("grad") {
+        (n, std::f64::consts::PI / 200.0)
+    } else if let Some(n) = angle.strip_suffix("rad") {
+        (n, 1.0)
+    } else if let Some(n) = angle.strip_suffix("turn") {
+        (n, std::f64::consts::TAU)
+    } else {
+        return None;
+    };
+    let n = js::parse_float(n);
+    n.is_finite().then_some(n * per_unit)
+}
+
 /// How much larger than its layout size `el`'s letters are drawn: the
-/// computed `transform`s and individual `scale`s of `el` and its ancestors
-/// multiplied, and the
+/// computed `transform`s and individual `scale`s and `rotate`s of `el` and
+/// its ancestors multiplied, and the
 /// shorter of the drawn lengths of a unit step along x and along y, when
 /// that enlarges by more than a twentieth; else 1. A rotation draws both
 /// steps at their own length, so it enlarges nothing, and a stretch on one
 /// axis (`scaleX(2)`) leaves the letters as thin as they were the other way;
 /// `rotate(90deg) scale(16)` draws 16px letters. A transform that does not
-/// read as a matrix, an individual `rotate`, or a chain deeper than the walk
-/// reads counts as no enlargement.
+/// read as a matrix, an individual `rotate` about another axis than z, or a
+/// chain deeper than the walk reads counts as no enlargement.
 fn drawn_enlargement(dom: &dyn Dom, el: ElId) -> f64 {
     const MAX_ANCESTORS: usize = 64;
     let mut total = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
@@ -794,15 +825,16 @@ fn drawn_enlargement(dom: &dyn Dom, el: ElId) -> f64 {
         // The individual `scale` property composes outside `transform`
         // (the element's matrix is translate, rotate, scale, then transform,
         // left to right), so it multiplies after it.
-        // An individual `rotate` sits between them and is not read here, so
-        // a box that sets one claims no enlargement.
-        let rotate = dom.style(c, "rotate");
-        if !matches!(js::trim(&rotate), "" | "none") {
-            return 1.0;
-        }
         let Some((sx, sy)) = individual_scale(&dom.style(c, "scale")) else { return 1.0 };
         if sx != 1.0 || sy != 1.0 {
             total = multiply(&[[sx, 0.0, 0.0], [0.0, sy, 0.0], [0.0, 0.0, 1.0]], &total);
+        }
+        // The individual `rotate` composes outside `scale`. A turn about an
+        // axis other than z, or one that does not parse, claims nothing.
+        let Some(turn) = individual_rotate_z(&dom.style(c, "rotate")) else { return 1.0 };
+        if turn != 0.0 {
+            let (sin, cos) = turn.sin_cos();
+            total = multiply(&[[cos, -sin, 0.0], [sin, cos, 0.0], [0.0, 0.0, 1.0]], &total);
         }
         cur = dom.parent(c);
     }
@@ -2641,8 +2673,24 @@ mod tests {
         assert_eq!(text(&d, enlarged), None);
         d.set_style(enlarged, "scale", "1600% 100%");
         assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
-        // An individual `rotate` is not composed, so it claims nothing.
+        // An individual `rotate` composes with the scales: a uniform scale
+        // stays an enlargement under it, and a one-axis scale turned against
+        // an ancestor's stretch on the other axis does not become one.
         d.set_styles(enlarged, &[("transform", "none"), ("scale", "16"), ("rotate", "90deg")]);
+        assert_eq!(text(&d, enlarged), None);
+        d.set_style(enlarged, "rotate", "0deg");
+        assert_eq!(text(&d, enlarged), None);
+        d.set_style(enlarged, "rotate", "z 0.25turn");
+        assert_eq!(text(&d, enlarged), None);
+        let stretched = d.add(Some(body), "div");
+        d.set_style(stretched, "transform", "matrix(1, 0, 0, 16, 0, 0)");
+        let turned = d.add(Some(stretched), "span");
+        d.set_styles(turned, &[("fontSize", "1px"), ("scale", "16 1"), ("rotate", "90deg")]);
+        d.set_rect(turned, 76.0, 800.0, 16.0, 160.0);
+        d.add_text(turned, "Turned label");
+        assert_eq!(text(&d, turned), Some(Unpainted::NoFontSize));
+        // A turn about another axis claims nothing.
+        d.set_style(enlarged, "rotate", "x 45deg");
         assert_eq!(text(&d, enlarged), Some(Unpainted::NoFontSize));
         d.set_styles(enlarged, &[("scale", "none"), ("rotate", "none")]);
         d.set_style(hidden, "fontSize", "2px");
