@@ -4474,23 +4474,35 @@ fn spill_past_painted_box(dom: &dyn Dom, el: ElId, rect: &Rect) -> Option<f64> {
             0.0
         }
     };
-    let content_left = rect.left + dom.client_left(el) + pad("Left");
-    let content_right = rect.left + dom.client_left(el) + dom.client_width(el) - pad("Right");
+    // `clientLeft`, `clientWidth`, the padding and the font's sizes are
+    // layout sizes while the rects are drawn: under a transform that scales
+    // the box, they are scaled by its drawn width over its layout width
+    // (`offsetWidth`) first.
+    let client_left = dom.client_left(el);
+    let client_width = dom.client_width(el);
+    let layout_width = dom.offset_width(el);
+    let scale = if layout_width.is_finite() && layout_width > 0.0 && (rect.width - layout_width).abs() > 1.0 {
+        rect.width / layout_width
+    } else {
+        1.0
+    };
+    let content_left = rect.left + (client_left + pad("Left")) * scale;
+    let content_right = rect.left + (client_left + client_width - pad("Right")) * scale;
     if !(content_left.is_finite() && content_right.is_finite()) {
         return None;
     }
     let font_size = {
         let n = style_px(dom, el, "fontSize");
         if n.is_finite() && n > 0.0 {
-            n
+            n * scale
         } else {
-            16.0
+            16.0 * scale
         }
     };
     let tracking = {
         let n = style_px(dom, el, "letterSpacing");
         if n.is_finite() && n > 0.0 {
-            n
+            n * scale
         } else {
             0.0
         }
@@ -4624,6 +4636,19 @@ fn spill_is_clipped(dom: &dyn Dom, el: ElId, reach: (f64, f64)) -> bool {
             } else {
                 (r.left, r.right)
             };
+            // `overflow: clip` paints out to its `overflow-clip-margin`: text
+            // inside the margin shows, so the cut is past it.
+            let margin = if crate::browser::text_geometry::overflow_x(dom, c) == "clip" {
+                dom.style(c, "overflowClipMargin")
+                    .split_whitespace()
+                    .map(parse_float)
+                    .find(|n| n.is_finite())
+                    .filter(|n| *n > 0.0)
+                    .unwrap_or(0.0)
+            } else {
+                0.0
+            };
+            let (left, right) = (left - margin, right + margin);
             if left.is_finite() && right.is_finite() && (reach.1 > right + 1.0 || reach.0 < left - 1.0) {
                 return true;
             }
@@ -8612,6 +8637,17 @@ mod tests {
         let mut d = build(324.66, "rgb(86, 177, 70)");
         d.set_style(btn, "letterSpacing", "4px");
         assert!(check_element_text_overflow_dom(&d, btn).is_empty(), "the overshoot is a letter space");
+        // Review of #1043: the same button drawn at half size under
+        // `transform: scale(.5)`. Its layout metrics are scaled to the drawn
+        // rects before they are compared, so the spill still reads.
+        let mut d = build(324.66, "rgb(86, 177, 70)");
+        d.set_rect(btn, 15.0, 4158.7, 180.0, 20.2);
+        d.el_mut(btn).offset_width = 360.0;
+        d.set_text_rect(btn, 35.5, 4164.5, 162.33, 8.0);
+        assert_eq!(check_element_text_overflow_dom(&d, btn).len(), 1, "a scaled button");
+        // And a label that ends inside the scaled button stays quiet.
+        d.set_text_rect(btn, 35.5, 4164.5, 158.0, 8.0);
+        assert!(check_element_text_overflow_dom(&d, btn).is_empty(), "inside the scaled border box");
     }
 
     /// Review of round 11: code clipped on purpose (a terminal window in a
@@ -8620,7 +8656,7 @@ mod tests {
     /// phone) is.
     #[test]
     fn text_overflow_reads_code_only_where_it_reaches_the_edge_or_a_box() {
-        let build = |clip: bool, line_width: f64| {
+        let build = |overflow: &str, margin: &str, line_width: f64| {
             let (mut d, body) = page();
             d.inner_width = 1280.0;
             let win = d.add(Some(body), "div");
@@ -8630,8 +8666,9 @@ mod tests {
             d.set_styles(
                 win,
                 &[
-                    ("overflowX", if clip { "hidden" } else { "visible" }),
-                    ("overflow", if clip { "hidden" } else { "visible" }),
+                    ("overflowX", overflow),
+                    ("overflow", overflow),
+                    ("overflowClipMargin", margin),
                     ("backgroundColor", "rgb(11, 11, 15)"),
                 ],
             );
@@ -8647,9 +8684,14 @@ mod tests {
             d.set_text_rect(code, 716.0, 148.0, line_width, 80.0);
             check_element_text_overflow_dom(&d, code).len()
         };
-        assert_eq!(build(true, 689.0), 0, "a terminal window clips its code");
-        assert_eq!(build(false, 689.0), 1, "the same line runs off the viewport");
-        assert_eq!(build(false, 300.0), 0, "a line that fits");
+        assert_eq!(build("hidden", "", 689.0), 0, "a terminal window clips its code");
+        assert_eq!(build("visible", "", 689.0), 1, "the same line runs off the viewport");
+        assert_eq!(build("visible", "", 300.0), 0, "a line that fits");
+        // Review of #1043: `overflow: clip` paints out to its
+        // `overflow-clip-margin`, so a line that ends inside the margin is
+        // not clipped and still runs off the viewport.
+        assert_eq!(build("clip", "0px", 689.0), 0, "clipped at the padding box");
+        assert_eq!(build("clip", "300px", 689.0), 1, "inside the clip margin");
     }
 
     /// lockheedmartin.com 10046719: a section heading types itself out, its
