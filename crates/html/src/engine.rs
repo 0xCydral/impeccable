@@ -23,7 +23,7 @@ use crate::background::{
 };
 use crate::cascade::{build_static_style_map, collect_static_css_text};
 use crate::dom::{StaticDocument, StaticElement};
-use crate::image_sampling::ImageSampler;
+use crate::image_sampling::{ImageSampler, ImageSamples};
 use crate::page::{
     check_cream_palette, check_page_layout, check_repeated_container_text_from_doc,
     check_static_page_typography,
@@ -98,6 +98,13 @@ pub struct DetectHtmlOptions<'a> {
     /// files, the way the built-in text-content analyzers do). A pack that
     /// implements both therefore never reports twice for the same file.
     pub rule_pack: Option<&'static dyn impeccable_core::rule_pack::RulePack>,
+    /// Where the sampled-contrast path (#560) gets an image's pixels:
+    /// decoded here and written to the persistent sample cache (`detect`),
+    /// or read from that cache alone, never decoding (the edit hook).
+    pub image_samples: ImageSamples,
+    /// The persistent sample cache directory; `None` is the default
+    /// (`IMPECCABLE_SAMPLE_CACHE`, else `<home>/.impeccable/sample-cache`).
+    pub sample_cache_dir: Option<&'a Path>,
 }
 
 /// Errors of the static engine.
@@ -234,7 +241,12 @@ pub fn detect_html_source(
         doc.set_unread_stylesheet();
     }
     let doc = doc;
-    let images = ImageSampler::new(&file_dir.to_string_lossy());
+    let images = ImageSampler::new(
+        &file_dir.to_string_lossy(),
+        options.image_samples,
+        options.sample_cache_dir,
+    );
+    images.decode_ahead(&doc);
 
     let mut findings: Vec<Finding> = Vec::new();
     let mk = |id: &str, snippet: &str| try_finding(id, fp, snippet, 0.0);

@@ -3,11 +3,21 @@
 //! must keep the skip, or one ground it must read, and would fail against
 //! the first version of the path.
 
+use impeccable_html::image_sampling::ImageSamples;
 use impeccable_html::{detect_html_source, DetectHtmlOptions};
 use std::path::PathBuf;
 
 const LIGHT: [u8; 4] = [243, 239, 230, 255];
 const DARK: [u8; 4] = [26, 24, 22, 255];
+
+/// A solid PNG, as bytes.
+fn image_png(width: u32, height: u32, rgba: [u8; 4]) -> Vec<u8> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(width, height, image::Rgba(rgba)))
+        .write_to(&mut out, image::ImageFormat::Png)
+        .unwrap();
+    out.into_inner()
+}
 
 struct Site(PathBuf);
 
@@ -29,22 +39,30 @@ impl Site {
     }
 
     fn png(&self, rel: &str, width: u32, height: u32, rgba: [u8; 4]) {
-        image::RgbaImage::from_pixel(width, height, image::Rgba(rgba))
-            .save(self.0.join(rel))
-            .unwrap();
+        std::fs::write(self.0.join(rel), image_png(width, height, rgba)).unwrap();
     }
 
     fn write(&self, rel: &str, text: &str) {
         std::fs::write(self.0.join(rel), text).unwrap();
     }
 
-    /// Every finding of `rule` for a page with this `<style>` and body.
+    /// Every finding of `rule` for a page with this `<style>` and body,
+    /// decoding as `detect` does, with the sample cache inside the site.
     fn findings(&self, rule: &str, head: &str, body: &str) -> Vec<String> {
+        self.findings_as(rule, head, body, ImageSamples::Decode)
+    }
+
+    fn findings_as(&self, rule: &str, head: &str, body: &str, mode: ImageSamples) -> Vec<String> {
         let html = format!("<!DOCTYPE html><html><head>{head}</head><body>{body}</body></html>");
+        let cache = self.0.join("sample-cache");
         detect_html_source(
             &html,
             &self.0.join("page.html"),
-            &DetectHtmlOptions::default(),
+            &DetectHtmlOptions {
+                image_samples: mode,
+                sample_cache_dir: Some(&cache),
+                ..Default::default()
+            },
         )
         .into_iter()
         .filter(|f| f.antipattern == rule)
@@ -54,6 +72,10 @@ impl Site {
 
     fn contrast(&self, css: &str, body: &str) -> Vec<String> {
         self.findings("low-contrast", &format!("<style>{css}</style>"), body)
+    }
+
+    fn contrast_as(&self, css: &str, body: &str, mode: ImageSamples) -> Vec<String> {
+        self.findings_as("low-contrast", &format!("<style>{css}</style>"), body, mode)
     }
 }
 
@@ -535,6 +557,59 @@ fn the_page_dir_is_the_base_for_everything_inline() {
     let css = ".hero { background: url(only-here.png); } p { color: #fdfdfd; }";
     let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
     assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn the_hook_reads_only_what_detect_sampled() {
+    let site = Site::new("hook-mode");
+    let css = ".hero { background: url(light.png); } p { color: #fdfdfd; }";
+    let body = "<div class=hero><p>White copy on a light image</p></div>";
+    // With no cache entry the hook stays silent, as every image-backed
+    // text was before this path existed.
+    assert!(site.contrast_as(css, body, ImageSamples::CacheOnly).is_empty());
+    // `detect` decodes, reports, and writes the entry; the hook then has
+    // the verdict for free.
+    assert!(sampled_on("light.png", &site.contrast(css, body)));
+    assert!(sampled_on("light.png", &site.contrast_as(css, body, ImageSamples::CacheOnly)));
+    // The hook never opens the image: its bytes are swapped for text under
+    // the same size and modification time, and the hook still reports from
+    // the entry, while an edit that changes the file misses it.
+    let hero = site.0.join("light.png");
+    let meta = std::fs::metadata(&hero).unwrap();
+    std::fs::write(&hero, vec![b'x'; meta.len() as usize]).unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(&hero)
+        .unwrap()
+        .set_modified(meta.modified().unwrap())
+        .unwrap();
+    assert!(sampled_on("light.png", &site.contrast_as(css, body, ImageSamples::CacheOnly)));
+    std::fs::write(&hero, b"not an image any more").unwrap();
+    assert!(site.contrast_as(css, body, ImageSamples::CacheOnly).is_empty());
+    // A second page sharing the hero takes the same entry: the cache is
+    // keyed by the file, not the page.
+    let other = "<div class=hero><p>Another page, same hero</p></div>";
+    std::fs::write(&hero, image_png(320, 200, LIGHT)).unwrap();
+    let found = site.contrast(css, other);
+    assert!(sampled_on("light.png", &found), "{found:?}");
+    assert!(sampled_on("light.png", &site.contrast_as(css, other, ImageSamples::CacheOnly)));
+}
+
+#[test]
+fn a_page_with_several_photos_decodes_them_ahead() {
+    let site = Site::new("decode-ahead");
+    for name in ["a.png", "b.png", "c.png"] {
+        site.png(name, 320, 200, LIGHT);
+    }
+    let css = ".a { background: url(a.png); } .b { background: url(b.png); } .c { background: url(c.png); } p { color: #fdfdfd; }";
+    let body = "<div class=a><p>One</p></div><div class=b><p>Two</p></div><div class=c><p>Three</p></div>";
+    let found = site.contrast(css, body);
+    assert_eq!(found.len(), 3, "{found:?}");
+    for name in ["a.png", "b.png", "c.png"] {
+        assert!(found.iter().any(|f| f.contains(&format!(" on {name};"))), "{found:?}");
+    }
+    // And the hook then reads all three from the cache.
+    assert_eq!(site.contrast_as(css, body, ImageSamples::CacheOnly).len(), 3);
 }
 
 /// The measured ratio a sampled snippet reports.

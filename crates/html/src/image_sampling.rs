@@ -3,34 +3,38 @@
 //! stylesheet linked from another directory has its urls restated relative
 //! to the page as its rules are read, see `cascade::UrlBase`) or from a
 //! base64 data URI, never from the network. The pure-Rust decoders turn them
-//! into a raster no larger than the browser overlay's 640px canvas.
+//! into the 36 grid samples the verdict reads, and nothing larger is kept.
 //!
-//! The hook runs this on every edit, so nothing is done twice. Within a
-//! document an element's image is located once, and so is each distinct url,
-//! one that cannot be read included. Decoded pixels are shared for the rest
-//! of the process under a key that pins the bytes (a data URI's content; a
-//! file's path, size, and modification time), so a directory scan decodes
-//! each hero once and a file that changes is read again. Anything unreadable,
-//! remote, oversized, or undecodable is `None`, and the caller keeps today's
-//! skip.
+//! Two callers with different budgets share this module. `detect` decodes:
+//! it locates each distinct url of a document once, decodes it once per
+//! process, and writes what it sampled to a persistent cache under the
+//! user's `.impeccable` directory, one small file per image, keyed by the
+//! file's path with its size and modification time inside. The edit hook
+//! never decodes: it stats the file, reads that entry, and takes the verdict
+//! from it; an image `detect` has not sampled yet stays silent, as every
+//! image did before this path existed. Anything unreadable, remote,
+//! oversized, or undecodable is `None`, and the caller keeps today's skip.
 
 use crate::background::{ImageLayer, LevelCache};
 use crate::cascade::resolve_linked_css_path;
 use crate::dom::StaticDocument;
 use base64::Engine;
 use ego_tree::NodeId;
-use impeccable_common::jsp;
+use image::GenericImageView;
+use impeccable_core::checks::sampled_contrast::grid_points;
 use impeccable_core::color::Rgba;
+pub use crate::image_url::{ground_label, layer_url};
+use crate::image_url::{is_data_uri, percent_decoded_path};
+pub use impeccable_detect::engines::ImageSamples;
+use std::collections::HashSet;
 use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::io::{BufRead, Cursor, Read, Seek};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::UNIX_EPOCH;
 
-/// The browser overlay draws to a canvas no larger than this on a side.
-const MAX_RASTER_SIDE: u32 = 640;
 /// Files above this are not read: a hero is a few megabytes.
 const MAX_FILE_BYTES: u64 = 24 * 1024 * 1024;
 /// The base64 payload length that decodes to [`MAX_FILE_BYTES`], so a data
@@ -43,66 +47,88 @@ const MAX_IMAGE_SIDE: u32 = 8192;
 const MAX_PIXELS: u64 = 24_000_000;
 /// The decoders' own allocation limit, where they honor one.
 const MAX_DECODE_BYTES: u64 = 128 * 1024 * 1024;
-/// Rasters kept for the process; the cache is cleared when full.
-const CACHE_ENTRIES: usize = 64;
+/// Sample sets kept for the process; the cache is cleared when full.
+const CACHE_ENTRIES: usize = 256;
+/// The persistent cache's format; an entry of another version reads as
+/// absent, so an older engine's samples are never taken for this one's.
+const CACHE_VERSION: u32 = 1;
+/// The grid the samples were taken on, [`grid_points`]'s side.
+const GRID: usize = 6;
+/// The box averaged around each grid point: one fortieth of the shorter
+/// side, between one and 32 pixels, so a 12 megapixel photo costs about
+/// 36 x 32 x 32 pixel reads, microseconds, and a tiny image reads its
+/// exact pixels.
+const BOX_DIVISOR: u32 = 40;
+const BOX_MAX: u32 = 32;
 
-/// A decoded image, RGBA8, at most [`MAX_RASTER_SIDE`] on a side.
-pub struct Raster {
+/// The environment variable that moves the persistent cache, for tests and
+/// for a user who keeps caches elsewhere.
+pub const SAMPLE_CACHE_ENV: &str = "IMPECCABLE_SAMPLE_CACHE";
+
+/// What the verdict reads of an image: its intrinsic size and one color per
+/// grid point, row-major over [`grid_points`], each the alpha-weighted mean
+/// of a small box around the point.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Samples {
     pub width: u32,
     pub height: u32,
-    rgba: Vec<u8>,
-}
-
-impl Raster {
-    pub fn pixel(&self, x: usize, y: usize) -> Rgba {
-        let i = (y.min(self.height as usize - 1) * self.width as usize
-            + x.min(self.width as usize - 1))
-            * 4;
-        let p = &self.rgba[i..i + 4];
-        Rgba::new(p[0] as f64, p[1] as f64, p[2] as f64, p[3] as f64 / 255.0)
-    }
+    pub points: Vec<Rgba>,
 }
 
 /// An image the engine can read: where its bytes are and its intrinsic
-/// size, known from the header alone. The size is what `background-size:
-/// auto` paints, and it decides whether the layer is decoration before any
-/// pixel is decoded.
+/// size, known from the header alone (or from the cache entry, in hook
+/// mode). The size is what `background-size: auto` paints, and it decides
+/// whether the layer is decoration before any pixel is decoded.
 pub struct ImageSource {
-    /// Names these exact bytes in the process-wide raster cache.
+    /// Names these exact bytes in the process-wide sample cache.
     key: String,
+    /// The persistent cache file for this image, when there is a cache.
+    cache_file: Option<PathBuf>,
     /// The file to read, or `None` for a data URI.
     path: Option<String>,
+    /// A file's size and modification time, what the cache entry has to
+    /// match before it is taken for the file.
+    stat: Option<(u64, u128)>,
     pub width: u32,
     pub height: u32,
+    /// Samples the persistent cache already held when the source was
+    /// located, so no byte is read for them.
+    cached: RefCell<Option<Option<Rc<Samples>>>>,
+}
+
+impl ImageSource {
+    pub fn key(&self) -> &str {
+        &self.key
+    }
 }
 
 thread_local! {
-    /// Decoded pixels by [`ImageSource::key`], a failed decode included.
-    static RASTERS: RefCell<HashMap<String, Option<Rc<Raster>>>> = RefCell::new(HashMap::new());
+    /// Samples by [`ImageSource::key`], a failed decode included.
+    static SAMPLES: RefCell<HashMap<String, Option<Rc<Samples>>>> = RefCell::new(HashMap::new());
 }
 
-/// The raster for `key`, decoded from `read()` on a miss. What the decode
-/// says about those bytes is kept, a failure included; a read that fails
-/// says nothing about them and is asked again.
-fn cached_raster(key: &str, read: impl FnOnce() -> Option<Vec<u8>>) -> Option<Rc<Raster>> {
-    if let Some(hit) = RASTERS.with(|c| c.borrow().get(key).cloned()) {
-        return hit;
-    }
-    let value = decode(&read()?).map(Rc::new);
-    RASTERS.with(|c| {
+fn remember(key: &str, value: Option<Rc<Samples>>) {
+    SAMPLES.with(|c| {
         let mut cache = c.borrow_mut();
         if cache.len() >= CACHE_ENTRIES {
             cache.clear();
         }
-        cache.insert(key.to_string(), value.clone());
+        cache.insert(key.to_string(), value);
     });
-    value
 }
 
-/// Locates and decodes the `url()` grounds of one document, relative to the
+fn remembered(key: &str) -> Option<Option<Rc<Samples>>> {
+    SAMPLES.with(|c| c.borrow().get(key).cloned())
+}
+
+/// Locates and samples the `url()` grounds of one document, relative to the
 /// document's directory.
 pub struct ImageSampler {
     base: String,
+    mode: ImageSamples,
+    /// The persistent cache directory, `None` when none can be found (no
+    /// home directory) or the caller turned it off.
+    cache_dir: Option<PathBuf>,
     levels: LevelCache,
     /// The source behind each image-painting element and behind each
     /// distinct url of this document, misses included: a page's text
@@ -114,9 +140,13 @@ pub struct ImageSampler {
 }
 
 impl ImageSampler {
-    pub fn new(html_dir: &str) -> Self {
+    /// `cache_dir` is the persistent cache to use; `None` resolves the
+    /// default ([`SAMPLE_CACHE_ENV`], else `<home>/.impeccable/sample-cache`).
+    pub fn new(html_dir: &str, mode: ImageSamples, cache_dir: Option<&Path>) -> Self {
         ImageSampler {
             base: html_dir.to_string(),
+            mode,
+            cache_dir: cache_dir.map(Path::to_path_buf).or_else(default_cache_dir),
             levels: LevelCache::default(),
             by_node: RefCell::new(HashMap::new()),
             by_url: RefCell::new(HashMap::new()),
@@ -127,9 +157,14 @@ impl ImageSampler {
         &self.levels
     }
 
+    pub fn mode(&self) -> ImageSamples {
+        self.mode
+    }
+
     /// The image behind an element's `url()` layer, or `None` when it cannot
     /// be read here: a remote URL, a missing or oversized file, a format the
-    /// decoders do not cover (SVG), or a text data URI.
+    /// decoders do not cover (SVG), a text data URI, or, in hook mode, an
+    /// image the cache has no entry for.
     pub fn source(
         &self,
         doc: &StaticDocument,
@@ -144,17 +179,119 @@ impl ImageSampler {
         found
     }
 
-    /// The decoded raster of a source.
-    pub fn raster(
+    /// Whether the samples of a source are already at hand, in the
+    /// persistent cache or in this process, so no decode is owed.
+    pub fn has_samples(&self, source: &ImageSource) -> bool {
+        source.cached.borrow().is_some() || remembered(&source.key).is_some()
+    }
+
+    /// The grid samples of a source: from the persistent cache, from this
+    /// process, or, when the sampler decodes, from the bytes themselves,
+    /// which are then written to the cache for the next process and the
+    /// next hook run. In hook mode an image with no entry is `None`.
+    pub fn samples(
         &self,
         doc: &StaticDocument,
         node: NodeId,
         layer: &ImageLayer,
         source: &ImageSource,
-    ) -> Option<Rc<Raster>> {
-        cached_raster(&source.key, || {
-            source_bytes(source, &layer_url(doc, node, layer))
-        })
+    ) -> Option<Rc<Samples>> {
+        if let Some(cached) = source.cached.borrow().as_ref() {
+            return cached.clone();
+        }
+        if let Some(hit) = remembered(&source.key) {
+            return hit;
+        }
+        if self.mode == ImageSamples::CacheOnly {
+            return None;
+        }
+        let bytes = source_bytes(source, &layer_url(doc, node, layer))?;
+        let value = decode_samples(&bytes).map(Rc::new);
+        self.store(source, value.clone());
+        value
+    }
+
+    /// Keep what a decode said about a source's bytes, a failure included:
+    /// for this process, and in the persistent cache. A read that fails
+    /// says nothing about the bytes and is never stored.
+    pub fn store(&self, source: &ImageSource, value: Option<Rc<Samples>>) {
+        remember(&source.key, value.clone());
+        if let Some(file) = &source.cache_file {
+            write_entry(file, source, value.as_deref());
+        }
+    }
+
+    /// The bytes a decode of this source would read, for a caller that
+    /// decodes outside this sampler (the page's distinct images in
+    /// parallel). `None` when the sampler does not decode or the source
+    /// already has its samples.
+    pub fn bytes_to_decode(
+        &self,
+        doc: &StaticDocument,
+        node: NodeId,
+        layer: &ImageLayer,
+        source: &ImageSource,
+    ) -> Option<Vec<u8>> {
+        if self.mode == ImageSamples::CacheOnly || self.has_samples(source) {
+            return None;
+        }
+        source_bytes(source, &layer_url(doc, node, layer))
+    }
+
+    /// Decode the page's distinct images that the color rule would sample,
+    /// in parallel, before the rules run: the cold cost of a page with
+    /// several photos falls from their sum to about the slowest one. Only
+    /// an image the gates up to the decode let through (text over a
+    /// `url()` ground that is not decoration) and that no cache holds is
+    /// decoded, on at most four threads; a hook, which never decodes, skips
+    /// this. The in-page parallelism does not reach across the files of a
+    /// directory scan, which the persistent cache covers on repeat runs.
+    pub fn decode_ahead(&self, doc: &StaticDocument) {
+        if self.mode != ImageSamples::Decode {
+            return;
+        }
+        let mut sources: Vec<Rc<ImageSource>> = Vec::new();
+        let mut jobs: Vec<Vec<u8>> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+        for el in doc.query_selector_all("*") {
+            if el.direct_text().trim().is_empty() {
+                continue;
+            }
+            let Some((ground, source)) = crate::adapters::sampled_ground(&el, self) else {
+                continue;
+            };
+            if !seen.insert(source.key.clone()) {
+                continue;
+            }
+            if let Some(bytes) = self.bytes_to_decode(doc, ground.node, &ground.layer, &source) {
+                sources.push(source);
+                jobs.push(bytes);
+            }
+        }
+        if jobs.len() < 2 {
+            // One image decodes where it is needed.
+            return;
+        }
+        let threads = std::thread::available_parallelism()
+            .map_or(2, |n| n.get())
+            .clamp(1, 4)
+            .min(jobs.len());
+        let per = jobs.len().div_ceil(threads);
+        let results: Vec<Option<Samples>> = std::thread::scope(|scope| {
+            let handles: Vec<_> = jobs
+                .chunks(per)
+                .map(|chunk| {
+                    scope.spawn(move || chunk.iter().map(|b| decode_samples(b)).collect::<Vec<_>>())
+                })
+                .collect();
+            handles
+                .into_iter()
+                .flat_map(|h| h.join().unwrap_or_default())
+                .collect()
+        });
+        for (source, samples) in sources.iter().zip(results) {
+            self.store(source, samples.map(Rc::new));
+        }
     }
 
     fn find_source(&self, url: &str) -> Option<Rc<ImageSource>> {
@@ -184,9 +321,9 @@ impl ImageSampler {
             return hit.clone();
         }
         let found = if data {
-            data_source(url, &lookup)
+            self.data_source(url, &lookup)
         } else {
-            file_source(&self.base, url)
+            self.file_source(url)
         }
         .map(Rc::new);
         self.by_url
@@ -194,88 +331,218 @@ impl ImageSampler {
             .insert(lookup.into_owned(), found.clone());
         found
     }
-}
 
-fn data_source(url: &str, key: &str) -> Option<ImageSource> {
-    let (width, height) = dimensions(Cursor::new(data_uri_bytes(url)?))?;
-    Some(ImageSource {
-        key: key.to_string(),
-        path: None,
-        width,
-        height,
-    })
-}
-
-/// A file url's path with its `%XX` escapes decoded, the way the browser
-/// requests `url(light%20%28copy%29.png)`; the query and fragment are cut
-/// first, so an escaped `#` or `?` stays part of the name. An escape that
-/// is not two hex digits is left as written.
-fn percent_decoded_path(url: &str) -> Cow<'_, str> {
-    let path = url.split(['?', '#']).next().unwrap_or("");
-    if !path.contains('%') {
-        return Cow::Borrowed(path);
-    }
-    let bytes = path.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        let hex = (bytes[i] == b'%'
-            && i + 2 < bytes.len()
-            && bytes[i + 1].is_ascii_hexdigit()
-            && bytes[i + 2].is_ascii_hexdigit())
-        .then(|| u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).ok()?, 16).ok())
-        .flatten();
-        match hex {
-            Some(byte) => {
-                out.push(byte);
-                i += 3;
-            }
-            None => {
-                out.push(bytes[i]);
-                i += 1;
-            }
+    fn data_source(&self, url: &str, key: &str) -> Option<ImageSource> {
+        let cache_file = self
+            .cache_dir
+            .as_ref()
+            .map(|dir| dir.join(format!("{}.json", fnv64(key.as_bytes()))));
+        let entry = cache_file.as_deref().and_then(|f| read_entry(f, None));
+        if self.mode == ImageSamples::CacheOnly {
+            // Not even the payload is decoded: the entry carries the size.
+            let entry = entry?;
+            return Some(ImageSource {
+                key: key.to_string(),
+                cache_file,
+                path: None,
+                stat: None,
+                width: entry.width,
+                height: entry.height,
+                cached: RefCell::new(Some(entry.samples.map(Rc::new))),
+            });
         }
+        let (width, height) = dimensions(Cursor::new(data_uri_bytes(url)?))?;
+        Some(ImageSource {
+            key: key.to_string(),
+            cache_file,
+            path: None,
+            stat: None,
+            width,
+            height,
+            cached: RefCell::new(entry.map(|e| e.samples.map(Rc::new))),
+        })
     }
-    Cow::Owned(String::from_utf8_lossy(&out).into_owned())
+
+    fn file_source(&self, url: &str) -> Option<ImageSource> {
+        let path = resolve_linked_css_path(&self.base, &percent_decoded_path(url));
+        let meta = std::fs::metadata(&path).ok()?;
+        if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
+            return None;
+        }
+        // The caches outlive this document, so the key carries what changes
+        // when the file does.
+        let modified = meta
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map_or(0, |since| since.as_nanos());
+        let stat = (meta.len(), modified);
+        let key = format!("{path}\u{0}{}\u{0}{modified}", meta.len());
+        let cache_file = self
+            .cache_dir
+            .as_ref()
+            .map(|dir| dir.join(format!("{}.json", fnv64(path.as_bytes()))));
+        let entry = cache_file.as_deref().and_then(|f| read_entry(f, Some(stat)));
+        if self.mode == ImageSamples::CacheOnly {
+            // The file is never opened here: a stat and the entry decide.
+            let entry = entry?;
+            return Some(ImageSource {
+                key,
+                cache_file,
+                path: Some(path),
+                stat: Some(stat),
+                width: entry.width,
+                height: entry.height,
+                cached: RefCell::new(Some(entry.samples.map(Rc::new))),
+            });
+        }
+        let file = std::io::BufReader::new(std::fs::File::open(&path).ok()?);
+        let (width, height) = dimensions(file)?;
+        Some(ImageSource {
+            key,
+            cache_file,
+            path: Some(path),
+            stat: Some(stat),
+            width,
+            height,
+            cached: RefCell::new(entry.map(|e| e.samples.map(Rc::new))),
+        })
+    }
 }
 
-fn file_source(base: &str, url: &str) -> Option<ImageSource> {
-    let path = resolve_linked_css_path(base, &percent_decoded_path(url));
-    let meta = std::fs::metadata(&path).ok()?;
-    if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
+/// `<home>/.impeccable/sample-cache`, or [`SAMPLE_CACHE_ENV`] when set.
+/// `None` without a home directory: the engine then samples without a
+/// persistent cache, and the hook stays silent on every image.
+fn default_cache_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os(SAMPLE_CACHE_ENV).filter(|v| !v.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    let (first, second) = if cfg!(windows) {
+        ("USERPROFILE", "HOME")
+    } else {
+        ("HOME", "USERPROFILE")
+    };
+    let home = std::env::var_os(first)
+        .or_else(|| std::env::var_os(second))
+        .filter(|v| !v.is_empty())?;
+    Some(PathBuf::from(home).join(".impeccable").join("sample-cache"))
+}
+
+/// FNV-1a over `bytes`, as hex: a stable file name for a path or a data
+/// URI's key, the same in every process and every build.
+fn fnv64(bytes: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// One persistent cache entry: the file it was taken from (size and
+/// modification time, absent for a data URI), the intrinsic size, and the
+/// samples, `None` when the bytes did not decode.
+struct CacheEntry {
+    width: u32,
+    height: u32,
+    samples: Option<Samples>,
+}
+
+/// The entry in `file` for an image with this `stat`, or `None` when there
+/// is no entry, it is of another version or grid, or it was taken from
+/// other bytes. A ~250-byte read.
+fn read_entry(file: &Path, stat: Option<(u64, u128)>) -> Option<CacheEntry> {
+    let text = std::fs::read_to_string(file).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+    if json.get("v")?.as_u64()? != u64::from(CACHE_VERSION)
+        || json.get("grid")?.as_u64()? != GRID as u64
+    {
         return None;
     }
-    let file = std::io::BufReader::new(std::fs::File::open(&path).ok()?);
-    let (width, height) = dimensions(file)?;
-    // The raster cache outlives this document, so the key carries what
-    // changes when the file does.
-    let modified = meta
-        .modified()
-        .ok()
-        .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-        .map_or(0, |since| since.as_nanos());
-    Some(ImageSource {
-        key: format!("{path}\u{0}{}\u{0}{modified}", meta.len()),
-        path: Some(path),
+    if let Some((len, mtime)) = stat {
+        if json.get("len")?.as_u64()? != len
+            || json.get("mtime")?.as_str()? != mtime.to_string()
+        {
+            return None;
+        }
+    }
+    let width = u32::try_from(json.get("w")?.as_u64()?).ok()?;
+    let height = u32::try_from(json.get("h")?.as_u64()?).ok()?;
+    if json.get("undecodable").and_then(|v| v.as_bool()) == Some(true) {
+        return Some(CacheEntry {
+            width,
+            height,
+            samples: None,
+        });
+    }
+    let raw = base64::engine::general_purpose::STANDARD
+        .decode(json.get("samples")?.as_str()?)
+        .ok()?;
+    if raw.len() != GRID * GRID * 4 {
+        return None;
+    }
+    let points = raw
+        .chunks_exact(4)
+        .map(|p| Rgba::new(p[0] as f64, p[1] as f64, p[2] as f64, p[3] as f64 / 255.0))
+        .collect();
+    Some(CacheEntry {
         width,
         height,
+        samples: Some(Samples {
+            width,
+            height,
+            points,
+        }),
     })
 }
 
-/// The url of an element's image layer, borrowed from its computed style.
-pub fn layer_url<'d>(doc: &'d StaticDocument, node: NodeId, layer: &ImageLayer) -> Cow<'d, str> {
-    let bg_image = doc
-        .get_style(node)
-        .get("backgroundImage")
-        .map(|s| s.as_str())
-        .unwrap_or("");
-    layer.call.value(bg_image)
-}
-
-fn is_data_uri(url: &str) -> bool {
-    // `get`, not a byte slice: a url may open with a multibyte character.
-    url.get(..5)
-        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("data:"))
+/// Write what a decode said about a source, atomically (a temp file
+/// renamed into place), so a hook reading the entry at the same moment
+/// sees the old entry or the new one, never half of one. Every failure is
+/// silent: the cache is a speed-up, not a record.
+fn write_entry(file: &Path, source: &ImageSource, samples: Option<&Samples>) {
+    let Some(dir) = file.parent() else { return };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let mut json = serde_json::Map::new();
+    json.insert("v".into(), CACHE_VERSION.into());
+    json.insert("grid".into(), (GRID as u64).into());
+    if let Some((len, mtime)) = source.stat {
+        json.insert("len".into(), len.into());
+        json.insert("mtime".into(), mtime.to_string().into());
+    }
+    json.insert("w".into(), source.width.into());
+    json.insert("h".into(), source.height.into());
+    match samples {
+        Some(s) => {
+            let mut raw = Vec::with_capacity(s.points.len() * 4);
+            for p in &s.points {
+                raw.extend_from_slice(&[
+                    p.r.round() as u8,
+                    p.g.round() as u8,
+                    p.b.round() as u8,
+                    (p.alpha_or_one() * 255.0).round() as u8,
+                ]);
+            }
+            json.insert(
+                "samples".into(),
+                base64::engine::general_purpose::STANDARD.encode(raw).into(),
+            );
+        }
+        None => {
+            json.insert("undecodable".into(), true.into());
+        }
+    }
+    let text = serde_json::Value::Object(json).to_string();
+    let tmp = dir.join(format!(
+        ".{}.{}.tmp",
+        file.file_name().and_then(|n| n.to_str()).unwrap_or("entry"),
+        std::process::id()
+    ));
+    if std::fs::write(&tmp, text).is_ok() && std::fs::rename(&tmp, file).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
 }
 
 /// The cache key of a data URI: its length and a hash of every byte, so two
@@ -284,29 +551,7 @@ fn is_data_uri(url: &str) -> bool {
 /// remembers the element), which is one pass over a multi-megabyte inlined
 /// image, and the cache never holds a copy.
 fn data_uri_key(url: &str) -> String {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    url.as_bytes().hash(&mut hasher);
-    format!("data:{}:{:016x}", url.len(), hasher.finish())
-}
-
-/// The name a finding gives the image: the file name, or `data:<mime>`.
-pub fn ground_label(url: &str) -> String {
-    let url = url.trim();
-    if is_data_uri(url) {
-        let header = url[5..].split(',').next().unwrap_or("");
-        let mime = header
-            .split(';')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_ascii_lowercase();
-        return if mime.is_empty() {
-            "data:image".into()
-        } else {
-            format!("data:{mime}")
-        };
-    }
-    jsp::basename(&percent_decoded_path(url))
+    format!("data:{}:{}", url.len(), fnv64(url.as_bytes()))
 }
 
 fn source_bytes(source: &ImageSource, url: &str) -> Option<Vec<u8>> {
@@ -366,10 +611,36 @@ fn dimensions<R: BufRead + Seek>(reader: R) -> Option<(u32, u32)> {
     readable.then_some((width, height))
 }
 
-fn decode(bytes: &[u8]) -> Option<Raster> {
+/// Whether a JPEG's scan data runs to its end. The decoder fills a scan cut
+/// short with gray and reports no error, so a truncated file would get a
+/// verdict from invented pixels. Entropy-coded data never holds `FF DA`
+/// (start of scan) or `FF D9` (end of image), so one pass over the markers
+/// is exact: the last end-of-image marker has to come after the last start
+/// of scan. A trailer after the end marker (some cameras append one) is
+/// fine, and a thumbnail's own end marker inside the header does not count.
+fn jpeg_complete(bytes: &[u8]) -> bool {
+    let mut last_sos: Option<usize> = None;
+    let mut last_eoi: Option<usize> = None;
+    for (i, pair) in bytes.windows(2).enumerate() {
+        match pair {
+            [0xFF, 0xDA] => last_sos = Some(i),
+            [0xFF, 0xD9] => last_eoi = Some(i),
+            _ => {}
+        }
+    }
+    matches!((last_sos, last_eoi), (Some(sos), Some(eoi)) if eoi > sos)
+}
+
+/// The grid samples of these bytes, or `None` when they do not decode: a
+/// header past the budget, a decoder error, or a JPEG cut short. The full
+/// decode is read at 36 points and dropped; nothing is resized.
+pub fn decode_samples(bytes: &[u8]) -> Option<Samples> {
     // The budget is checked on the bytes being decoded, whatever a header
     // said earlier, and the decoders get their own limits besides.
     dimensions(Cursor::new(bytes))?;
+    if bytes.starts_with(&[0xFF, 0xD8]) && !jpeg_complete(bytes) {
+        return None;
+    }
     let mut reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .ok()?;
@@ -379,18 +650,50 @@ fn decode(bytes: &[u8]) -> Option<Raster> {
     limits.max_alloc = Some(MAX_DECODE_BYTES);
     reader.limits(limits);
     let decoded = reader.decode().ok()?;
-    // `thumbnail` also upscales, so only images past the budget go through it.
-    let scaled = if decoded.width().max(decoded.height()) > MAX_RASTER_SIDE {
-        decoded.thumbnail(MAX_RASTER_SIDE, MAX_RASTER_SIDE)
-    } else {
-        decoded
-    };
-    let rgba = scaled.to_rgba8();
-    Some(Raster {
-        width: rgba.width(),
-        height: rgba.height(),
-        rgba: rgba.into_raw(),
-    })
+    Some(sample_grid(&decoded))
+}
+
+/// One alpha-weighted mean per grid cell, over a small box around the
+/// cell's center that stays inside the cell.
+fn sample_grid(img: &image::DynamicImage) -> Samples {
+    let (width, height) = img.dimensions();
+    let (w, h) = (width as usize, height as usize);
+    let side = (width.min(height) / BOX_DIVISOR).clamp(1, BOX_MAX) as usize;
+    let half = side / 2;
+    let points = grid_points(w, h)
+        .into_iter()
+        .enumerate()
+        .map(|(i, (cx, cy))| {
+            let (gx, gy) = (i % GRID, i / GRID);
+            // The cell's own bounds, so a box never straddles a seam.
+            let x0 = (gx * w / GRID).max(cx.saturating_sub(half));
+            let y0 = (gy * h / GRID).max(cy.saturating_sub(half));
+            let x1 = ((gx + 1) * w / GRID).min(cx + half + 1).max(x0 + 1).min(w);
+            let y1 = ((gy + 1) * h / GRID).min(cy + half + 1).max(y0 + 1).min(h);
+            let (mut r, mut g, mut b, mut a, mut n) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let p = img.get_pixel(x as u32, y as u32).0;
+                    let alpha = f64::from(p[3]) / 255.0;
+                    r += f64::from(p[0]) * alpha;
+                    g += f64::from(p[1]) * alpha;
+                    b += f64::from(p[2]) * alpha;
+                    a += alpha;
+                    n += 1.0;
+                }
+            }
+            if a > 0.0 {
+                Rgba::new(r / a, g / a, b / a, a / n)
+            } else {
+                Rgba::new(0.0, 0.0, 0.0, 0.0)
+            }
+        })
+        .collect();
+    Samples {
+        width,
+        height,
+        points,
+    }
 }
 
 #[cfg(test)]
@@ -406,9 +709,42 @@ mod tests {
         out.into_inner()
     }
 
-    fn raster(sampler: &ImageSampler, url: &str) -> Option<Rc<Raster>> {
+    fn jpeg_bytes(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
+        let img = image::RgbImage::from_pixel(width, height, image::Rgb(rgb));
+        let mut out = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut out, image::ImageFormat::Jpeg)
+            .unwrap();
+        out.into_inner()
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "impeccable-sampler-{name}-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn sampler(base: &Path, mode: ImageSamples, cache: &Path) -> ImageSampler {
+        ImageSampler::new(&base.to_string_lossy(), mode, Some(cache))
+    }
+
+    fn samples_of(sampler: &ImageSampler, url: &str) -> Option<Rc<Samples>> {
         let source = sampler.find_source(url)?;
-        cached_raster(&source.key, || source_bytes(&source, url))
+        if let Some(cached) = source.cached.borrow().as_ref() {
+            return cached.clone();
+        }
+        if let Some(hit) = remembered(&source.key) {
+            return hit;
+        }
+        if sampler.mode == ImageSamples::CacheOnly {
+            return None;
+        }
+        let value = decode_samples(&source_bytes(&source, url)?).map(Rc::new);
+        sampler.store(&source, value.clone());
+        value
     }
 
     #[test]
@@ -418,14 +754,16 @@ mod tests {
             "data:image/png;base64,{}",
             base64::engine::general_purpose::STANDARD.encode(&bytes)
         );
-        let sampler = ImageSampler::new("/nonexistent");
+        let cache = temp_dir("data");
+        let sampler = sampler(Path::new("/nonexistent"), ImageSamples::Decode, &cache);
         let source = sampler
             .find_source(&uri)
             .expect("png data uri has a header");
         assert_eq!((source.width, source.height), (8, 8));
-        let pixels = raster(&sampler, &uri).expect("png data uri decodes");
-        assert_eq!((pixels.width, pixels.height), (8, 8));
-        assert_eq!(pixels.pixel(3, 3).r, 240.0);
+        let samples = samples_of(&sampler, &uri).expect("png data uri decodes");
+        assert_eq!((samples.width, samples.height), (8, 8));
+        assert_eq!(samples.points.len(), GRID * GRID);
+        assert_eq!(samples.points[21].r, 240.0);
         assert_eq!(ground_label(&uri), "data:image/png");
         assert!(sampler
             .find_source("data:image/svg+xml;utf8,<svg/>")
@@ -446,6 +784,17 @@ mod tests {
             "A".repeat(MAX_DATA_URI_CHARS + 1)
         );
         assert!(sampler.find_source(&huge).is_none());
+        // The hook takes the data URI's samples from the cache without
+        // decoding its payload, and has nothing for one it has not seen.
+        let hook = super::ImageSampler::new("/nonexistent", ImageSamples::CacheOnly, Some(&cache));
+        let cached = samples_of(&hook, &uri).expect("cached data uri");
+        assert_eq!(cached.points[21].r, 240.0);
+        let other = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(png_bytes(8, 8, [1, 2, 3, 255]))
+        );
+        assert!(hook.find_source(&other).is_none());
+        std::fs::remove_dir_all(&cache).ok();
     }
 
     #[test]
@@ -466,47 +815,124 @@ mod tests {
     }
 
     #[test]
-    fn files_resolve_against_the_page_dir_and_downscale() {
-        let dir = std::env::temp_dir().join(format!("impeccable-sampler-{}", std::process::id()));
+    fn files_resolve_against_the_page_dir_and_are_cached_for_the_hook() {
+        let dir = temp_dir("files");
+        let cache = dir.join("cache");
         std::fs::create_dir_all(dir.join("img")).unwrap();
         std::fs::write(
             dir.join("img").join("wide.png"),
             png_bytes(1280, 320, [20, 20, 20, 255]),
         )
         .unwrap();
-        let base = dir.to_string_lossy().into_owned();
-        let sampler = ImageSampler::new(&base);
-        assert!(sampler.find_source("wide.png").is_none());
-        let source = sampler
+        let detect = sampler(&dir, ImageSamples::Decode, &cache);
+        assert!(detect.find_source("wide.png").is_none());
+        let source = detect
             .find_source("img/wide.png")
             .expect("resolves against the page dir");
-        // The intrinsic size comes from the header; the raster is scaled.
+        // The intrinsic size comes from the header; the samples read the
+        // full decode, nothing is resized.
         assert_eq!((source.width, source.height), (1280, 320));
-        let pixels = raster(&sampler, "img/wide.png").unwrap();
-        assert_eq!((pixels.width, pixels.height), (640, 160));
-        assert_eq!(pixels.pixel(639, 159).g, 20.0);
+        let samples = samples_of(&detect, "img/wide.png").unwrap();
+        assert_eq!((samples.width, samples.height), (1280, 320));
+        assert_eq!(samples.points[35].g, 20.0);
         assert!(Rc::ptr_eq(
-            &pixels,
-            &raster(&sampler, "img/wide.png").unwrap()
+            &samples,
+            &samples_of(&detect, "img/wide.png").unwrap()
         ));
-
         // A miss is remembered for the document, so the walk runs once, and
         // forgotten with it: the next scan finds a file that has appeared.
         std::fs::write(dir.join("wide.png"), png_bytes(4, 4, [0, 0, 0, 255])).unwrap();
-        assert!(sampler.find_source("wide.png").is_none());
-        let next = ImageSampler::new(&base);
+        assert!(detect.find_source("wide.png").is_none());
+        let next = sampler(&dir, ImageSamples::Decode, &cache);
         assert!(next.find_source("wide.png").is_some());
-        // The process keeps the decoded pixels, but under a key that follows
-        // the file: one that changed is decoded again.
-        assert!(Rc::ptr_eq(&pixels, &raster(&next, "img/wide.png").unwrap()));
-        std::fs::write(
-            dir.join("img").join("wide.png"),
-            png_bytes(64, 32, [200, 200, 200, 255]),
-        )
-        .unwrap();
-        let changed = raster(&ImageSampler::new(&base), "img/wide.png").unwrap();
-        assert_eq!((changed.width, changed.pixel(0, 0).g), (64, 200.0));
+
+        // The hook never opens the image: it takes the entry `detect` wrote.
+        // The file's bytes are swapped for text under the same size and
+        // modification time, and the hook still answers from the entry.
+        let hook = sampler(&dir, ImageSamples::CacheOnly, &cache);
+        let for_hook = hook.find_source("img/wide.png").expect("the cache has the entry");
+        assert_eq!((for_hook.width, for_hook.height), (1280, 320));
+        assert_eq!(samples_of(&hook, "img/wide.png").unwrap().points[0].g, 20.0);
+        let meta = std::fs::metadata(dir.join("img/wide.png")).unwrap();
+        let fake = vec![b'x'; meta.len() as usize];
+        std::fs::write(dir.join("img/wide.png"), &fake).unwrap();
+        filetime_set(&dir.join("img/wide.png"), meta.modified().unwrap());
+        let hook = sampler(&dir, ImageSamples::CacheOnly, &cache);
+        assert_eq!(
+            samples_of(&hook, "img/wide.png").unwrap().points[0].g,
+            20.0,
+            "the body was never read"
+        );
+        // An image with no entry stays silent in the hook, and is not opened.
+        assert!(hook.find_source("wide.png").is_none());
+        // A changed file misses its entry: `detect` decodes it again (and
+        // finds text, which does not decode: a negative entry).
+        std::fs::write(dir.join("img").join("wide.png"), png_bytes(64, 32, [200, 200, 200, 255])).unwrap();
+        let changed = samples_of(&sampler(&dir, ImageSamples::Decode, &cache), "img/wide.png").unwrap();
+        assert_eq!((changed.width, changed.points[0].g), (64, 200.0));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn filetime_set(path: &Path, to: std::time::SystemTime) {
+        let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        file.set_modified(to).unwrap();
+    }
+
+    #[test]
+    fn samples_average_a_box_inside_each_cell() {
+        // Left half dark, right half light: every sample in the first three
+        // columns is dark and in the last three light, with no seam mixed in.
+        let mut img = image::RgbaImage::from_pixel(600, 300, image::Rgba([240, 240, 240, 255]));
+        for y in 0..300 {
+            for x in 0..300 {
+                img.put_pixel(x, y, image::Rgba([20, 20, 20, 255]));
+            }
+        }
+        let samples = sample_grid(&image::DynamicImage::ImageRgba8(img));
+        for (i, p) in samples.points.iter().enumerate() {
+            let expected = if i % GRID < 3 { 20.0 } else { 240.0 };
+            assert_eq!(p.r, expected, "sample {i}");
+        }
+        // Alpha-weighted: a transparent pixel contributes no color, an
+        // opaque one its own, and the mean alpha is the sample's. The box
+        // is 15 px here (600 / 40), so nine opaque pixels at the first
+        // cell's center sit among transparent ones.
+        let mut img = image::RgbaImage::from_pixel(600, 600, image::Rgba([0, 0, 0, 0]));
+        for y in 49..52 {
+            for x in 49..52 {
+                img.put_pixel(x, y, image::Rgba([200, 100, 0, 255]));
+            }
+        }
+        let samples = sample_grid(&image::DynamicImage::ImageRgba8(img));
+        assert_eq!(samples.points[0].r, 200.0);
+        assert_eq!(samples.points[0].g, 100.0);
+        assert!((samples.points[0].alpha_or_one() - 9.0 / 225.0).abs() < 1e-9);
+        assert_eq!(samples.points[35].alpha_or_one(), 0.0);
+        // A tiny image reads its exact pixels: the box is one pixel.
+        let mut img = image::RgbaImage::from_pixel(12, 12, image::Rgba([0, 0, 0, 255]));
+        img.put_pixel(1, 1, image::Rgba([255, 255, 255, 255]));
+        let samples = sample_grid(&image::DynamicImage::ImageRgba8(img));
+        assert_eq!(samples.points[0].r, 255.0);
+        assert_eq!(samples.points[1].r, 0.0);
+    }
+
+    #[test]
+    fn a_jpeg_cut_short_does_not_decode() {
+        let full = jpeg_bytes(400, 300, [200, 200, 200]);
+        assert!(jpeg_complete(&full));
+        let samples = decode_samples(&full).expect("a whole jpeg decodes");
+        assert!((samples.points[0].r - 200.0).abs() < 3.0);
+        let cut = &full[..full.len() / 3];
+        assert!(!jpeg_complete(cut));
+        assert!(decode_samples(cut).is_none());
+        // A trailer after the end marker is still a complete scan; an end
+        // marker before the scan (a thumbnail's) is not one.
+        let mut trailer = full.clone();
+        trailer.extend_from_slice(b"camera trailer");
+        assert!(jpeg_complete(&trailer));
+        let mut early = vec![0xFF, 0xD8, 0xFF, 0xD9];
+        early.extend_from_slice(cut);
+        assert!(!jpeg_complete(&early));
     }
 
     #[test]
@@ -516,8 +942,24 @@ mod tests {
         assert!(dimensions(Cursor::new(&big)).is_none());
         // The same budget holds at the decode itself, whatever a header
         // said when the source was located.
-        assert!(decode(&big).is_none());
+        assert!(decode_samples(&big).is_none());
         let ok = png_bytes(4000, 3000, [0, 0, 0, 255]);
         assert_eq!(dimensions(Cursor::new(&ok)), Some((4000, 3000)));
+    }
+
+    #[test]
+    fn a_cache_entry_of_another_version_or_grid_reads_as_absent() {
+        let dir = temp_dir("entry");
+        let file = dir.join("e.json");
+        std::fs::write(&file, r#"{"v":99,"grid":6,"w":8,"h":8,"undecodable":true}"#).unwrap();
+        assert!(read_entry(&file, None).is_none());
+        std::fs::write(&file, r#"{"v":1,"grid":8,"w":8,"h":8,"undecodable":true}"#).unwrap();
+        assert!(read_entry(&file, None).is_none());
+        std::fs::write(&file, r#"{"v":1,"grid":6,"len":5,"mtime":"7","w":8,"h":8,"undecodable":true}"#).unwrap();
+        assert!(read_entry(&file, Some((5, 8))).is_none());
+        let entry = read_entry(&file, Some((5, 7))).expect("matching stat");
+        assert!(entry.samples.is_none());
+        assert_eq!((entry.width, entry.height), (8, 8));
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

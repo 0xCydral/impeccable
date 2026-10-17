@@ -14,7 +14,7 @@ use crate::background::{
 use crate::cascade::StyleValues;
 use crate::layer::picture_under_text;
 use crate::dom::{StaticDocument, StaticElement};
-use crate::image_sampling::{ground_label, layer_url, ImageSampler};
+use crate::image_sampling::{ground_label, layer_url, ImageSampler, ImageSource};
 use crate::quality::{
     collapse_ws, is_in_non_rendered_markup, is_visually_hidden, pf0, resolve_font_size_px,
 };
@@ -52,6 +52,7 @@ use impeccable_core::js::{self, parse_float, parse_int};
 use impeccable_core::js_ext_a::num_truthy;
 use impeccable_core::js_ext_b::slice_utf16_prefix;
 use once_cell::sync::Lazy;
+use std::rc::Rc;
 use regex::Regex;
 use std::collections::HashSet;
 
@@ -1237,9 +1238,10 @@ pub fn check_element_colors(
 }
 
 /// The sampled-contrast path (#560): when the text sits on a `url()` layer
-/// the engine can read, measure it against a grid of that image's pixels.
-/// Every gate that needs no IO runs first, the header is read before any
-/// pixel, and nothing is decoded for a layer that is not the ground.
+/// the engine can read, measure it against the grid samples of that image.
+/// The gates up to the pixels are `sampled_ground`'s; the samples come from
+/// the persistent cache, from this process, or from a decode, by the
+/// sampler's mode.
 fn sampled_image_contrast(
     el: &StaticElement<'_>,
     opts: &ColorOpts,
@@ -1248,10 +1250,7 @@ fn sampled_image_contrast(
     if !sampled_contrast::applies(opts) {
         return None;
     }
-    let ground = find_image_ground(el, images.levels())?;
-    if replaced_by_its_image(el) {
-        return None;
-    }
+    let (ground, source) = sampled_ground(el, images)?;
     // The `opacity` of the boxes between the text and the image fades the
     // text, and any fill inside a faded box with it, over the image; the
     // image is not faded (the image element's own opacity fades both alike
@@ -1273,28 +1272,7 @@ fn sampled_image_contrast(
             return None;
         }
     }
-    let source = images.source(el.doc, ground.node, &ground.layer)?;
-    let extents = sampled_contrast::layer_extents(
-        &ground.layer.repeat,
-        &ground.layer.size,
-        &ground.layer.position,
-        source.width as f64,
-        source.height as f64,
-        ground.layer.font_size,
-    );
-    // Over an opaque fallback color the image has to provably fill the box
-    // before its pixels replace that color as the ground. With no such
-    // color, anything that is not decoration is the best evidence there is.
-    let is_ground = if ground.over_opaque_color {
-        sampled_contrast::covers_box(extents)
-    } else {
-        !sampled_contrast::is_decoration(extents)
-    };
-    if !is_ground {
-        return None;
-    }
-    let raster = images.raster(el.doc, ground.node, &ground.layer, &source)?;
-    let points = sampled_contrast::grid_points(raster.width as usize, raster.height as usize);
+    let samples = images.samples(el.doc, ground.node, &ground.layer, &source)?;
     let label = ground_label(&layer_url(el.doc, ground.node, &ground.layer));
     if faded {
         // The fills inside the fade are folded with the text; the image
@@ -1305,24 +1283,57 @@ fn sampled_image_contrast(
             .filter(|(node, _)| *node == ground.node)
             .map(|(_, c)| *c)
             .collect();
-        let pairs: Vec<(Rgba, Rgba)> = points
+        let pairs: Vec<(Rgba, Rgba)> = samples
+            .points
             .iter()
-            .filter_map(|&(x, y)| {
-                let base =
-                    sampled_contrast::composite_sample(raster.pixel(x, y), ground.under, &washes)?;
+            .filter_map(|point| {
+                let base = sampled_contrast::composite_sample(*point, ground.under, &washes)?;
                 Some(fold_opacity(&text, &layers, &base))
             })
             .collect();
-        return sampled_contrast::sampled_contrast_pairs(opts, &label, &pairs, points.len());
+        return sampled_contrast::sampled_contrast_pairs(opts, &label, &pairs, samples.points.len());
     }
     let overlays: Vec<Rgba> = ground.overlays.iter().map(|(_, c)| *c).collect();
-    let samples: Vec<Rgba> = points
+    let grounds: Vec<Rgba> = samples
+        .points
         .iter()
-        .filter_map(|&(x, y)| {
-            sampled_contrast::composite_sample(raster.pixel(x, y), ground.under, &overlays)
-        })
+        .filter_map(|point| sampled_contrast::composite_sample(*point, ground.under, &overlays))
         .collect();
-    sampled_contrast::sampled_contrast(opts, &label, &samples, points.len())
+    sampled_contrast::sampled_contrast(opts, &label, &grounds, samples.points.len())
+}
+
+/// The ground a text element would be sampled against, with its source
+/// located but no pixel read yet: the gates of `sampled_image_contrast`
+/// that need no color options, so the page's distinct images can be
+/// decoded ahead of the rules. Every gate that needs no IO runs first, the
+/// header is read before any pixel, and nothing is decoded for a layer
+/// that is not the ground: over an opaque fallback color the image has to
+/// provably fill the box before its pixels replace that color, and with no
+/// such color anything that is not decoration is the best evidence there
+/// is.
+pub fn sampled_ground(
+    el: &StaticElement<'_>,
+    images: &ImageSampler,
+) -> Option<(ImageGround, Rc<ImageSource>)> {
+    let ground = find_image_ground(el, images.levels())?;
+    if replaced_by_its_image(el) {
+        return None;
+    }
+    let source = images.source(el.doc, ground.node, &ground.layer)?;
+    let extents = sampled_contrast::layer_extents(
+        &ground.layer.repeat,
+        &ground.layer.size,
+        &ground.layer.position,
+        source.width as f64,
+        source.height as f64,
+        ground.layer.font_size,
+    );
+    let is_ground = if ground.over_opaque_color {
+        sampled_contrast::covers_box(extents)
+    } else {
+        !sampled_contrast::is_decoration(extents)
+    };
+    is_ground.then_some((ground, source))
 }
 
 /// The boxes from the text element up to, but not including, the element

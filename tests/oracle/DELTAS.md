@@ -179,6 +179,23 @@ fixture grew with the review of #806 (2026-10-05) and now carries twelve.
 - `detect-dir-json-all-fixtures`, `detect-dir-text-all-fixtures`, `detect-dir-quiet-all-fixtures`, `detect-no-advisory-json`, `detect-no-advisory-text`: the directory sweep picks up the new fixture. Re-recorded after each merge of main (last on 2026-10-15): main's entries plus the fixture's twelve findings and the one below. The text sweeps' regex-only note (`detect-regex-only-note`, #919) counts one more file, 57 to 58: the fixture's `sampled-images/site.css`.
 - `detect-fixture-json-surface-resolution-contrast-html`, `detect-fixture-text-surface-resolution-contrast-html`: 13 to 14. That fixture's `#flag-frosted-tagline` sits on a data-URI backdrop under a 95% fill, which its header called URL-engine only; the static engine now reads it by sampling, `sampled (coarse) 3.1:1 (need 4.5:1) — text #818898 on data:image/png`. A true positive gained, not a new false one: the browser pass flags the same text.
 
+## Recorded 2026-10-18: the edit hook never decodes an image (#560, maintainer review 2)
+
+The sampled-contrast path gained a persistent sample cache and a mode: `detect`
+decodes and writes the cache, every static scan the hook runs reads the cache
+alone and never opens an image file. One new case pins the user-visible
+contract, recorded from the binary and reviewed by hand:
+
+- `hook-edit-html-image-cache` (new): white copy on an uncached light photo.
+  Step 1, `hook`: "No deterministic design-quality issues found", nothing
+  sampled. Step 2, `detect`: the sampled `low-contrast` finding, which writes
+  the cache entry under the case's isolated home. Step 3, `hook`: the
+  `low-contrast` finding, taken from that entry without opening the image.
+
+Sampling the full decode at 36 box-averaged cell centers, in place of a 640px
+thumbnail, moved no golden: the fixture's images are flat or near-flat, and the
+photos' ratios round to the same decimals. Every other golden is unchanged.
+
 ## Recorded 2026-09-12: the URL scan reads the page after the reveal sweep
 
 `crates/browser` now runs the reveal sweep before it captures the page, and
