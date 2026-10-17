@@ -431,6 +431,11 @@ fn step_translation(decls: &DeclMap) -> Option<[TranslateAxis; 3]> {
     }
     let mut out: [TranslateAxis; 3] = [Some((0.0, 0.0)); 3];
     if let Some(t) = &transform {
+        // A matrix carries its translation in its last terms, which this does
+        // not read: every axis is unknown rather than still.
+        if t.contains("matrix") {
+            return Some([None; 3]);
+        }
         for m in TRANSLATE_FN_RE.find_iter(t) {
             let f = m.as_str();
             let Some(open) = f.find('(') else { continue };
@@ -512,8 +517,18 @@ fn keyframes_move_or_resize(body: &str) -> bool {
     let travels = translations.iter().any(|a| {
         translations.iter().any(|b| (0..3).any(|i| axis_travels(a[i], b[i])))
     });
-    let resizes = sizes.iter().any(|(h, _)| *h != sizes[0].0)
-        && sizes.iter().all(|(_, w)| *w == sizes[0].1);
+    // Two spellings of one length (`8px`, `8.0px`) are one size.
+    let same = |a: &str, b: &str| match (css_length_to_px(a), css_length_to_px(b)) {
+        (Some(x), Some(y)) => (x - y).abs() < 1e-6,
+        _ => a == b,
+    };
+    let same_opt = |a: &Option<String>, b: &Option<String>| match (a, b) {
+        (Some(a), Some(b)) => same(a, b),
+        (None, None) => true,
+        _ => false,
+    };
+    let resizes = sizes.iter().any(|(h, _)| !same(h, &sizes[0].0))
+        && sizes.iter().all(|(_, w)| same_opt(w, &sizes[0].1));
     travels || resizes
 }
 

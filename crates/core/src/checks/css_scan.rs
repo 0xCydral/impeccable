@@ -3344,6 +3344,10 @@ mod tests {
         // One height, or one step that translates, decides nothing.
         assert!(pulses("@keyframes h { 0%, 100% { opacity: .4; height: 8px } 50% { opacity: 1 } }"));
         assert!(pulses("@keyframes s { 0% { opacity: 1 } 50% { opacity: .5; transform: translateY(6px) } }"));
+        // Review of #1042, second round: two spellings of one height are one
+        // size, and a matrix step's translation is unknown, not zero.
+        assert!(pulses("@keyframes e { 0%,100% { opacity: .4; height: 8px; width: 8px } 50% { opacity: 1; height: 8.0px; width: 8px } }"));
+        assert!(pulses("@keyframes m { 0%,100% { opacity: .4; transform: translateY(8px) } 50% { opacity: 1; transform: matrix(1, 0, 0, 1, 0, 8) } }"));
     }
 
     /// observations-1004 row 25 (juskoe 10047255): a pulsing box twice as
