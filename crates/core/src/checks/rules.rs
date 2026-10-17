@@ -83,9 +83,12 @@ impl Default for DeclaredCorners {
 
 /// Whether a declaration's property sets a radius: its lowercase name ends in
 /// `radius`. Corner longhands round the box, so they count; a custom property
-/// (`--btn-radius`) only names a value and does not.
+/// (`--btn-radius`) or a preprocessor variable (`$radius`, `@radius`) only
+/// names a value and does not.
 pub fn is_radius_property(prop: &str) -> bool {
-    !prop.starts_with("--") && prop.to_ascii_lowercase().ends_with("radius")
+    !prop.starts_with("--")
+        && prop.starts_with(|c: char| c.is_ascii_alphabetic() || c == '-')
+        && prop.to_ascii_lowercase().ends_with("radius")
 }
 
 impl DeclaredCorners {

@@ -2293,6 +2293,8 @@ function Thumb({ url }: { url?: string }) {
         assert_eq!(at(&format!(".card\n  +border-radius(8px)\n  {bar}\n"), "/x/a.sass"), 0);
         assert_eq!(accents(&format!(".card {{ @apply rounded-lg; {bar} }}\n")), 0);
         assert_eq!(accents(&format!(".btn {{ --btn-border-radius: 6px; {bar} }}\n")), 0);
+        assert_eq!(at(&format!(".b {{ $card-radius: 8px; }} .b {{ {bar} }}\n"), "/x/a.scss"), 0);
+        assert_eq!(at(&format!(".b {{ @card-radius: 8px; {bar} }}\n"), "/x/a.less"), 0);
         assert_eq!(accents(&format!(".card {{ {bar} border-top-left-radius: 8px; }}\n")), 1);
         let tab = format!(".tab-#{{$n}} {{ {bar} }}{gap}.tab-#{{$n}} {{ border-radius: 8px; }}\n");
         assert_eq!(at(&tab, "/x/a.scss"), 0);
