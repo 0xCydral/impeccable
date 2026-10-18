@@ -635,6 +635,10 @@ fn a_filter_between_the_text_and_the_image_stops_the_walk() {
         // A filter above the image element reworks image and text together.
         (".section { filter: contrast(0); }", "<div class=section><div class=hero><p>Copy</p></div></div>", false),
         (".section { filter: blur(1px); }", "<div class=section><div class=hero><p>Copy</p></div></div>", true),
+        // A `display: contents` wrapper generates no box, so its filter
+        // applies to nothing, above the image element as below it.
+        (".section { display: contents; filter: contrast(0); }", "<div class=section><div class=hero><p>Copy</p></div></div>", true),
+        (".wrap { display: contents; filter: contrast(0); }", "<div class=hero><div class=wrap><p>Copy</p></div></div>", true),
         // A blur or a drop shadow leaves the region's mean color where it
         // is (a frosted panel is still the photo, averaged); `none` and the
         // initial value change nothing.
@@ -790,6 +794,31 @@ fn a_shifted_image_is_not_known_to_cover_a_color() {
             assert!(found.is_empty(), "{value}: {found:?}");
         }
     }
+    // The custom property that stands alone is stored in the position slot
+    // too. What it turns out to hold for another slot, the repeat, the
+    // attachment, or the color, is not a position: the image keeps its
+    // default place and covers. A length offset beside the repeat is still
+    // a shift.
+    for (value, sampled) in [
+        ("no-repeat", true),
+        ("center no-repeat", true),
+        ("no-repeat center", true),
+        ("fixed", true),
+        ("0 200px no-repeat", false),
+    ] {
+        let css = format!(
+            ":root {{ --tile: {value}; }} .hero {{ background: #17150f url(light.png) var(--tile); background-size: 100% 100%; }} p {{ color: #fdfdfd; }}"
+        );
+        let found = site.contrast(&css, "<div class=hero><p>White copy</p></div>");
+        if sampled {
+            assert!(sampled_on("light.png", &found), "{value}: {found:?}");
+        } else {
+            assert!(found.is_empty(), "{value}: {found:?}");
+        }
+    }
+    let css = ":root { --brand: #17150f; } .hero { background: url(light.png) var(--brand) no-repeat; background-size: 100% 100%; } p { color: #fdfdfd; }";
+    let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
+    assert!(sampled_on("light.png", &found), "{found:?}");
 }
 
 #[test]

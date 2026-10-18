@@ -937,9 +937,12 @@ fn filters(value: &str) -> bool {
 /// `analyze_level` reads) carries a `filter` that changes colors. A
 /// `backdrop-filter` above reworks what lies behind that ancestor, not what
 /// it contains, so only `filter` counts here.
+/// A color-changing `filter` on an ancestor of `el` that generates a box.
+/// A `display: contents` ancestor has no box, so its filter applies to
+/// nothing, as `analyze_level` reads past one below the image.
 fn ancestor_filters(el: &StaticElement<'_>) -> bool {
     std::iter::successors(el.parent_element(), |e| e.parent_element())
-        .any(|e| filters(sv(e.style(), "filter")))
+        .any(|e| !paints_no_box(e.style()) && filters(sv(e.style(), "filter")))
 }
 
 /// The paint of one element, in isolation from its ancestors.
@@ -1129,9 +1132,9 @@ pub fn find_image_ground(el: &StaticElement<'_>, levels: &LevelCache) -> Option<
                         None => parent_ground,
                     }
                 };
-                // A color-changing `filter` on any ancestor of the image
-                // element reworks the image and the text together, which the
-                // samples cannot show: the walk gives up.
+                // A color-changing `filter` on any boxed ancestor of the
+                // image element reworks the image and the text together,
+                // which the samples cannot show: the walk gives up.
                 if ancestor_filters(&cur) {
                     return None;
                 }

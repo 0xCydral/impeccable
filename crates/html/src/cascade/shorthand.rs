@@ -261,8 +261,9 @@ fn size_component(token: &str) -> String {
 /// repeat, the position, or (see `color_outside_image`) the color: it is
 /// stored in every slot no other token claims, so the compute loop
 /// resolves it and each reader takes what it can read, leaving the rest
-/// unknown. One directly before the size slash can only be the position
-/// and is stored as that.
+/// unknown (the position slot first drops what cannot be a position, see
+/// `position_slot_or_default`). One directly before the size slash can
+/// only be the position and is stored as that.
 fn parse_static_background_layers(value: &str) -> (String, String, String) {
     let mut repeats: Vec<String> = Vec::new();
     let mut sizes: Vec<String> = Vec::new();
@@ -516,6 +517,59 @@ pub fn names_background_geometry(value: &str) -> bool {
             }
         })
 }
+
+/// A `background` shorthand's bare `var()` is stored in the position slot
+/// too when no other token names the position (#560). Resolved, it may hold
+/// what another slot reads instead: a repeat, a size keyword, an attachment
+/// or box keyword, or a color. None of those is a position, so the slot
+/// computes without them, `0% 0%` when nothing is left, and the position
+/// reader sees the position the shorthand named, the default when it named
+/// none, instead of taking a `no-repeat` for a shift that leaves a covering
+/// image unread. A token that still holds a `var()`, and anything else the
+/// shorthand grammar does not name, stays as it is: the reader treats it as
+/// able to shift the image. A value with nothing to drop is returned as it
+/// came.
+pub fn position_slot_or_default(value: &str) -> String {
+    let outside_position = |token: &str| {
+        !VAR_ANYWHERE_RE.is_match(token)
+            && (BG_REPEAT_RE.is_match(token)
+                || BG_SIZE_KEYWORD_RE.is_match(token)
+                || BG_ATTACHMENT_OR_BOX_RE.is_match(token)
+                || COLOR_KEYWORD_RE.is_match(token)
+                || !extract_static_color(token).is_empty())
+    };
+    let mut dropped = false;
+    let layers: Vec<String> = split_layers(value)
+        .iter()
+        .map(|layer| {
+            let tokens = join_slashes(split_tokens(layer).iter().flat_map(|t| unglue(t)).collect());
+            let kept: Vec<&String> = tokens
+                .iter()
+                .filter(|token| {
+                    let drop = outside_position(token);
+                    dropped |= drop;
+                    !drop
+                })
+                .collect();
+            if kept.is_empty() {
+                "0% 0%".to_string()
+            } else {
+                kept.iter().map(|t| t.as_str()).collect::<Vec<_>>().join(" ")
+            }
+        })
+        .collect();
+    if dropped {
+        layers.join(", ")
+    } else {
+        value.to_string()
+    }
+}
+
+static BG_SIZE_KEYWORD_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)^(?:auto|cover|contain)$").expect("BG_SIZE_KEYWORD_RE"));
+// The color keywords `extract_static_color` does not read as a color.
+static COLOR_KEYWORD_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)^(?:transparent|currentcolor)$").expect("COLOR_KEYWORD_RE"));
 
 /// The background color a shorthand names where `expand_static_declaration`
 /// does not look: after the image (`url(x) #17150f`), or as the final layer
@@ -866,4 +920,42 @@ pub fn expand_static_declaration(prop: &str, value: &str) -> Vec<Expanded> {
         return vec![(mapped, v.to_string())];
     }
     Vec::new()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_var_in_the_position_slot_computes_without_what_other_slots_read() {
+        for (resolved, position) in [
+            ("no-repeat", "0% 0%"),
+            ("center no-repeat", "center"),
+            ("no-repeat center", "center"),
+            ("#17150f", "0% 0%"),
+            ("rgba(23, 21, 15, 0.9)", "0% 0%"),
+            ("transparent", "0% 0%"),
+            ("fixed border-box", "0% 0%"),
+            ("cover", "0% 0%"),
+            ("no-repeat, center", "0% 0%, center"),
+            ("0 200px no-repeat", "0 200px"),
+        ] {
+            assert_eq!(position_slot_or_default(resolved), position, "{resolved}");
+        }
+        // Nothing to drop: the value is returned as it came, an unresolved
+        // `var()` and anything the grammar does not name included.
+        for value in [
+            "0% 0%",
+            "center",
+            "right top",
+            "0 200px",
+            "calc(50% - 10px) 0",
+            "var(--pos)",
+            "var(--c, #fff)",
+            "center/cover",
+            "150% 0",
+        ] {
+            assert_eq!(position_slot_or_default(value), value);
+        }
+    }
 }

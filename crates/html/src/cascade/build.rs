@@ -9,7 +9,7 @@
 //! (`customPropMap` is `null`, `overrides` is `null`).
 
 use super::checks_shim::CustomProps;
-use super::shorthand::names_background_geometry;
+use super::shorthand::{names_background_geometry, position_slot_or_default};
 use super::{
     apply_static_declaration, collect_static_css_rules, collect_static_css_rules_from,
     compare_static_priority, is_static_inherited_prop, make_default_style,
@@ -397,17 +397,26 @@ fn mark_pseudo_rule(
     }
 }
 
-/// A `background` shorthand's bare `var()` beside its image is stored in the
-/// color slot as well as the repeat slot (#560). Resolved to background
-/// geometry (a repeat, position, size, attachment, or box token), it held
-/// the latter and the shorthand named no color: the slot computes as
-/// `transparent`, so every reader of `backgroundColor` sees exactly that,
-/// and none takes a keyword for an unreadable color.
-fn color_slot_or_transparent(prop: &str, value: String) -> String {
-    if prop == "backgroundColor" && names_background_geometry(&value) {
-        "transparent".to_string()
-    } else {
-        value
+/// A `background` shorthand's bare `var()` beside its image is stored in
+/// every slot no other token claims (#560): the repeat, the position, and
+/// the color. Resolved, it held one of them, and the other slots compute as
+/// if the shorthand had named nothing there, so each reader sees what the
+/// shorthand named, the default when it named none:
+///
+/// - the color slot computes as `transparent` when it resolves to
+///   background geometry (a repeat, position, size, attachment, or box
+///   token), so every reader of `backgroundColor` sees exactly that and
+///   none takes a keyword for an unreadable color;
+/// - the position slot computes without a repeat, size keyword, attachment,
+///   box, or color token, `0% 0%` when nothing is left
+///   (`position_slot_or_default`), so the position reader does not take a
+///   `no-repeat` for a shift and leave a covering image unread;
+/// - the repeat reader reads keywords only, so that slot needs nothing.
+fn shorthand_slot_or_default(prop: &str, value: String) -> String {
+    match prop {
+        "backgroundColor" if names_background_geometry(&value) => "transparent".to_string(),
+        "backgroundPosition" => position_slot_or_default(&value),
+        _ => value,
     }
 }
 
@@ -741,7 +750,7 @@ fn compute_styles(
                 parent_style.as_deref(),
                 Some(&values),
             );
-            let next = color_slot_or_transparent(prop, next);
+            let next = shorthand_slot_or_default(prop, next);
             values.insert(prop.clone(), next);
         }
 
@@ -763,7 +772,7 @@ fn compute_styles(
                     parent_style.as_deref(),
                     Some(&values),
                 );
-                let next = color_slot_or_transparent(prop, next);
+                let next = shorthand_slot_or_default(prop, next);
                 if values.get(prop).map(|s| s.as_str()) == Some(next.as_str()) {
                     continue;
                 }
