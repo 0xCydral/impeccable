@@ -1236,19 +1236,41 @@ fn pattern_finding_stands(
     Some(Some(matches))
 }
 
-/// Whether `el` (the host, for a `::before` / `::after` selector) computes a
-/// repeating gradient as its background or mask image. A Dom that recorded
-/// none of those values answers yes.
+/// Whether the box a stripe selector names on `el` computes a repeating
+/// gradient as its background or mask image: the `::before` / `::after`
+/// box for a part of the selector list that names one, `el` itself for a
+/// part that does not. A value the Dom did not record answers yes: a host
+/// with none of its images recorded, or a pseudo-element whose mask the
+/// capture predates.
 fn repeating_gradient_applies(dom: &dyn Dom, el: ElId, selector: &str) -> bool {
-    let lower = selector.to_ascii_lowercase();
-    let mut values = vec![dom.style(el, "backgroundImage"), dom.style(el, "maskImage")];
-    for (needle, pseudo) in [(":before", "::before"), (":after", "::after")] {
-        if lower.contains(needle) {
-            values.push(dom.pseudo_style(el, pseudo, "backgroundImage").unwrap_or_default());
+    let repeats = |v: &str| v.to_ascii_lowercase().contains("repeating-");
+    let host = || {
+        let values = [
+            dom.style(el, "backgroundImage"),
+            dom.style(el, "maskImage"),
+            dom.style(el, "webkitMaskImage"),
+        ];
+        values.iter().all(|v| v.is_empty()) || values.iter().any(|v| repeats(v))
+    };
+    let pseudo = |name: &str| {
+        let read = |prop: &str| dom.pseudo_style(el, name, prop).unwrap_or_default();
+        let content = read("content");
+        if content == "none" || content == "normal" {
+            return false;
         }
-    }
-    values.iter().all(|v| v.is_empty())
-        || values.iter().any(|v| v.to_ascii_lowercase().contains("repeating-"))
+        let mask = read("maskImage");
+        mask.is_empty() || repeats(&mask) || repeats(&read("backgroundImage"))
+    };
+    selector.split(',').any(|part| {
+        let lower = part.to_ascii_lowercase();
+        if lower.contains(":before") {
+            pseudo("::before")
+        } else if lower.contains(":after") {
+            pseudo("::after")
+        } else {
+            host()
+        }
+    })
 }
 
 /// [`scoped_html_pattern_findings`] keeping each finding's selector and the
@@ -3015,6 +3037,46 @@ mod tests {
         assert!(run("none").is_empty());
         assert_eq!(
             run("repeating-linear-gradient(45deg, rgb(0, 0, 0) 0px, rgb(0, 0, 0) 2px, rgb(255, 255, 255) 2px, rgb(255, 255, 255) 4px)"),
+            vec!["repeating-stripes-gradient"]
+        );
+    }
+
+    /// Third review of #1042: a `::before` stripe is judged by the
+    /// pseudo-element's own paint, its mask included, never the host's.
+    #[test]
+    fn a_pseudo_stripe_is_judged_by_the_pseudo_element() {
+        const STRIPES: &str = "repeating-linear-gradient(90deg, rgb(0, 0, 0) 0px, rgb(0, 0, 0) 2px, rgba(0, 0, 0, 0) 2px, rgba(0, 0, 0, 0) 4px)";
+        let run = |host_image: &str, pseudo: &[(&str, &str)]| {
+            let mut d = FakeDom::new();
+            let (html, body) = d.with_page();
+            d.set_rect(html, 0.0, 0.0, 1280.0, 2000.0);
+            d.set_rect(body, 0.0, 0.0, 1280.0, 2000.0);
+            d.el_mut(html).scroll_width = 1280.0;
+            let card = d.add(Some(body), "div");
+            d.add_selector(card, ".card");
+            d.set_rect(card, 0.0, 100.0, 200.0, 40.0);
+            d.set_styles(card, &[("backgroundImage", host_image), ("maskImage", "none")]);
+            for (prop, value) in pseudo {
+                d.set_pseudo_style(card, "::before", prop, value);
+            }
+            d.html_for_patterns = "<html><head><style>\
+.card::before { content: \"\"; background: black; mask-image: repeating-linear-gradient(90deg, black 0 2px, transparent 2px 4px) }\
+</style></head><body><div class=\"card\"></div></body></html>"
+                .to_string();
+            scoped_html_pattern_findings(&d).into_iter().map(|f| f.type_).collect::<Vec<_>>()
+        };
+        let drawn = |mask: &'static str| {
+            vec![("content", "\"\""), ("backgroundImage", "none"), ("maskImage", mask)]
+        };
+        // Stripes drawn through the pseudo-element's mask, host plain.
+        assert_eq!(run("none", &drawn(STRIPES)), vec!["repeating-stripes-gradient"]);
+        // The pseudo rule did not apply; the host's own stripes say nothing.
+        assert!(run(STRIPES, &drawn("none")).is_empty());
+        // No pseudo box at all.
+        assert!(run(STRIPES, &[("content", "none")]).is_empty());
+        // A capture that predates the pseudo mask column lets it stand.
+        assert_eq!(
+            run("none", &[("content", "\"\""), ("backgroundImage", "none")]),
             vec!["repeating-stripes-gradient"]
         );
     }
