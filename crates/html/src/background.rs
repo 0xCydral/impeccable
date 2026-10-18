@@ -15,7 +15,7 @@ use impeccable_core::checks::measures::{
     parse_radius_token_px, CustomProps, ROOT_FONT_SIZE_PX,
 };
 use impeccable_core::checks::rules::Corners;
-use impeccable_core::checks::sampled_contrast::{uniform_wash, wash_fills_box};
+use impeccable_core::checks::sampled_contrast::{repeat_tiles, uniform_wash, wash_fills_box};
 use impeccable_core::color::{
     composite_color_over, is_no_paint_color_value, parse_any_color, parse_gradient_colors,
     parse_rgb, split_top_level_commas, Rgba,
@@ -950,6 +950,41 @@ fn ancestor_filters(el: &StaticElement<'_>) -> bool {
 }
 
 /// The paint of one element, in isolation from its ancestors.
+/// Per axis, whether a layer with these entries may leave the element's
+/// padding to what is beneath it: positioned inside the padding by
+/// `background-origin: content-box` on an axis it does not tile along (a
+/// tiled axis fills the padding box wherever the tiles start), or clipped to
+/// the content box by `background-clip: content-box` on every axis, with
+/// padding on that axis (any value not known to be zero). Text positioned
+/// in that padding is not under the layer, and without layout the model
+/// cannot tell it from text in the content box.
+pub(crate) fn layer_inset_by_padding(
+    style: &StyleValues,
+    origin: &str,
+    clip: &str,
+    repeat: &str,
+) -> (bool, bool) {
+    let inside = origin.eq_ignore_ascii_case("content-box");
+    let clipped = clip.eq_ignore_ascii_case("content-box");
+    if !inside && !clipped {
+        return (false, false);
+    }
+    let padded = |sides: [&str; 2]| sides.iter().any(|side| !zero_length(sv(style, side)));
+    let (tiles_x, tiles_y) = repeat_tiles(repeat);
+    let inset = |tiles: bool, padded: bool| padded && (clipped || (inside && !tiles));
+    (
+        inset(tiles_x, padded(["paddingLeft", "paddingRight"])),
+        inset(tiles_y, padded(["paddingTop", "paddingBottom"])),
+    )
+}
+
+/// A padding the box does not have: zero in any unit. What layout would
+/// have to resolve (`var()`, `calc()`) is not known to be zero.
+fn zero_length(value: &str) -> bool {
+    let value = js::trim(value);
+    value.is_empty() || (js::parse_float(value) == 0.0 && !value.contains('('))
+}
+
 /// The `background-clip` list, the prefixed form first where it is set, as
 /// the text-clip gate reads it.
 pub(crate) fn background_clip(style: &StyleValues) -> &str {
@@ -1024,6 +1059,14 @@ pub fn analyze_level(cur: &StaticElement<'_>) -> LevelPaint {
                 let size = layer_entry(sv(style, "backgroundSize"), index);
                 let position = layer_entry(sv(style, "backgroundPosition"), index);
                 if !wash_fills_box(&repeat, &size, &position, font_size) {
+                    return LevelPaint::Stop;
+                }
+                // A wash painted inside the padding tints the content box
+                // and not the padding, and the walk cannot place the text.
+                let origin = layer_entry(sv(style, "backgroundOrigin"), index);
+                let clip = layer_entry(background_clip(style), index);
+                let wash_inset = layer_inset_by_padding(style, &origin, &clip, &repeat);
+                if wash_inset.0 || wash_inset.1 {
                     return LevelPaint::Stop;
                 }
                 washes.push(wash);

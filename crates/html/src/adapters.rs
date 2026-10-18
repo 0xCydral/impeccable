@@ -6,6 +6,7 @@
 //! and the computed style and hands plain data over.
 
 use crate::background::{
+    layer_inset_by_padding,
     a_ge, a_gt, find_image_ground, read_cascade_background_color, read_own_background_color,
     resolve_background,
     resolve_border_radius_px, resolve_side_accent_corners, resolve_text_gradient_stops,
@@ -1316,47 +1317,21 @@ fn sampled_image_contrast(
 /// when it comes to that), text at or under alpha 0.1, emoji-only or
 /// glyph-only text, and text clipped to its background. A `true` here is
 /// not a verdict: the rule loop applies every gate again.
-/// The layer's extents on an element whose padding it does not paint.
-/// `background-origin: content-box` positions the layer inside the padding,
-/// which an axis it does not tile along leaves to the color beneath, and
-/// `background-clip: content-box` clips every axis to the content box. Text
-/// positioned in that padding is not over the image, and without layout
-/// the model cannot tell it from text in the content box, so an axis with
-/// padding (any value not known to be zero) is not known to be covered.
+/// The layer's extents on an element whose padding it does not paint: an
+/// axis `layer_inset_by_padding` names is not known to be covered.
 fn inset_by_padding(
     el: &StaticElement<'_>,
     ground: &ImageGround,
     (x, y): (Extent, Extent),
 ) -> (Extent, Extent) {
-    let inside = ground.layer.origin.eq_ignore_ascii_case("content-box");
-    let clipped = ground.layer.clip.eq_ignore_ascii_case("content-box");
-    if !inside && !clipped {
-        return (x, y);
-    }
     let Some(host) = el.doc.element(ground.node) else {
         return (x, y);
     };
-    let style = host.style();
-    let padded = |sides: [&str; 2]| sides.iter().any(|side| !zero_length(sv(style, side)));
-    let (tiles_x, tiles_y) = sampled_contrast::repeat_tiles(&ground.layer.repeat);
-    let inset = |extent: Extent, tiles: bool, padded: bool| {
-        if padded && (clipped || (inside && !tiles)) {
-            Extent::Unknown
-        } else {
-            extent
-        }
-    };
-    (
-        inset(x, tiles_x, padded(["paddingLeft", "paddingRight"])),
-        inset(y, tiles_y, padded(["paddingTop", "paddingBottom"])),
-    )
-}
-
-/// A padding the box does not have: zero in any unit. What layout would
-/// have to resolve (`var()`, `calc()`) is not known to be zero.
-fn zero_length(value: &str) -> bool {
-    let value = js::trim(value);
-    value.is_empty() || (parse_float(value) == 0.0 && !value.contains('('))
+    let layer = &ground.layer;
+    let (inset_x, inset_y) =
+        layer_inset_by_padding(host.style(), &layer.origin, &layer.clip, &layer.repeat);
+    let inset = |extent: Extent, inset: bool| if inset { Extent::Unknown } else { extent };
+    (inset(x, inset_x), inset(y, inset_y))
 }
 
 // Only the decoding sampler's pre-pass calls this; the stub built without

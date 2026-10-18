@@ -975,6 +975,27 @@ fn a_shifted_wash_does_not_tint_every_sample() {
             assert!(found.is_empty(), "{layer}: {found:?}");
         }
     }
+    // A wash painted inside the padding tints the content box and leaves
+    // the padding to the untinted image, where positioned dark copy reads
+    // fine: the walk gives up, as for the image below it. It tints every
+    // sample again without padding, or when it tiles over the padding box.
+    let wash = "linear-gradient(rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0.6))";
+    for (rule, sampled) in [
+        (format!(".hero {{ padding: 24px; background: {wash} center / 100% 100% no-repeat, url(light.png); background-clip: content-box, border-box; }}"), false),
+        (format!(".hero {{ padding: 24px; background: {wash} center / 100% 100% no-repeat, url(light.png); background-origin: content-box, padding-box; }}"), false),
+        (format!(".hero {{ padding: 24px; background: {wash} center / 100% 100% no-repeat content-box, url(light.png); }}"), false),
+        (format!(".hero {{ padding: 0; background: {wash} center / 100% 100% no-repeat, url(light.png); background-clip: content-box, border-box; }}"), true),
+        (format!(".hero {{ padding: 24px; background: {wash} repeat, url(light.png); background-origin: content-box, padding-box; }}"), true),
+        // The image's own entry in the list is read for the image.
+        (format!(".hero {{ padding: 24px; background: {wash} center / 100% 100% no-repeat, url(light.png); background-clip: border-box, content-box; }}"), false),
+    ] {
+        let found = site.contrast(&format!("{rule} {dark_text}"), "<div class=hero><p>Dark copy</p></div>");
+        if sampled {
+            assert!(sampled_on("light.png", &found), "{rule}: {found:?}");
+        } else {
+            assert!(found.is_empty(), "{rule}: {found:?}");
+        }
+    }
 }
 
 #[test]
