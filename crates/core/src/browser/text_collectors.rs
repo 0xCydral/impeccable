@@ -464,7 +464,8 @@ const ARTICLE_HOLDER_SELECTOR: &str = "a,button,li,[role=\"listitem\"],[role=\"o
 /// [`ARTICLE_WRAPPER_LEVELS`] wrappers past it whose only element child is
 /// the box below (a card component drawn on a `div` or `a` around the
 /// article). The walk stops at a box that holds anything else, the grid or
-/// section the cards sit in.
+/// section the cards sit in, after asking it once: drawn, and holding no
+/// other article (an image over the article), it is the card.
 fn in_an_unpainted_article(dom: &dyn Dom, heading: ElId, label: ElId) -> bool {
     let Ok(Some(item)) = dom.closest(heading, KICKER_CARD_CONTEXT_SELECTOR) else {
         return false;
@@ -489,7 +490,21 @@ fn in_an_unpainted_article(dom: &dyn Dom, heading: ElId, label: ElId) -> bool {
     let mut below = item;
     for _ in 0..ARTICLE_WRAPPER_LEVELS {
         let Some(up) = dom.parent(below) else { break };
-        if Some(up) == body || dom.children(up).as_slice() != [below] {
+        if Some(up) == body {
+            break;
+        }
+        if dom.children(up).as_slice() != [below] {
+            // A drawn box that holds the article beside other content but
+            // no other article (an image over an unpainted article) still
+            // draws the card; the grid or section of articles does not.
+            let other_article = dom
+                .query_all(Some(up), "article")
+                .unwrap_or_default()
+                .into_iter()
+                .any(|a| a != item && !dom.contains(item, a) && !dom.contains(a, item));
+            if !other_article && draws_a_box(dom, up) {
+                return false;
+            }
             break;
         }
         if draws_a_box(dom, up) {
@@ -1129,7 +1144,7 @@ mod tests {
             for (i, text) in texts.iter().enumerate() {
                 let parent = match wrapper {
                     Some(tag) => {
-                        let w = d.add(Some(grid), tag);
+                        let w = d.add(Some(grid), tag.trim_end_matches("+img"));
                         d.set_styles(
                             w,
                             &[
@@ -1138,6 +1153,11 @@ mod tests {
                                 ("backgroundColor", "rgb(243, 239, 230)"),
                             ],
                         );
+                        // A card drawn around an image and an unpainted
+                        // article (second review of round 11).
+                        if tag.ends_with("+img") {
+                            d.add(Some(w), "img");
+                        }
                         w
                     }
                     None => grid,
@@ -1164,6 +1184,7 @@ mod tests {
         assert_eq!(build(None, ["01", "02", "03"]), 3, "bare articles");
         assert_eq!(build(Some("a"), ["01", "02", "03"]), 0, "a link around each article");
         assert_eq!(build(Some("div"), ["#1", "#2", "#3"]), 0, "a drawn div around each article");
+        assert_eq!(build(Some("div+img"), ["01", "02", "03"]), 0, "a drawn card holding an image and the article");
         assert_eq!(build(None, ["#1 Rated", "#2 Rated", "#3 Rated"]), 0, "a ranking word");
         assert_eq!(build(None, ["#1 Fast", "#2 Fast", "#3 Fast"]), 0, "one word repeated");
         assert_eq!(build(None, ["#1 Plan", "#2 Build", "#3 Ship"]), 3, "named sections");

@@ -4630,11 +4630,11 @@ fn spill_does_harm(dom: &dyn Dom, el: ElId, box_: (f64, f64), reach: (f64, f64))
     // viewport edge (or widens the page past it) or runs into another box
     // is a spill a reader trips on.
     if is_code_text(dom, el) {
-        return !spill_is_clipped(dom, el, reach)
+        return !spill_is_clipped(dom, el, reach, Some(tolerance))
             && (spill_reaches_viewport_edge(dom, (spills_left, spills_right), reach, tolerance)
                 || spill_meets_another_box(dom, el, box_, reach, (spills_left, spills_right), tolerance));
     }
-    spill_is_clipped(dom, el, reach)
+    spill_is_clipped(dom, el, reach, None)
         || spill_reaches_viewport_edge(dom, (spills_left, spills_right), reach, tolerance)
         || spill_meets_another_box(dom, el, box_, reach, (spills_left, spills_right), tolerance)
 }
@@ -4645,53 +4645,79 @@ fn is_code_text(dom: &dyn Dom, el: ElId) -> bool {
 }
 
 /// Whether a box that hides or clips x overflow, `el` itself or an ancestor
-/// below the body, cuts the spill: the text reaches past its padding box.
-/// The root and body stand for the viewport, which the edge test covers.
-fn spill_is_clipped(dom: &dyn Dom, el: ElId, reach: (f64, f64)) -> bool {
-    let root = dom.document_element();
-    let body = dom.body();
-    let mut cur = if generates_box(dom, el) { Some(el) } else { dom.parent(el) };
-    while let Some(c) = cur {
-        if Some(c) == root || Some(c) == body {
-            break;
-        }
-        if generates_box(dom, c)
-            && matches!(crate::browser::text_geometry::overflow_x(dom, c).as_str(), "hidden" | "clip")
-        {
-            let r = dom.rect(c);
-            // A clip with no area hides the text outright, which the paint
-            // gate decides.
-            if !(r.all_finite() && r.width > 0.0 && r.height > 0.0) {
-                cur = dom.parent(c);
-                continue;
-            }
-            let client = dom.client_width(c);
-            let (left, right) = if client.is_finite() && client > 0.0 {
-                let l = r.left + dom.client_left(c);
-                (l, l + client)
+/// below the body whose overflow can clip it
+/// ([`crate::browser::painted::clipping_ancestors`]: an absolute or fixed box
+/// escapes a clip below its containing block), cuts the spill: the text
+/// reaches past its padding box. The root and body stand for the viewport,
+/// which the edge test covers. With `inside_viewport` (a tolerance), only a
+/// cut that ends inside the viewport by more than it counts: a page shell
+/// (`#__next`, a `.wrapper`) that hides x overflow cuts at the screen edge,
+/// which is the edge test's case, not a clip the author drew.
+fn spill_is_clipped(dom: &dyn Dom, el: ElId, reach: (f64, f64), inside_viewport: Option<f64>) -> bool {
+    let vw = dom.inner_width();
+    let inside = |cut: f64, from_left: bool| match inside_viewport {
+        Some(tol) if vw.is_finite() && vw > 0.0 => {
+            if from_left {
+                cut > tol
             } else {
-                (r.left, r.right)
-            };
-            // `overflow: clip` paints out to its `overflow-clip-margin`: text
-            // inside the margin shows, so the cut is past it.
-            let margin = if crate::browser::text_geometry::overflow_x(dom, c) == "clip" {
-                dom.style(c, "overflowClipMargin")
-                    .split_whitespace()
-                    .map(parse_float)
-                    .find(|n| n.is_finite())
-                    .filter(|n| *n > 0.0)
-                    .unwrap_or(0.0)
-            } else {
-                0.0
-            };
-            let (left, right) = (left - margin, right + margin);
-            if left.is_finite() && right.is_finite() && (reach.1 > right + 1.0 || reach.0 < left - 1.0) {
-                return true;
+                cut < vw - tol
             }
         }
-        cur = dom.parent(c);
+        _ => true,
+    };
+    let mut clips = vec![el];
+    clips.extend(crate::browser::painted::clipping_ancestors(dom, el));
+    clips.into_iter().any(|c| {
+        let Some((left, right)) = x_clip_range(dom, c, false) else {
+            return false;
+        };
+        (reach.1 > right + 1.0 && inside(right, false)) || (reach.0 < left - 1.0 && inside(left, true))
+    })
+}
+
+/// The x range a box that clips x overflow leaves painted: its padding box,
+/// past it by the clip margin of `overflow: clip` (a margin the capture did
+/// not record clips at the padding box), with `scrolls` also for `auto` and
+/// `scroll`. `clientLeft`, `clientWidth` and the margin are layout sizes, so
+/// under a transform that scales the box they are scaled by its drawn width
+/// over its layout width. `None` when `c` clips nothing on x or has no
+/// measured area: a clip with no area hides the text outright, which the
+/// paint gate decides.
+fn x_clip_range(dom: &dyn Dom, c: ElId, scrolls: bool) -> Option<(f64, f64)> {
+    if !generates_box(dom, c) {
+        return None;
     }
-    false
+    let margin = match crate::browser::text_geometry::overflow_x(dom, c).as_str() {
+        "hidden" => 0.0,
+        "auto" | "scroll" if scrolls => 0.0,
+        "clip" => dom
+            .style(c, "overflowClipMargin")
+            .split_whitespace()
+            .map(parse_float)
+            .find(|n| n.is_finite())
+            .filter(|n| *n > 0.0)
+            .unwrap_or(0.0),
+        _ => return None,
+    };
+    let r = dom.rect(c);
+    if !(r.all_finite() && r.width > 0.0 && r.height > 0.0) {
+        return None;
+    }
+    let layout_width = dom.offset_width(c);
+    let scale = if layout_width.is_finite() && layout_width > 0.0 && (r.width - layout_width).abs() > 1.0 {
+        r.width / layout_width
+    } else {
+        1.0
+    };
+    let client = dom.client_width(c);
+    let (left, right) = if client.is_finite() && client > 0.0 {
+        let l = r.left + dom.client_left(c) * scale;
+        (l, l + client * scale)
+    } else {
+        (r.left, r.right)
+    };
+    let m = margin * scale;
+    (left.is_finite() && right.is_finite()).then_some((left - m, right + m))
 }
 
 /// Whether the spill reaches within `tolerance` of the viewport's side, or
@@ -4792,43 +4818,17 @@ fn spill_meets_another_box(
 /// the boxes clipping x overflow around it leave painted: `el` itself, and
 /// each ancestor below the body whose overflow can clip it (an absolute or
 /// fixed box escapes a clip below its containing block), cut it at their
-/// padding box, or past it by the clip margin of `overflow: clip`. `None`
-/// when nothing is left. A clip with no measured area cuts nothing here;
-/// the paint gate decides what it hides.
+/// padding box ([`x_clip_range`]; a scroll box cuts like a hidden one, as
+/// [`crate::browser::text_geometry::clips_x`] reads it). `None` when nothing is left. A clip with no
+/// measured area cuts nothing here; the paint gate decides what it hides.
 fn clip_x_extent(dom: &dyn Dom, el: ElId, extent: (f64, f64)) -> Option<(f64, f64)> {
     let (mut left, mut right) = extent;
     let mut clips = vec![el];
     clips.extend(crate::browser::painted::clipping_ancestors(dom, el));
     for c in clips {
-        if !generates_box(dom, c) {
-            continue;
-        }
-        let margin = match crate::browser::text_geometry::overflow_x(dom, c).as_str() {
-            "hidden" => 0.0,
-            // A margin the capture did not record clips at the padding box.
-            "clip" => dom
-                .style(c, "overflowClipMargin")
-                .split_whitespace()
-                .map(parse_float)
-                .find(|n| n.is_finite())
-                .filter(|n| *n > 0.0)
-                .unwrap_or(0.0),
-            _ => continue,
-        };
-        let r = dom.rect(c);
-        if !(r.all_finite() && r.width > 0.0 && r.height > 0.0) {
-            continue;
-        }
-        let client = dom.client_width(c);
-        let (l, rr) = if client.is_finite() && client > 0.0 {
-            let l = r.left + dom.client_left(c);
-            (l, l + client)
-        } else {
-            (r.left, r.right)
-        };
-        if l.is_finite() && rr.is_finite() {
-            left = js::math_max(left, l - margin);
-            right = js::math_min(right, rr + margin);
+        if let Some((l, r)) = x_clip_range(dom, c, true) {
+            left = js::math_max(left, l);
+            right = js::math_min(right, r);
         }
     }
     (right > left).then_some((left, right))
@@ -5285,6 +5285,18 @@ mod tests {
         assert_eq!(clip_x_extent(&d, line, (-50.0, 500.0)), Some((-8.0, 208.0)), "clip margin");
         d.set_style(col, "overflowClipMargin", "content-box 0px");
         assert_eq!(clip_x_extent(&d, line, (0.0, 500.0)), Some((0.0, 200.0)), "no margin");
+
+        // Review of #1043: a scroll box cuts what it scrolls away like a
+        // hidden one, and a clip drawn at `scale(2)` paints its 200px layout
+        // width over 400px.
+        d.set_style(col, "overflowX", "auto");
+        assert_eq!(clip_x_extent(&d, line, (0.0, 500.0)), Some((0.0, 200.0)), "auto");
+        d.set_style(col, "overflowX", "scroll");
+        assert_eq!(clip_x_extent(&d, line, (0.0, 500.0)), Some((0.0, 200.0)), "scroll");
+        d.set_style(col, "overflowX", "hidden");
+        d.set_rect(col, 0.0, 0.0, 400.0, 800.0);
+        d.el_mut(col).offset_width = 200.0;
+        assert_eq!(clip_x_extent(&d, line, (0.0, 500.0)), Some((0.0, 400.0)), "scaled clip");
     }
 
     /// observations-42 row 6, lance.com.br: a disabled "Confirmar" button,
@@ -8763,6 +8775,65 @@ mod tests {
         // not clipped and still runs off the viewport.
         assert_eq!(build("clip", "0px", 689.0), 0, "clipped at the padding box");
         assert_eq!(build("clip", "300px", 689.0), 1, "inside the clip margin");
+    }
+
+    /// Second review of #1043: a clip around code counts only where it is
+    /// the author's. A page shell (`#__next`) that hides x overflow cuts the
+    /// code at the screen edge, and a static wrapper that hides overflow
+    /// does not clip an absolute `pre` positioned past it.
+    #[test]
+    fn text_overflow_code_clips_skip_page_shells_and_escaped_wrappers() {
+        let build = |shell: bool, absolute: bool| {
+            let (mut d, body) = page();
+            d.inner_width = 1280.0;
+            let plain = |d: &mut FakeDom, el: ElId, position: &str| {
+                for (k, v) in [
+                    ("display", "block"),
+                    ("position", position),
+                    ("transform", "none"),
+                    ("translate", "none"),
+                    ("scale", "none"),
+                    ("rotate", "none"),
+                    ("perspective", "none"),
+                    ("filter", "none"),
+                    ("backdropFilter", "none"),
+                    ("willChange", "auto"),
+                    ("contain", "none"),
+                ] {
+                    d.set_style(el, k, v);
+                }
+            };
+            let outer = d.add(Some(body), "div");
+            visible(&mut d, outer);
+            plain(&mut d, outer, "relative");
+            d.set_rect(outer, 0.0, 0.0, 1280.0, 400.0);
+            let wrap = d.add(Some(outer), "div");
+            visible(&mut d, wrap);
+            plain(&mut d, wrap, "static");
+            if shell {
+                d.set_rect(wrap, 0.0, 0.0, 1280.0, 400.0);
+                d.el_mut(wrap).client_width = 1280.0;
+            } else {
+                d.set_rect(wrap, 700.0, 100.0, 460.0, 232.0);
+                d.el_mut(wrap).client_width = 460.0;
+            }
+            d.set_styles(wrap, &[("overflowX", "hidden"), ("overflow", "hidden")]);
+            let pre = d.add(Some(wrap), "pre");
+            visible(&mut d, pre);
+            d.set_rect(pre, 716.0, 148.0, 428.0, 80.0);
+            d.el_mut(pre).client_width = 428.0;
+            d.set_styles(pre, &[("whiteSpace", "pre"), ("overflowX", "visible"), ("overflow", "visible"), ("backgroundColor", "rgb(11, 11, 15)")]);
+            d.set_style(pre, "position", if absolute { "absolute" } else { "static" });
+            let code = d.add(Some(pre), "code");
+            d.add_text(code, "$ acme deploy --project my-really-long-project-identifier --region us-east-1");
+            d.set_styles(code, &[("display", "inline"), ("position", "static"), ("fontSize", "13px"), ("opacity", "1"), ("visibility", "visible")]);
+            d.set_rect(code, 716.0, 148.0, 689.0, 80.0);
+            d.set_text_rect(code, 716.0, 148.0, 689.0, 80.0);
+            check_element_text_overflow_dom(&d, code).len()
+        };
+        assert_eq!(build(false, false), 0, "the author's clip inside the viewport");
+        assert_eq!(build(true, false), 1, "a page shell cuts at the screen edge");
+        assert_eq!(build(false, true), 1, "an absolute pre escapes a static wrapper");
     }
 
     /// lockheedmartin.com 10046719: a section heading types itself out, its
