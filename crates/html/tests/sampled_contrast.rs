@@ -692,6 +692,13 @@ fn the_pre_pass_decodes_nothing_for_text_the_rule_never_measures() {
     let body = "<div class=a><a href=/>A link</a></div><div class=b><p class=faint>Faint</p><p>\u{1F600}</p></div>";
     assert!(site.contrast(css, body).is_empty());
     assert_eq!(entries(), 0, "no photo was decoded");
+    // Text the color check never scores: in markup the browser does not lay
+    // out, `visibility: hidden`, or under an opacity that paints nothing.
+    site.png("c.png", 320, 200, LIGHT);
+    let css = ".a { background: url(a.png); } .b { background: url(b.png); } .c { background: url(c.png); } .gone { visibility: hidden; } .clear { opacity: 0; } p { color: #fdfdfd; }";
+    let body = "<div hidden><div class=a><p>Hidden subtree</p></div></div><div class=b><p class=gone>Invisible</p></div><div class=clear><div class=c><p>Transparent</p></div></div>";
+    assert!(site.contrast(css, body).is_empty());
+    assert_eq!(entries(), 0, "no photo behind unscored text was decoded");
     // Measured text over the same photos decodes both.
     let body = "<div class=a><p>One</p></div><div class=b><p>Two</p></div>";
     let css = ".a { background: url(a.png); } .b { background: url(b.png); } p { color: #fdfdfd; }";
@@ -819,6 +826,39 @@ fn a_shifted_image_is_not_known_to_cover_a_color() {
     let css = ":root { --brand: #17150f; } .hero { background: url(light.png) var(--brand) no-repeat; background-size: 100% 100%; } p { color: #fdfdfd; }";
     let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
     assert!(sampled_on("light.png", &found), "{found:?}");
+}
+
+#[test]
+fn a_layer_painted_inside_the_padding_is_not_the_ground() {
+    let site = Site::new("origin");
+    let body = "<div class=hero><p>White copy</p></div>";
+    // `background-origin: content-box` positions the image inside the
+    // padding, which it leaves to the color beneath on an axis it does not
+    // tile along, and `background-clip: content-box` clips it there on
+    // every axis. Text positioned in that padding is not over the image,
+    // and without layout the model cannot tell it from text in the content
+    // box. The image covers again without padding on the axis, when it
+    // tiles along it, or from the padding or border box.
+    let hero = "background: #111 url(light.png) 0 0 / 100% 100%";
+    for (rule, sampled) in [
+        (format!(".hero {{ padding: 24px; {hero} no-repeat; background-origin: content-box; }}"), false),
+        (format!(".hero {{ padding: 0; {hero} no-repeat; background-origin: content-box; }}"), true),
+        (format!(".hero {{ padding: 24px; {hero} repeat; background-origin: content-box; }}"), true),
+        (format!(".hero {{ padding: 24px; {hero} no-repeat; background-origin: padding-box; }}"), true),
+        (format!(".hero {{ padding: 24px; {hero} no-repeat; background-origin: border-box; }}"), true),
+        (format!(".hero {{ padding: 24px; {hero} repeat; background-clip: content-box; }}"), false),
+        (format!(".hero {{ padding: 24px; {hero} no-repeat content-box; }}"), false),
+        (format!(".hero {{ padding: 0 24px; {hero} repeat-y; background-origin: content-box; }}"), false),
+        (format!(".hero {{ padding: 24px 0; {hero} repeat-y; background-origin: content-box; }}"), true),
+        (format!(".hero {{ padding: var(--pad); {hero} no-repeat; background-origin: content-box; }}"), false),
+    ] {
+        let found = site.contrast(&format!("{rule} p {{ color: #fdfdfd; }}"), body);
+        if sampled {
+            assert!(sampled_on("light.png", &found), "{rule}: {found:?}");
+        } else {
+            assert!(found.is_empty(), "{rule}: {found:?}");
+        }
+    }
 }
 
 #[test]

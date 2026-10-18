@@ -823,3 +823,51 @@ fn a_foreign_sheet_resolves_its_urls_against_itself() {
         "url(light.png)"
     );
 }
+
+#[test]
+fn a_box_keyword_in_the_shorthand_is_the_origin() {
+    use impeccable_html::cascade::shorthand::background_longhands;
+    let own = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    };
+    // The first box keyword of a layer is its origin; a layer that names
+    // none is `padding-box` beside one that does; a shorthand with no box
+    // keyword in any layer leaves the origin alone.
+    assert_eq!(
+        background_longhands("background", "url(a.png) no-repeat content-box"),
+        own(&[
+            ("backgroundRepeat", "no-repeat"),
+            ("backgroundSize", "auto"),
+            ("backgroundPosition", "0% 0%"),
+            ("backgroundOrigin", "content-box"),
+        ])
+    );
+    assert_eq!(
+        background_longhands("background", "url(a.png) border-box content-box, url(b.png)"),
+        own(&[
+            ("backgroundRepeat", "repeat, repeat"),
+            ("backgroundSize", "auto, auto"),
+            ("backgroundPosition", "0% 0%, 0% 0%"),
+            ("backgroundOrigin", "border-box, padding-box"),
+        ])
+    );
+    assert_eq!(
+        background_longhands("background", "url(a.png) no-repeat"),
+        own(&[
+            ("backgroundRepeat", "no-repeat"),
+            ("backgroundSize", "auto"),
+            ("backgroundPosition", "0% 0%"),
+        ])
+    );
+    assert_eq!(
+        background_longhands("background-origin", "content-box"),
+        own(&[("backgroundOrigin", "content-box")])
+    );
+    assert_eq!(
+        background_longhands("background-origin", "initial"),
+        own(&[("backgroundOrigin", "padding-box")])
+    );
+}

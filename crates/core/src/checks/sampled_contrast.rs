@@ -171,6 +171,13 @@ fn repeat_axes(repeat: &str) -> (bool, bool) {
 /// percentage from 100 up fills its axis, and any other length fills only
 /// where the layer tiles. A position that can shift the layer off the box
 /// leaves part of it untinted unless the layer tiles along that axis.
+/// Whether a `background-repeat` entry tiles along each axis: what the html
+/// crate asks when a layer is positioned inside the element's padding, since
+/// a tiled axis fills the padding box wherever the tiles start.
+pub fn repeat_tiles(repeat: &str) -> (bool, bool) {
+    repeat_axes(repeat)
+}
+
 pub fn wash_fills_box(repeat: &str, size: &str, position: &str, font_size: f64) -> bool {
     let (repeat_x, repeat_y) = repeat_axes(repeat);
     let in_box = position_stays_in_box(position);

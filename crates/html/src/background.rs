@@ -859,6 +859,10 @@ pub struct ImageLayer {
     pub repeat: String,
     pub size: String,
     pub position: String,
+    /// The layer's `background-origin` and `background-clip` entries, for a
+    /// layer painted inside the element's padding (`sampled_ground`).
+    pub origin: String,
+    pub clip: String,
     /// Uniform washes listed above the image in the same declaration.
     pub washes: Vec<Rgba>,
     /// The element's own background color, painted beneath the image.
@@ -946,6 +950,17 @@ fn ancestor_filters(el: &StaticElement<'_>) -> bool {
 }
 
 /// The paint of one element, in isolation from its ancestors.
+/// The `background-clip` list, the prefixed form first where it is set, as
+/// the text-clip gate reads it.
+pub(crate) fn background_clip(style: &StyleValues) -> &str {
+    let prefixed = sv(style, "webkitBackgroundClip");
+    if prefixed.is_empty() {
+        sv(style, "backgroundClip")
+    } else {
+        prefixed
+    }
+}
+
 pub fn analyze_level(cur: &StaticElement<'_>) -> LevelPaint {
     let style = cur.style();
     // `display: contents` generates no box: its fill and its image paint
@@ -1036,6 +1051,8 @@ pub fn analyze_level(cur: &StaticElement<'_>) -> LevelPaint {
                 repeat: layer_entry(sv(style, "backgroundRepeat"), index),
                 size: layer_entry(sv(style, "backgroundSize"), index),
                 position: layer_entry(sv(style, "backgroundPosition"), index),
+                origin: layer_entry(sv(style, "backgroundOrigin"), index),
+                clip: layer_entry(background_clip(style), index),
                 washes,
                 color,
                 layers_beneath,

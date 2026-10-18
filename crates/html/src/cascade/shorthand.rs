@@ -195,6 +195,11 @@ pub fn parse_static_animation(value: &str) -> StaticAnimation {
     }
 }
 
+// A `background-origin` / `background-clip` box; the first in a shorthand
+// layer is the origin.
+static BG_BOX_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)^(?:border-box|padding-box|content-box)$").expect("BG_BOX_RE")
+});
 static BG_REPEAT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)^(?:repeat|no-repeat|repeat-x|repeat-y|space|round)$").expect("BG_REPEAT_RE")
 });
@@ -263,15 +268,21 @@ fn size_component(token: &str) -> String {
 /// resolves it and each reader takes what it can read, leaving the rest
 /// unknown (the position slot first drops what cannot be a position, see
 /// `position_slot_or_default`). One directly before the size slash can
-/// only be the position and is stored as that.
-fn parse_static_background_layers(value: &str) -> (String, String, String) {
+/// only be the position and is stored as that. The fourth value is the
+/// per-layer `background-origin` list, the first box keyword of a layer or
+/// `padding-box`, and only when some layer names one: a shorthand without
+/// a box keyword leaves the origin as it was (`background_longhands`).
+fn parse_static_background_layers(value: &str) -> (String, String, String, Option<String>) {
     let mut repeats: Vec<String> = Vec::new();
     let mut sizes: Vec<String> = Vec::new();
     let mut positions: Vec<String> = Vec::new();
+    let mut origins: Vec<String> = Vec::new();
+    let mut named_box = false;
     for layer in split_layers(value) {
         let mut repeat: Vec<String> = Vec::new();
         let mut size: Vec<String> = Vec::new();
         let mut position: Vec<String> = Vec::new();
+        let mut boxes: Vec<String> = Vec::new();
         let mut var_token: Option<String> = None;
         let mut in_size = false;
         let tokens: Vec<String> = split_tokens(&layer).iter().flat_map(|t| unglue(t)).collect();
@@ -310,6 +321,10 @@ fn parse_static_background_layers(value: &str) -> (String, String, String) {
                 repeat.push(js::to_lower_case(token));
                 continue;
             }
+            if boxes.len() < 2 && BG_BOX_RE.is_match(token) {
+                boxes.push(js::to_lower_case(token));
+                continue;
+            }
             // A bare `var()` may hold the repeat, a color, or a position;
             // the first one is kept for the repeat slot and none is read as
             // a position.
@@ -340,8 +355,15 @@ fn parse_static_background_layers(value: &str) -> (String, String, String) {
             (true, Some(var)) => var.clone(),
             (true, None) => "0% 0%".into(),
         });
+        named_box |= !boxes.is_empty();
+        origins.push(boxes.into_iter().next().unwrap_or_else(|| "padding-box".into()));
     }
-    (repeats.join(", "), sizes.join(", "), positions.join(", "))
+    (
+        repeats.join(", "),
+        sizes.join(", "),
+        positions.join(", "),
+        named_box.then(|| origins.join(", ")),
+    )
 }
 
 static VAR_HEAD_TOKEN_RE: Lazy<Regex> =
@@ -642,6 +664,11 @@ fn color_outside_image(v: &str) -> Option<String> {
 ///   rule set. A shorthand whose image is a function the engine does not
 ///   read stores that value, so nothing is read through it.
 /// - `backgroundColor` for a color the shorthand names after its image.
+/// - `backgroundOrigin` from the longhand, and from a shorthand that names
+///   a box keyword (the first per layer). A shorthand that names none
+///   leaves an earlier value in place, as `backgroundClip` is left: the
+///   sampled path reads a stale `content-box` as a layer that may not cover
+///   the padding, which errs silent.
 ///
 /// A CSS-wide keyword passes through, and a bare `var()` value is left alone
 /// the way the expansion leaves it.
@@ -662,6 +689,7 @@ pub fn background_longhands(prop: &str, value: &str) -> Vec<Expanded> {
         "background-repeat" => vec![("backgroundRepeat".into(), initial_or(v, "repeat"))],
         "background-size" => vec![("backgroundSize".into(), initial_or(v, "auto"))],
         "background-position" => vec![("backgroundPosition".into(), initial_or(v, "0% 0%"))],
+        "background-origin" => vec![("backgroundOrigin".into(), initial_or(v, "padding-box"))],
         // Not part of the shorthand, so it is never reset by one; the
         // sampled-contrast path stands down on any mode but `normal`.
         "background-blend-mode" => vec![("backgroundBlendMode".into(), v.to_string())],
@@ -708,12 +736,15 @@ fn background_shorthand_longhands(v: &str) -> Vec<Expanded> {
             ("backgroundPosition".into(), initial_or(v, "0% 0%")),
         ];
     }
-    let (repeat, size, position) = parse_static_background_layers(v);
+    let (repeat, size, position, origin) = parse_static_background_layers(v);
     let mut out: Vec<Expanded> = vec![
         ("backgroundRepeat".into(), repeat),
         ("backgroundSize".into(), size),
         ("backgroundPosition".into(), position),
     ];
+    if let Some(origin) = origin {
+        out.push(("backgroundOrigin".into(), origin));
+    }
     if !has_image {
         // Neither a `url()` nor a gradient. A shorthand that names no image
         // clears it. One that names an image the engine does not read

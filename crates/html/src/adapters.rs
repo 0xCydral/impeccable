@@ -37,7 +37,7 @@ use impeccable_core::checks::rules::{
     HoverContrastOpts, IconTileOpts, ItalicSerifOpts, KickerCandidate, MotionOpts, RuleHit,
     SafeTagTextSeen, Sides,
 };
-use impeccable_core::checks::sampled_contrast::{self, Sampled};
+use impeccable_core::checks::sampled_contrast::{self, Extent, Sampled};
 use impeccable_core::checks::text_rules::{
     check_numbered_section_labels, is_kicker_candidate, is_numbered_section_label_candidate,
     parse_numbered_label_text, KickerCandidateInput, NumberedLabelCandidate,
@@ -975,6 +975,23 @@ pub fn check_element_stripe_child(el: &StaticElement<'_>, style: &StyleValues) -
 ///
 /// `images` serves the one branch the JS never had: text whose ground is a
 /// `url()` layer is measured against the image's pixels (#560).
+/// The element's `opacity` multiplied by its ancestors', walked up only
+/// until it is at the floor nothing paints at.
+fn effective_opacity(el: &StaticElement<'_>) -> f64 {
+    let mut eff_opacity = 1.0f64;
+    let mut cur = Some(*el);
+    while let Some(c) = cur {
+        if !(eff_opacity > 0.02) {
+            break;
+        }
+        let op = sv(c.style(), "opacity");
+        let op = if op.is_empty() { "1" } else { op };
+        eff_opacity *= parse_float(op);
+        cur = c.parent_element();
+    }
+    eff_opacity
+}
+
 pub fn check_element_colors(
     el: &StaticElement<'_>,
     style: &StyleValues,
@@ -994,17 +1011,7 @@ pub fn check_element_colors(
     if is_in_non_rendered_markup(el, tag) {
         return Vec::new();
     }
-    let mut eff_opacity = 1.0f64;
-    let mut cur = Some(*el);
-    while let Some(c) = cur {
-        if !(eff_opacity > 0.02) {
-            break;
-        }
-        let op = sv(c.style(), "opacity");
-        let op = if op.is_empty() { "1" } else { op };
-        eff_opacity *= parse_float(op);
-        cur = c.parent_element();
-    }
+    let eff_opacity = effective_opacity(el);
     if eff_opacity <= 0.02 {
         return Vec::new();
     }
@@ -1309,6 +1316,52 @@ fn sampled_image_contrast(
 /// when it comes to that), text at or under alpha 0.1, emoji-only or
 /// glyph-only text, and text clipped to its background. A `true` here is
 /// not a verdict: the rule loop applies every gate again.
+/// The layer's extents on an element whose padding it does not paint.
+/// `background-origin: content-box` positions the layer inside the padding,
+/// which an axis it does not tile along leaves to the color beneath, and
+/// `background-clip: content-box` clips every axis to the content box. Text
+/// positioned in that padding is not over the image, and without layout
+/// the model cannot tell it from text in the content box, so an axis with
+/// padding (any value not known to be zero) is not known to be covered.
+fn inset_by_padding(
+    el: &StaticElement<'_>,
+    ground: &ImageGround,
+    (x, y): (Extent, Extent),
+) -> (Extent, Extent) {
+    let inside = ground.layer.origin.eq_ignore_ascii_case("content-box");
+    let clipped = ground.layer.clip.eq_ignore_ascii_case("content-box");
+    if !inside && !clipped {
+        return (x, y);
+    }
+    let Some(host) = el.doc.element(ground.node) else {
+        return (x, y);
+    };
+    let style = host.style();
+    let padded = |sides: [&str; 2]| sides.iter().any(|side| !zero_length(sv(style, side)));
+    let (tiles_x, tiles_y) = sampled_contrast::repeat_tiles(&ground.layer.repeat);
+    let inset = |extent: Extent, tiles: bool, padded: bool| {
+        if padded && (clipped || (inside && !tiles)) {
+            Extent::Unknown
+        } else {
+            extent
+        }
+    };
+    (
+        inset(x, tiles_x, padded(["paddingLeft", "paddingRight"])),
+        inset(y, tiles_y, padded(["paddingTop", "paddingBottom"])),
+    )
+}
+
+/// A padding the box does not have: zero in any unit. What layout would
+/// have to resolve (`var()`, `calc()`) is not known to be zero.
+fn zero_length(value: &str) -> bool {
+    let value = js::trim(value);
+    value.is_empty() || (parse_float(value) == 0.0 && !value.contains('('))
+}
+
+// Only the decoding sampler's pre-pass calls this; the stub built without
+// the feature decodes nothing ahead.
+#[cfg_attr(not(feature = "image-sampling"), allow(dead_code))]
 pub(crate) fn text_may_be_sampled(el: &StaticElement<'_>) -> bool {
     let tag = el.tag_lower();
     if SAFE_TAGS.contains(&tag.as_str()) {
@@ -1319,6 +1372,14 @@ pub(crate) fn text_may_be_sampled(el: &StaticElement<'_>) -> bool {
         return false;
     }
     let style = el.style();
+    // The color check's own early exits (`check_element_colors`): text it
+    // never scores queues no decode.
+    if sv_opt(style, "visibility") == Some("hidden")
+        || is_in_non_rendered_markup(el, &tag)
+        || effective_opacity(el) <= 0.02
+    {
+        return false;
+    }
     let clip = {
         let a = sv(style, "webkitBackgroundClip");
         if a.is_empty() {
@@ -1359,6 +1420,7 @@ pub fn sampled_ground(
         source.height as f64,
         ground.layer.font_size,
     );
+    let extents = inset_by_padding(el, &ground, extents);
     let is_ground = if ground.over_opaque_color {
         sampled_contrast::covers_box(extents)
     } else {

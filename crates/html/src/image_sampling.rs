@@ -67,7 +67,8 @@ pub const SAMPLE_CACHE_ENV: &str = "IMPECCABLE_SAMPLE_CACHE";
 
 /// What the verdict reads of an image: its intrinsic size and one color per
 /// grid point, row-major over [`grid_points`], each the alpha-weighted mean
-/// of a small box around the point.
+/// of a small box around the point, held at the precision the cache keeps
+/// (see `quantized`), so a warm scan scores exactly what the cold one did.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Samples {
     pub width: u32,
@@ -695,7 +696,7 @@ fn sample_grid(img: &image::DynamicImage) -> Samples {
                 }
             }
             if a > 0.0 {
-                Rgba::new(r / a, g / a, b / a, a / n)
+                quantized(r / a, g / a, b / a, a / n)
             } else {
                 Rgba::new(0.0, 0.0, 0.0, 0.0)
             }
@@ -706,6 +707,19 @@ fn sample_grid(img: &image::DynamicImage) -> Samples {
         height,
         points,
     }
+}
+
+/// A sample at the precision the cache entry holds it: whole channel values
+/// and an alpha in 255ths. `write_entry` stores exactly these, so a verdict
+/// near a cutoff is the same whether the samples came from the decode or
+/// from the entry.
+fn quantized(r: f64, g: f64, b: f64, alpha: f64) -> Rgba {
+    Rgba::new(
+        r.round(),
+        g.round(),
+        b.round(),
+        (alpha * 255.0).round() / 255.0,
+    )
 }
 
 #[cfg(test)]
@@ -885,6 +899,30 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn the_cache_gives_back_what_the_cold_scan_scored() {
+        let dir = temp_dir("precision");
+        let cache = dir.join("cache");
+        // A ramp with translucent rows: every cell's mean is fractional
+        // before it is quantized.
+        let img = image::RgbaImage::from_fn(96, 64, |x, y| {
+            let alpha = if y % 3 == 0 { 90 } else { 255 };
+            image::Rgba([(x * 2) as u8, (y * 3) as u8, ((x + y) % 7 * 30) as u8, alpha])
+        });
+        let mut out = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut out, image::ImageFormat::Png)
+            .unwrap();
+        std::fs::write(dir.join("ramp.png"), out.into_inner()).unwrap();
+        let cold = samples_of(&sampler(&dir, ImageSamples::Decode, &cache), "ramp.png").unwrap();
+        assert!(cold.points.iter().any(|p| p.alpha_or_one() < 1.0));
+        assert!(cold.points.iter().all(|p| p.r.fract() == 0.0 && p.g.fract() == 0.0));
+        // The hook reads the entry; the verdict it scores is the same one.
+        let warm = samples_of(&sampler(&dir, ImageSamples::CacheOnly, &cache), "ramp.png").unwrap();
+        assert_eq!(*cold, *warm);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     fn filetime_set(path: &Path, to: std::time::SystemTime) {
         let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
         file.set_modified(to).unwrap();
@@ -918,7 +956,8 @@ mod tests {
         let samples = sample_grid(&image::DynamicImage::ImageRgba8(img));
         assert_eq!(samples.points[0].r, 200.0);
         assert_eq!(samples.points[0].g, 100.0);
-        assert!((samples.points[0].alpha_or_one() - 9.0 / 225.0).abs() < 1e-9);
+        // Nine of 225 is 0.04, held in 255ths as 10/255 (`quantized`).
+        assert_eq!(samples.points[0].alpha_or_one(), 10.0 / 255.0);
         assert_eq!(samples.points[35].alpha_or_one(), 0.0);
         // A tiny image reads its exact pixels: the box is one pixel.
         let mut img = image::RgbaImage::from_pixel(12, 12, image::Rgba([0, 0, 0, 255]));
