@@ -140,7 +140,11 @@ fn normalize_path(p: &str) -> String {
 const MAX_HEAD_BYTES: u64 = 64 * 1024;
 
 /// Read one HTTP request from the stream. `max_body` caps the body read; a
-/// body over the cap sets `body_truncated` (the caller answers 413).
+/// body over the cap sets `body_truncated` (the caller answers 413). A body
+/// that ends early (EOF or a read timeout before Content-Length bytes, a
+/// chunked body without its terminating chunk, a malformed chunk size) is
+/// not a request: it reads as None and the connection is dropped, so a
+/// handler never acts on part of an upload.
 pub fn read_request(stream: &TcpStream, max_body: usize) -> Option<Request> {
     let mut reader = BufReader::new(stream.try_clone().ok()?).take(MAX_HEAD_BYTES);
     let mut line = String::new();
@@ -182,15 +186,37 @@ pub fn read_request(stream: &TcpStream, max_body: usize) -> Option<Request> {
     let mut reader = reader.into_inner();
     let mut body: Vec<u8> = Vec::new();
     let mut truncated = false;
-    if let Some(len) = headers
+    let content_length = headers
         .get("content-length")
-        .and_then(|v| v.trim().parse::<usize>().ok())
-    {
+        .and_then(|v| v.trim().parse::<usize>().ok());
+    let chunked = content_length.is_none()
+        && headers
+            .get("transfer-encoding")
+            .map(|v| v.to_ascii_lowercase().contains("chunked"))
+            .unwrap_or(false);
+    // A client that sent `Expect: 100-continue` holds its body until told to
+    // go on. Say so whenever the body will be read; an over-cap
+    // Content-Length is refused with the final response instead.
+    let expects_continue = headers
+        .get("expect")
+        .is_some_and(|v| v.eq_ignore_ascii_case("100-continue"));
+    let body_wanted = match content_length {
+        Some(len) => len > 0 && len <= max_body,
+        None => chunked,
+    };
+    if expects_continue && body_wanted {
+        let mut out = stream;
+        if out.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").is_err() || out.flush().is_err() {
+            return None;
+        }
+    }
+    if let Some(len) = content_length {
         if len > max_body {
             truncated = true;
             // Drain what we can so the peer does not see a reset before the
-            // response, then stop.
-            let mut remaining = len;
+            // response, then stop. A client waiting on 100-continue sends
+            // nothing, so there is nothing to drain.
+            let mut remaining = if expects_continue { 0 } else { len };
             let mut buf = [0u8; 8192];
             let mut drained = 0usize;
             while remaining > 0 && drained < max_body + 65536 {
@@ -213,20 +239,20 @@ pub fn read_request(stream: &TcpStream, max_body: usize) -> Option<Request> {
                     Err(_) => break,
                 }
             }
-            body.truncate(read);
+            if read < len {
+                // The upload ended short: never hand on part of it.
+                return None;
+            }
         }
-    } else if headers
-        .get("transfer-encoding")
-        .map(|v| v.to_ascii_lowercase().contains("chunked"))
-        .unwrap_or(false)
-    {
+    } else if chunked {
         loop {
             line.clear();
             if reader.read_line(&mut line).ok()? == 0 {
-                break;
+                // EOF before the terminating chunk.
+                return None;
             }
             let size_str = line.trim().split(';').next().unwrap_or("").trim();
-            let size = usize::from_str_radix(size_str, 16).unwrap_or(0);
+            let size = usize::from_str_radix(size_str, 16).ok()?;
             if size == 0 {
                 // trailer + final CRLF
                 loop {
@@ -265,10 +291,12 @@ pub fn read_request(stream: &TcpStream, max_body: usize) -> Option<Request> {
                 }
             }
             if eof {
-                break;
+                return None;
             }
             line.clear();
-            let _ = reader.read_line(&mut line);
+            if reader.read_line(&mut line).ok()? == 0 {
+                return None;
+            }
         }
     }
     let (path, query) = parse_target(&target);
@@ -902,6 +930,86 @@ mod tests {
         .expect("request");
         assert!(req.body_truncated);
         assert_eq!(req.body, b"a");
+    }
+
+    #[test]
+    fn short_content_length_body_is_not_a_request() {
+        // Valid JSON as far as it goes, then EOF before the declared length.
+        let raw = b"POST /x HTTP/1.1\r\nHost: h\r\nContent-Length: 20\r\n\r\n{\"ok\":true}".to_vec();
+        assert!(read_raw(raw, 1024 * 1024).is_none());
+    }
+
+    #[test]
+    fn unterminated_chunked_body_is_not_a_request() {
+        let raw = b"POST /x HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\nb\r\n{\"ok\":true}\r\n".to_vec();
+        assert!(read_raw(raw, 1024 * 1024).is_none());
+        // Cut inside a chunk, too.
+        let raw = b"POST /x HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\n10\r\n{\"ok\":".to_vec();
+        assert!(read_raw(raw, 1024 * 1024).is_none());
+    }
+
+    #[test]
+    fn malformed_chunk_size_is_not_a_request() {
+        let raw = b"POST /x HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked\r\n\r\nzz\r\nhello\r\n0\r\n\r\n".to_vec();
+        assert!(read_raw(raw, 1024 * 1024).is_none());
+    }
+
+    #[test]
+    fn a_short_upload_is_never_queued() {
+        let server = SerialServer::bind("127.0.0.1:0", 1024).expect("bind");
+        let mut client = TcpStream::connect(server.local_addr()).expect("connect");
+        client
+            .write_all(b"POST /answer HTTP/1.1\r\nHost: h\r\nContent-Length: 20\r\n\r\n{\"ok\":true}")
+            .unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+        // The connection is dropped without an answer.
+        let mut out = Vec::new();
+        let _ = client.read_to_end(&mut out);
+        assert!(out.is_empty(), "{}", String::from_utf8_lossy(&out));
+        assert!(server.recv_timeout(Duration::from_millis(200)).unwrap().is_none());
+    }
+
+    #[test]
+    fn expect_100_continue_is_answered_before_the_body_is_read() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let client = std::thread::spawn(move || {
+            let mut s = TcpStream::connect(addr).expect("connect");
+            s.write_all(b"POST /x HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n")
+                .unwrap();
+            // Send the body only once told to continue, as curl does.
+            s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+            let want = b"HTTP/1.1 100 Continue\r\n\r\n";
+            let mut got = vec![0u8; want.len()];
+            s.read_exact(&mut got).expect("100 Continue before the body");
+            assert_eq!(&got, want);
+            s.write_all(b"hello").unwrap();
+            let mut sink = Vec::new();
+            let _ = s.read_to_end(&mut sink);
+        });
+        let (stream, _) = listener.accept().expect("accept");
+        set_header_timeout(&stream);
+        let req = read_request_deadline(&stream, 1024, Duration::from_secs(5)).expect("request");
+        assert_eq!(req.body, b"hello");
+        drop(stream);
+        client.join().unwrap();
+    }
+
+    #[test]
+    fn expect_100_continue_over_the_cap_is_refused_without_waiting() {
+        // No 100 is sent and nothing is drained: the request comes back
+        // truncated at once for the caller's 413.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let mut s = TcpStream::connect(addr).expect("connect");
+        s.write_all(b"POST /x HTTP/1.1\r\nHost: h\r\nContent-Length: 4096\r\nExpect: 100-continue\r\n\r\n")
+            .unwrap();
+        let (stream, _) = listener.accept().expect("accept");
+        set_header_timeout(&stream);
+        let started = std::time::Instant::now();
+        let req = read_request(&stream, 1024).expect("request");
+        assert!(req.body_truncated);
+        assert!(started.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
