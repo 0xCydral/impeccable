@@ -57,6 +57,9 @@ fn session_id_of(event: &Map<String, Value>) -> Option<Value> {
         .cloned()
 }
 
+/// Cursor's cap on a hook's `additional_context` (characters, after trim).
+const CURSOR_ADDITIONAL_CONTEXT_MAX_CHARS: f64 = 10_000.0;
+
 fn session_key(v: &Option<Value>) -> String {
     match v {
         Some(v) => crate::util::js_string(v),
@@ -145,7 +148,13 @@ pub fn run_hook(rt: &Runtime, stdin: &str) -> RunResult {
         );
     }
 
-    let config = read_config(&project_cwd);
+    let mut config = read_config(&project_cwd);
+    if harness == "cursor" {
+        // Cursor rejects a postToolUse `additional_context` longer than
+        // 10,000 characters and drops it, so a raised `limits.maxChars`
+        // must not push the findings past that.
+        config.limits.max_chars = config.limits.max_chars.min(CURSOR_ADDITIONAL_CONTEXT_MAX_CHARS);
+    }
     if !config.enabled {
         return result(
             &audit,

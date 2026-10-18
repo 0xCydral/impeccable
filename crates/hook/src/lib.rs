@@ -42,7 +42,8 @@ pub fn run_hook(_args: &[String], io: &mut Io, html: &dyn HtmlEngine) -> i32 {
     hook::run(&rt, &stdin, io)
 }
 
-/// `impeccable hook-before-edit` (Cursor preToolUse gate). Exit 0.
+/// `impeccable hook-before-edit` (the retired Cursor preToolUse gate, kept
+/// for manifests not yet migrated to the post-edit hook). Exit 0.
 pub fn run_hook_before_edit(_args: &[String], io: &mut Io, html: &dyn HtmlEngine) -> i32 {
     let stdin = io.stdin().to_string();
     let rt = runtime(io, html);

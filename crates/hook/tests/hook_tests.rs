@@ -457,6 +457,61 @@ fn check_monorepo_design_hook(mode: &str) {
     }
 }
 
+/// A Cursor `postToolUse` envelope as Cursor 3.21 builds it for an agent
+/// file edit (cursor-agent-exec: base request + `tool_name`, `tool_input`,
+/// `tool_output`, `duration`, `tool_use_id`).
+fn cursor_post_tool_use(cwd: &str, file: &str, content: &str) -> String {
+    json!({
+        "conversation_id": "cv-post", "generation_id": "gen-1", "session_id": "cv-post",
+        "hook_event_name": "postToolUse", "cursor_version": "3.21.18",
+        "workspace_roots": [cwd], "user_email": "dev@example.com", "transcript_path": null,
+        "model": "composer-2",
+        "tool_name": "Write", "tool_input": { "file_path": file, "content": content },
+        "tool_output": "{}", "duration": 12, "tool_use_id": "tool-1",
+    })
+    .to_string()
+}
+
+#[test]
+fn cursor_post_tool_use_feeds_findings_back_as_additional_context() {
+    let t = Tmp::new();
+    let cwd = t.path();
+    let file = t.write("src/card.css", SIDE_TAB_CSS);
+    let r = rt(&cwd);
+
+    let res = hook::run_hook(&r, &cursor_post_tool_use(&cwd, &file, SIDE_TAB_CSS));
+
+    let out: Value = serde_json::from_str(&res.stdout).unwrap_or_else(|_| panic!("{}", res.stdout));
+    let keys: Vec<&String> = out.as_object().unwrap().keys().collect();
+    assert_eq!(keys, vec!["additional_context"], "{}", res.stdout);
+    let text = out["additional_context"].as_str().unwrap();
+    assert!(text.contains("side-tab"), "{text}");
+    // Un-tiered: Cursor has no Stop deep pass, so nothing is deferred.
+    assert!(res.audit.get("deferred").is_none_or(|v| v == &json!(0)), "{:?}", res.audit);
+}
+
+#[test]
+fn cursor_additional_context_stays_under_cursors_cap() {
+    let t = Tmp::new();
+    let cwd = t.path();
+    t.write(".impeccable/config.json", r#"{"hook":{"perEditRules":"all","limits":{"maxChars":50000,"maxFindings":1000}}}"#);
+    let css: String = (0..400)
+        .map(|i| format!(".c{i} {{ border-left: 4px solid #6366f1; border-radius: 8px; background: linear-gradient(90deg, #f472b6, #a78bfa); -webkit-background-clip: text; color: transparent; }}\n"))
+        .collect();
+    let file = t.write("src/many.css", &css);
+    let r = rt(&cwd);
+
+    let res = hook::run_hook(&r, &cursor_post_tool_use(&cwd, &file, &css));
+
+    let out: Value = serde_json::from_str(&res.stdout).unwrap();
+    let text = out["additional_context"].as_str().unwrap();
+    assert!(text.encode_utf16().count() <= 10_000, "{}", text.len());
+    // The same edit through Claude's envelope is not clamped, so the cap is
+    // what kept Cursor's text short.
+    let claude = hook::run_hook(&rt(&cwd), &edit_event(&cwd, &file, "s-claude"));
+    assert!(claude.stdout.len() > 10_000, "{}", claude.stdout.len());
+}
+
 #[test]
 fn monorepo_design_post_edit() { check_monorepo_design_hook("post"); }
 
@@ -2312,8 +2367,12 @@ fn admin_on_writes_launcher_manifests_for_every_harness() {
 
     let cursor: Value = serde_json::from_str(&t.read(".cursor/hooks.json")).unwrap();
     assert_eq!(
-        cursor["hooks"]["preToolUse"][0]["command"],
-        json!("\".cursor/skills/impeccable/scripts/impeccable\" hook-before-edit")
+        cursor,
+        json!({"version": 1, "hooks": {"postToolUse": [{
+            "command": "\".cursor/skills/impeccable/scripts/impeccable\" hook",
+            "matcher": "^Write$",
+            "timeout": 5,
+        }]}})
     );
     let github: Value = serde_json::from_str(&t.read(".github/hooks/impeccable.json")).unwrap();
     assert_eq!(
@@ -2503,6 +2562,38 @@ fn admin_on_replaces_legacy_user_hook_before_pruning_project_hook() {
     assert_eq!(command, expected_user_claude_hook_command(&home_text));
     let local: Value = serde_json::from_str(&t.read(".claude/settings.local.json")).unwrap();
     assert!(local.get("hooks").is_none(), "duplicate project hook survived: {local}");
+}
+
+#[test]
+fn admin_on_moves_the_retired_cursor_gate_to_post_tool_use() {
+    let t = Tmp::new();
+    let cwd = t.path();
+    let r = rt(&cwd);
+    std::fs::create_dir_all(t.0.join(".cursor/skills/impeccable")).unwrap();
+    // A pre-migration manifest: the gate on preToolUse beside a foreign hook
+    // on the same event and another on a different one.
+    t.write(
+        ".cursor/hooks.json",
+        r#"{"version":1,"hooks":{"preToolUse":[{"command":"./audit.sh","matcher":"Shell"},{"command":"\".cursor/skills/impeccable/scripts/impeccable\" hook-before-edit","timeout":5}],"stop":[{"command":"./notify.sh"}]}}"#,
+    );
+
+    let (out, _, code) = admin_run(&r, &["on"]);
+
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("Installed or repaired hook manifests for: .cursor."), "{out}");
+    let cursor: Value = serde_json::from_str(&t.read(".cursor/hooks.json")).unwrap();
+    assert_eq!(
+        cursor,
+        json!({"version": 1, "hooks": {
+            "preToolUse": [{"command": "./audit.sh", "matcher": "Shell"}],
+            "stop": [{"command": "./notify.sh"}],
+            "postToolUse": [{
+                "command": "\".cursor/skills/impeccable/scripts/impeccable\" hook",
+                "matcher": "^Write$",
+                "timeout": 5,
+            }],
+        }})
+    );
 }
 
 #[test]
