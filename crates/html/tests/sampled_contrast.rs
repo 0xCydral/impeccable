@@ -654,8 +654,14 @@ fn a_filter_between_the_text_and_the_image_stops_the_walk() {
 fn an_escape_spelling_a_hash_or_a_query_stays_in_the_file_name() {
     let site = Site::new("escaped-hash");
     site.png("hero#light.png", 320, 200, LIGHT);
-    site.png("a?b.png", 320, 200, LIGHT);
-    for (url, file) in [("hero%23light.png", "hero#light.png"), ("a%3Fb.png", "a?b.png")] {
+    // A `?` cannot be part of a file name on Windows; the `#` case covers
+    // the resolver there.
+    let mut cases = vec![("hero%23light.png", "hero#light.png")];
+    if !cfg!(windows) {
+        site.png("a?b.png", 320, 200, LIGHT);
+        cases.push(("a%3Fb.png", "a?b.png"));
+    }
+    for (url, file) in cases {
         let css = format!(".hero {{ background: url({url}); }} p {{ color: #fdfdfd; }}");
         let found = site.contrast(&css, "<div class=hero><p>White copy</p></div>");
         assert!(sampled_on(file, &found), "{url}: {found:?}");
