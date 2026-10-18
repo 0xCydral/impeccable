@@ -1261,16 +1261,65 @@ fn repeating_gradient_applies(dom: &dyn Dom, el: ElId, selector: &str) -> bool {
         let mask = read("maskImage");
         mask.is_empty() || repeats(&mask) || repeats(&read("backgroundImage"))
     };
-    selector.split(',').any(|part| {
-        let lower = part.to_ascii_lowercase();
-        if lower.contains(":before") {
-            pseudo("::before")
-        } else if lower.contains(":after") {
-            pseudo("::after")
-        } else {
-            host()
-        }
+    selector_list_pseudos(selector).into_iter().any(|part| match part {
+        Some(name) => pseudo(name),
+        None => host(),
     })
+}
+
+/// For each part of a selector list (split on commas outside quotes,
+/// brackets and parentheses), the `::before` / `::after` it names at its
+/// top level, if any. A comma inside `:is()` or a `:before` inside an
+/// attribute value (`[data-icon=":before"]`) is not one.
+fn selector_list_pseudos(selector: &str) -> Vec<Option<&'static str>> {
+    let bytes = selector.as_bytes();
+    let mut parts = Vec::new();
+    let mut current: Option<&'static str> = None;
+    let mut quote: Option<u8> = None;
+    let mut depth = 0i32;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'\\' {
+            i += 2;
+            continue;
+        }
+        if let Some(q) = quote {
+            if b == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        match b {
+            b'"' | b'\'' => quote = Some(b),
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth -= 1,
+            b',' if depth <= 0 => parts.push(current.take()),
+            b':' if depth <= 0 => {
+                let rest = &selector[i..];
+                let name = rest.trim_start_matches(':');
+                for (word, pseudo) in [("before", "::before"), ("after", "::after")] {
+                    let ends = name
+                        .as_bytes()
+                        .get(word.len())
+                        .is_none_or(|c| !(c.is_ascii_alphanumeric() || *c == b'-' || *c == b'_'));
+                    if name.len() >= word.len()
+                        && name.as_bytes()[..word.len()].eq_ignore_ascii_case(word.as_bytes())
+                        && ends
+                    {
+                        current = Some(pseudo);
+                    }
+                }
+                i += rest.len() - name.len();
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    parts.push(current);
+    parts
 }
 
 /// [`scoped_html_pattern_findings`] keeping each finding's selector and the
@@ -3039,6 +3088,42 @@ mod tests {
             run("repeating-linear-gradient(45deg, rgb(0, 0, 0) 0px, rgb(0, 0, 0) 2px, rgb(255, 255, 255) 2px, rgb(255, 255, 255) 4px)"),
             vec!["repeating-stripes-gradient"]
         );
+    }
+
+    /// Fourth review of #1042: a selector list splits on its top-level
+    /// commas only, and a pseudo-element counts only outside quotes,
+    /// brackets and parentheses.
+    #[test]
+    fn selector_list_pseudos_reads_the_top_level_only() {
+        let cases: &[(&str, &[Option<&str>])] = &[
+            (".a", &[None]),
+            (".a::before", &[Some("::before")]),
+            (".a:AFTER", &[Some("::after")]),
+            (".a, .b::before", &[None, Some("::before")]),
+            (":is(.a, .b)::before", &[Some("::before")]),
+            (":where(.a, .b), .c:after", &[None, Some("::after")]),
+            (".card:not(.x, .y)", &[None]),
+            ("[data-icon=\":before\"]", &[None]),
+            ("[data-icon=\":before\"]::after", &[Some("::after")]),
+            ("[title='a,b'] .c", &[None]),
+            (".a\\:before", &[None]),
+            (".a:before-ish", &[None]),
+        ];
+        for (selector, want) in cases {
+            assert_eq!(selector_list_pseudos(selector).as_slice(), *want, "{selector:?}");
+        }
+        // The reviewers' cases through the gate: a quoted `:before` paints on
+        // the host; an `:is()` comma does not let the host's stripes stand
+        // in for a pseudo rule that did not apply.
+        let mut d = FakeDom::new();
+        let (_, body) = d.with_page();
+        let el = d.add(Some(body), "div");
+        d.set_styles(el, &[("backgroundImage", "repeating-linear-gradient(90deg, black 0px 2px, white 2px 4px)"), ("maskImage", "none")]);
+        d.set_pseudo_style(el, "::before", "content", "\"\"");
+        d.set_pseudo_style(el, "::before", "backgroundImage", "none");
+        d.set_pseudo_style(el, "::before", "maskImage", "none");
+        assert!(repeating_gradient_applies(&d, el, "[data-icon=\":before\"]"));
+        assert!(!repeating_gradient_applies(&d, el, ":is(.a, .b)::before"));
     }
 
     /// Third review of #1042: a `::before` stripe is judged by the
