@@ -301,6 +301,7 @@
     liveUiRoot,
     uiAppend,
     uiAppendToPage,
+    copyTextViaSelection,
     topLayerHost,
     watchModalDialogs,
     cloneWithoutChrome,
@@ -13475,25 +13476,9 @@ void main() {
   }
 
   // navigator.clipboard exists only in secure contexts, and writeText can
-  // reject even where it exists (no focus, permission). Fall back to a hidden
-  // textarea + execCommand('copy'), which plain-HTTP origins still allow.
-  function copyToClipboardFallback(text) {
-    let ta = null;
-    try {
-      ta = document.createElement('textarea');
-      ta.value = text;
-      ta.setAttribute('readonly', '');
-      ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none;';
-      (document.body || document.documentElement).appendChild(ta);
-      ta.select();
-      return document.execCommand('copy');
-    } catch {
-      return false;
-    } finally {
-      ta?.remove();
-    }
-  }
-
+  // reject even where it exists (no focus, permission). Fall back
+  // to the DOM helpers' selection copy (execCommand), which plain-HTTP origins
+  // still allow and which stays usable under an open modal dialog.
   function copyToClipboard(text) {
     if (!text) return;
     const report = (ok) => showToast(ok ? 'Copied: ' + text : 'Could not copy: ' + text);
@@ -13504,10 +13489,10 @@ void main() {
       }
     } catch { pending = null; }
     if (pending && typeof pending.then === 'function') {
-      pending.then(() => report(true), () => report(copyToClipboardFallback(text)));
+      pending.then(() => report(true), () => report(copyTextViaSelection(text)));
       return;
     }
-    report(copyToClipboardFallback(text));
+    report(copyTextViaSelection(text));
   }
 
   //

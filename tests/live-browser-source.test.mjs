@@ -1249,8 +1249,10 @@ describe('live-browser source contracts', () => {
     const body = SOURCE.match(/function copyToClipboard\(text\) \{[\s\S]*?\n  \}/)?.[0];
     assert.ok(body);
     assert.match(body, /navigator\.clipboard && typeof navigator\.clipboard\.writeText === 'function'/);
-    assert.match(body, /copyToClipboardFallback\(text\)/);
-    assert.match(SOURCE, /document\.execCommand\('copy'\)/);
+    assert.match(body, /copyTextViaSelection\(text\)/);
+    // The fallback is the modal-aware DOM helper (tests/live-top-layer.test.mjs
+    // drives it under an open dialog), not a textarea on <body>.
+    assert.doesNotMatch(SOURCE, /execCommand\('copy'\)/);
   });
 
   it('resets the init guard when session state cannot be created', () => {
