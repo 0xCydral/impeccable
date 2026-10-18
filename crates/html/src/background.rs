@@ -933,6 +933,15 @@ fn filters(value: &str) -> bool {
     !saw_call
 }
 
+/// Whether an ancestor of `el` (not `el` itself, whose own filter
+/// `analyze_level` reads) carries a `filter` that changes colors. A
+/// `backdrop-filter` above reworks what lies behind that ancestor, not what
+/// it contains, so only `filter` counts here.
+fn ancestor_filters(el: &StaticElement<'_>) -> bool {
+    std::iter::successors(el.parent_element(), |e| e.parent_element())
+        .any(|e| filters(sv(e.style(), "filter")))
+}
+
 /// The paint of one element, in isolation from its ancestors.
 pub fn analyze_level(cur: &StaticElement<'_>) -> LevelPaint {
     let style = cur.style();
@@ -1120,6 +1129,12 @@ pub fn find_image_ground(el: &StaticElement<'_>, levels: &LevelCache) -> Option<
                         None => parent_ground,
                     }
                 };
+                // A color-changing `filter` on any ancestor of the image
+                // element reworks the image and the text together, which the
+                // samples cannot show: the walk gives up.
+                if ancestor_filters(&cur) {
+                    return None;
+                }
                 return Some(ImageGround {
                     node: cur.id(),
                     layer: layer.clone(),

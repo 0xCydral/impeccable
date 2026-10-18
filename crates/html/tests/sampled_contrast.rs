@@ -632,6 +632,9 @@ fn a_filter_between_the_text_and_the_image_stops_the_walk() {
         (".wrap { backdrop-filter: brightness(0.1); }", "<div class=hero><div class=wrap><p>Copy</p></div></div>", false),
         (".hero { filter: brightness(0.1); }", "<div class=hero><p>Copy</p></div>", false),
         (".hero { filter: var(--fx); }", "<div class=hero><p>Copy</p></div>", false),
+        // A filter above the image element reworks image and text together.
+        (".section { filter: contrast(0); }", "<div class=section><div class=hero><p>Copy</p></div></div>", false),
+        (".section { filter: blur(1px); }", "<div class=section><div class=hero><p>Copy</p></div></div>", true),
         // A blur or a drop shadow leaves the region's mean color where it
         // is (a frosted panel is still the photo, averaged); `none` and the
         // initial value change nothing.
@@ -759,6 +762,21 @@ fn a_shifted_image_is_not_known_to_cover_a_color() {
     let css = ".hero { background: #17150f url(light.png) center / 100% 100% no-repeat; background-position: 0 200px; } p { color: #fdfdfd; }";
     let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
     assert!(found.is_empty(), "{found:?}");
+    // A position held in a custom property that stands alone among the
+    // shorthand's tokens, the repeat and the color named by others, is read
+    // once the property resolves: a length offset leaves the color as the
+    // ground, a keyword lets the image cover.
+    for (value, sampled) in [("center", true), ("0 200px", false)] {
+        let css = format!(
+            ":root {{ --pos: {value}; }} .hero {{ background: #17150f url(light.png) var(--pos) no-repeat; background-size: 100% 100%; }} p {{ color: #fdfdfd; }}"
+        );
+        let found = site.contrast(&css, "<div class=hero><p>White copy</p></div>");
+        if sampled {
+            assert!(sampled_on("light.png", &found), "{value}: {found:?}");
+        } else {
+            assert!(found.is_empty(), "{value}: {found:?}");
+        }
+    }
     // A position held in a custom property directly before the size slash
     // is read once the property resolves.
     for (value, sampled) in [("center", true), ("0 200px", false)] {

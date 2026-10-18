@@ -483,7 +483,7 @@ fn background_longhands_ride_beside_the_expansion() {
         own(&[
             ("backgroundRepeat", "var(--tile)"),
             ("backgroundSize", "auto"),
-            ("backgroundPosition", "0% 0%"),
+            ("backgroundPosition", "var(--tile)"),
             ("backgroundColor", "var(--tile)")
         ])
     );
@@ -523,7 +523,7 @@ fn background_longhands_ride_beside_the_expansion() {
         own(&[
             ("backgroundRepeat", "no-repeat"),
             ("backgroundSize", "auto"),
-            ("backgroundPosition", "0% 0%"),
+            ("backgroundPosition", "var(--brand)"),
             ("backgroundColor", "var(--brand)")
         ])
     );
@@ -532,7 +532,7 @@ fn background_longhands_ride_beside_the_expansion() {
         own(&[
             ("backgroundRepeat", "var(--x)"),
             ("backgroundSize", "auto"),
-            ("backgroundPosition", "0% 0%"),
+            ("backgroundPosition", "var(--x)"),
             ("backgroundColor", "var(--x)")
         ])
     );
@@ -543,7 +543,7 @@ fn background_longhands_ride_beside_the_expansion() {
         own(&[
             ("backgroundRepeat", "repeat, var(--brand)"),
             ("backgroundSize", "auto, auto"),
-            ("backgroundPosition", "0% 0%, 0% 0%")
+            ("backgroundPosition", "0% 0%, var(--brand)")
         ])
     );
     // A literal color beside the `var()` is the color, whichever comes
@@ -553,7 +553,7 @@ fn background_longhands_ride_beside_the_expansion() {
         own(&[
             ("backgroundRepeat", "var(--tile)"),
             ("backgroundSize", "auto"),
-            ("backgroundPosition", "0% 0%"),
+            ("backgroundPosition", "var(--tile)"),
             ("backgroundColor", "#17150f")
         ])
     );
@@ -562,7 +562,7 @@ fn background_longhands_ride_beside_the_expansion() {
         own(&[
             ("backgroundRepeat", "var(--tile)"),
             ("backgroundSize", "auto"),
-            ("backgroundPosition", "0% 0%"),
+            ("backgroundPosition", "var(--tile)"),
             ("backgroundColor", "rgba(0, 0, 0, 0.5)")
         ])
     );
@@ -571,7 +571,7 @@ fn background_longhands_ride_beside_the_expansion() {
         own(&[
             ("backgroundRepeat", "var(--brand, #fff)"),
             ("backgroundSize", "auto"),
-            ("backgroundPosition", "0% 0%"),
+            ("backgroundPosition", "var(--brand, #fff)"),
             ("backgroundColor", "var(--brand, #fff)")
         ])
     );
@@ -583,16 +583,16 @@ fn background_longhands_ride_beside_the_expansion() {
             ("backgroundPosition", "0% 0%")
         ])
     );
-    // A bare `var()` in a shorthand may hold the repeat: it is stored as the
-    // repeat when no keyword names one and the compute loop resolves it (and
-    // as the color, see above). It is never read as a position, and a
-    // repeat keyword beside it wins.
+    // A bare `var()` in a shorthand may hold the repeat, the position, or
+    // the color: it is stored in every slot no other token claims and the
+    // compute loop resolves it. A repeat keyword or a position component
+    // beside it takes its slot.
     assert_eq!(
         pairs("background", "url(icon.png) var(--repeat)"),
         own(&[
             ("backgroundRepeat", "var(--repeat)"),
             ("backgroundSize", "auto"),
-            ("backgroundPosition", "0% 0%"),
+            ("backgroundPosition", "var(--repeat)"),
             ("backgroundColor", "var(--repeat)")
         ])
     );

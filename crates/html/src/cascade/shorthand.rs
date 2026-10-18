@@ -258,10 +258,11 @@ fn size_component(token: &str) -> String {
 /// the rest of the token kept; any other function is a value and stays
 /// whole, so `/ var(--s)` is stored for the compute loop to resolve instead
 /// of collapsing to `auto`. A bare `var()` among the tokens may hold the
-/// repeat: it is stored as the repeat when no keyword names one, so the
-/// compute loop resolves it and an unresolved one is not read as tiling.
-/// One directly before the size slash can only be the position and is
-/// stored as that.
+/// repeat, the position, or (see `color_outside_image`) the color: it is
+/// stored in every slot no other token claims, so the compute loop
+/// resolves it and each reader takes what it can read, leaving the rest
+/// unknown. One directly before the size slash can only be the position
+/// and is stored as that.
 fn parse_static_background_layers(value: &str) -> (String, String, String) {
     let mut repeats: Vec<String> = Vec::new();
     let mut sizes: Vec<String> = Vec::new();
@@ -321,9 +322,11 @@ fn parse_static_background_layers(value: &str) -> (String, String, String) {
                 position.push(size_component(token));
             }
         }
-        repeats.push(match (repeat.is_empty(), var_token) {
+        // A bare `var()` fills every slot no other token claims, and each
+        // reader takes what it can read once the compute loop resolves it.
+        repeats.push(match (repeat.is_empty(), &var_token) {
             (false, _) => repeat.join(" "),
-            (true, Some(var)) => var,
+            (true, Some(var)) => var.clone(),
             (true, None) => "repeat".into(),
         });
         sizes.push(if size.is_empty() {
@@ -331,10 +334,10 @@ fn parse_static_background_layers(value: &str) -> (String, String, String) {
         } else {
             size.join(" ")
         });
-        positions.push(if position.is_empty() {
-            "0% 0%".into()
-        } else {
-            position.join(" ")
+        positions.push(match (position.is_empty(), &var_token) {
+            (false, _) => position.join(" "),
+            (true, Some(var)) => var.clone(),
+            (true, None) => "0% 0%".into(),
         });
     }
     (repeats.join(", "), sizes.join(", "), positions.join(", "))
