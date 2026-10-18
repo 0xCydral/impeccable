@@ -1211,6 +1211,14 @@ fn pattern_finding_stands(
     if !super::painted::page_form_painted(dom, &f.id, &matches) {
         return None;
     }
+    // A stripe rule inside an `@media` or `@supports` block that does not
+    // apply, or one a later rule overrides, paints nothing on the element
+    // it names: its computed image must carry a repeating gradient.
+    if f.id == "repeating-stripes-gradient"
+        && !matches.iter().any(|&el| repeating_gradient_applies(dom, el, selector))
+    {
+        return None;
+    }
     // A stripe on any edge from the style-text scans reports only
     // on a card rounded away from it, read off the elements it paints.
     if let Some(side) = crate::checks::css_scan::side_stripe_index(f) {
@@ -1226,6 +1234,21 @@ fn pattern_finding_stands(
         }
     }
     Some(Some(matches))
+}
+
+/// Whether `el` (the host, for a `::before` / `::after` selector) computes a
+/// repeating gradient as its background or mask image. A Dom that recorded
+/// none of those values answers yes.
+fn repeating_gradient_applies(dom: &dyn Dom, el: ElId, selector: &str) -> bool {
+    let lower = selector.to_ascii_lowercase();
+    let mut values = vec![dom.style(el, "backgroundImage"), dom.style(el, "maskImage")];
+    for (needle, pseudo) in [(":before", "::before"), (":after", "::after")] {
+        if lower.contains(needle) {
+            values.push(dom.pseudo_style(el, pseudo, "backgroundImage").unwrap_or_default());
+        }
+    }
+    values.iter().all(|v| v.is_empty())
+        || values.iter().any(|v| v.to_ascii_lowercase().contains("repeating-"))
 }
 
 /// [`scoped_html_pattern_findings`] keeping each finding's selector and the
@@ -2965,6 +2988,35 @@ mod tests {
         };
         assert_eq!(run(true), vec!["dark-glow", "repeating-stripes-gradient"]);
         assert!(run(false).is_empty());
+    }
+
+    /// Second review of #1042: a stripe rule for a visible element inside an
+    /// `@media` block that does not apply is not on the page. The element's
+    /// computed image says whether the rule applied.
+    #[test]
+    fn a_stripe_rule_the_element_does_not_compute_is_not_reported() {
+        let run = |image: &str| {
+            let mut d = FakeDom::new();
+            let (html, body) = d.with_page();
+            d.set_rect(html, 0.0, 0.0, 1280.0, 2000.0);
+            d.set_rect(body, 0.0, 0.0, 1280.0, 2000.0);
+            d.el_mut(html).scroll_width = 1280.0;
+            let card = d.add(Some(body), "div");
+            d.add_selector(card, ".card");
+            d.set_rect(card, 0.0, 100.0, 200.0, 40.0);
+            d.set_styles(card, &[("backgroundImage", image), ("maskImage", "none")]);
+            d.html_for_patterns = "<html><head><style>\
+.gone{background:repeating-linear-gradient(45deg,#000 0 2px,#fff 2px 4px)}\
+@media (min-width: 2000px) { .card { background: repeating-linear-gradient(45deg,#000 0 2px,#fff 2px 4px) } }\
+</style></head><body><div class=\"card\"></div></body></html>"
+                .to_string();
+            scoped_html_pattern_findings(&d).into_iter().map(|f| f.type_).collect::<Vec<_>>()
+        };
+        assert!(run("none").is_empty());
+        assert_eq!(
+            run("repeating-linear-gradient(45deg, rgb(0, 0, 0) 0px, rgb(0, 0, 0) 2px, rgb(255, 255, 255) 2px, rgb(255, 255, 255) 4px)"),
+            vec!["repeating-stripes-gradient"]
+        );
     }
 
     /// te.eg: `#5c2d91` section headings under a `#5c2d91` nav bar. The

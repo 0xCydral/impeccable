@@ -133,11 +133,9 @@ pub fn enclosing_css_selector(css_text: &str, index: usize) -> Option<String> {
     // The selector starts after the last `}`, `;` or `{` before its block:
     // the first rule inside `@media (...) {` or `@supports (...) {` follows
     // the at-rule's own brace, not a declaration.
-    let prev_close = [before_open.rfind('}'), before_open.rfind(';'), before_open.rfind('{')]
-        .into_iter()
-        .flatten()
-        .max();
-    let slice_start = prev_close.map(|p| p + 1).unwrap_or(0);
+    // A delimiter in a quoted string (`[data-template*="{"]`) or escaped
+    // (`\{`) bounds nothing.
+    let slice_start = last_unquoted_delimiter(&before_open, b"{};").map(|p| p + 1).unwrap_or(0);
     // Only a grouping at-rule may enclose the rule. Inside a style rule
     // (`.card { & > .stripe { … } }`, CSS nesting) the selector means
     // nothing without its parent, so the match stays unscoped as before.
@@ -150,7 +148,7 @@ pub fn enclosing_css_selector(css_text: &str, index: usize) -> Option<String> {
     if raw.is_empty()
         || raw.starts_with('@')
         || raw.as_bytes()[0].is_ascii_digit()
-        || raw.bytes().any(|b| b == b'{' || b == b'}' || b == b'<')
+        || last_unquoted_delimiter(&raw, b"{}<").is_some()
     {
         return None;
     }
@@ -158,6 +156,33 @@ pub fn enclosing_css_selector(css_text: &str, index: usize) -> Option<String> {
         return None;
     }
     Some(raw)
+}
+
+/// The byte offset of the last of `delims` in `css` outside quoted strings
+/// and escapes.
+fn last_unquoted_delimiter(css: &str, delims: &[u8]) -> Option<usize> {
+    let bytes = css.as_bytes();
+    let mut quote: Option<u8> = None;
+    let mut last = None;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'\\' {
+            i += 2;
+            continue;
+        }
+        match quote {
+            // A newline ends an unterminated string in CSS, so one stray
+            // quote cannot swallow the rest of the sheet.
+            Some(q) if b == q || b == b'\n' => quote = None,
+            Some(_) => {}
+            None if b == b'"' || b == b'\'' => quote = Some(b),
+            None if delims.contains(&b) => last = Some(i),
+            None => {}
+        }
+        i += 1;
+    }
+    last
 }
 
 /// Whether every block still open at the end of `css` (comments already

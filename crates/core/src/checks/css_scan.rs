@@ -3217,6 +3217,12 @@ mod tests {
             // A quoted or escaped brace opens no block.
             (".q::before { content: \"{\"; } .gone { c: d }", 40, Some(".gone")),
             (".q::before { content: '\\{'; } .gone { c: d }", 40, Some(".gone")),
+            // A quoted brace or semicolon in the selector itself bounds
+            // nothing either (second review of #1042).
+            ("[data-template*=\"{\"] { c: d }", 23, Some("[data-template*=\"{\"]")),
+            (".a{b} [title='x;y'] { c: d }", 22, Some("[title='x;y']")),
+            // A stray quote ends at its line.
+            ("a[x=\"] {}\n.c{d}\n.b { c: d }", 21, Some(".b")),
         ];
         for (text, idx, want) in cases {
             assert_eq!(
