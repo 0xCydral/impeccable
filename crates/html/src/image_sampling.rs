@@ -16,7 +16,7 @@
 //! oversized, or undecodable is `None`, and the caller keeps today's skip.
 
 use crate::background::{ImageLayer, LevelCache};
-use crate::cascade::resolve_linked_css_path;
+use crate::cascade::resolve_css_path_exact;
 use crate::dom::StaticDocument;
 use base64::Engine;
 use ego_tree::NodeId;
@@ -224,9 +224,10 @@ impl ImageSampler {
     /// Decode the page's distinct images that the color rule would sample,
     /// in parallel, before the rules run: the cold cost of a page with
     /// several photos falls from their sum to about the slowest one. Only
-    /// an image the gates up to the decode let through (text over a
-    /// `url()` ground that is not decoration) and that no cache holds is
-    /// decoded, on at most four threads, each of which reads its own files,
+    /// an image the gates up to the decode let through (text the color rule
+    /// measures, over a `url()` ground that is not decoration) and that no
+    /// cache holds is decoded, on at most four threads, each of which reads
+    /// its own files,
     /// so no more than four images' bytes are in memory at once however
     /// many a page names; a hook, which never decodes, skips this. The
     /// in-page parallelism does not reach across the files of a directory
@@ -239,7 +240,7 @@ impl ImageSampler {
         let mut jobs: Vec<DecodeJob> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         for el in doc.query_selector_all("*") {
-            if el.direct_text().trim().is_empty() {
+            if !crate::adapters::text_may_be_sampled(&el) {
                 continue;
             }
             let Some((ground, source)) = crate::adapters::sampled_ground(&el, self) else {
@@ -353,7 +354,10 @@ impl ImageSampler {
     }
 
     fn file_source(&self, url: &str) -> Option<ImageSource> {
-        let path = resolve_linked_css_path(&self.base, &percent_decoded_path(url));
+        // The query and fragment are cut from the url as written, before the
+        // escapes are decoded, so a `#` or `?` an escape spells is part of
+        // the file name and the resolver has nothing left to cut.
+        let path = resolve_css_path_exact(&self.base, &percent_decoded_path(url));
         let meta = std::fs::metadata(&path).ok()?;
         if !meta.is_file() || meta.len() > MAX_FILE_BYTES {
             return None;

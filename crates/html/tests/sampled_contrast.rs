@@ -619,6 +619,71 @@ fn a_page_with_several_photos_decodes_them_ahead() {
     assert_eq!(site.contrast_as(&css, body, ImageSamples::CacheOnly).len(), 4);
 }
 
+#[test]
+fn a_filter_between_the_text_and_the_image_stops_the_walk() {
+    let site = Site::new("filters");
+    let hero = ".hero { background: url(light.png); } p { color: #fdfdfd; }";
+    for (rule, body, sampled) in [
+        // A backdrop filter on the text or a wrapper reworks what shows
+        // through behind the text; a filter on the image's box reworks the
+        // image. Neither is in the samples, so the walk gives up.
+        ("p { backdrop-filter: brightness(0.1); }", "<div class=hero><p>Copy</p></div>", false),
+        ("p { -webkit-backdrop-filter: blur(4px) invert(1); }", "<div class=hero><p>Copy</p></div>", false),
+        (".wrap { backdrop-filter: brightness(0.1); }", "<div class=hero><div class=wrap><p>Copy</p></div></div>", false),
+        (".hero { filter: brightness(0.1); }", "<div class=hero><p>Copy</p></div>", false),
+        (".hero { filter: var(--fx); }", "<div class=hero><p>Copy</p></div>", false),
+        // A blur or a drop shadow leaves the region's mean color where it
+        // is (a frosted panel is still the photo, averaged); `none` and the
+        // initial value change nothing.
+        ("p { backdrop-filter: blur(12px); }", "<div class=hero><p>Copy</p></div>", true),
+        (".hero { filter: blur(2px) drop-shadow(0 1px 2px #000); }", "<div class=hero><p>Copy</p></div>", true),
+        ("p { backdrop-filter: none; } .hero { filter: initial; }", "<div class=hero><p>Copy</p></div>", true),
+    ] {
+        let found = site.contrast(&format!("{hero} {rule}"), body);
+        if sampled {
+            assert!(sampled_on("light.png", &found), "{rule}: {found:?}");
+        } else {
+            assert!(found.is_empty(), "{rule}: {found:?}");
+        }
+    }
+}
+
+#[test]
+fn an_escape_spelling_a_hash_or_a_query_stays_in_the_file_name() {
+    let site = Site::new("escaped-hash");
+    site.png("hero#light.png", 320, 200, LIGHT);
+    site.png("a?b.png", 320, 200, LIGHT);
+    for (url, file) in [("hero%23light.png", "hero#light.png"), ("a%3Fb.png", "a?b.png")] {
+        let css = format!(".hero {{ background: url({url}); }} p {{ color: #fdfdfd; }}");
+        let found = site.contrast(&css, "<div class=hero><p>White copy</p></div>");
+        assert!(sampled_on(file, &found), "{url}: {found:?}");
+    }
+}
+
+#[test]
+fn the_pre_pass_decodes_nothing_for_text_the_rule_never_measures() {
+    let site = Site::new("pre-pass-gates");
+    site.png("a.png", 320, 200, LIGHT);
+    site.png("b.png", 320, 200, LIGHT);
+    let entries = || -> usize {
+        std::fs::read_dir(site.0.join("sample-cache"))
+            .map(|d| d.count())
+            .unwrap_or(0)
+    };
+    // Links are SAFE_TAGS, scored only on their own surface; transparent
+    // and emoji-only text is never measured. Two photos behind such text
+    // are not decoded ahead, and the cache stays empty.
+    let css = ".a { background: url(a.png); } .b { background: url(b.png); } .faint { color: rgba(0, 0, 0, 0.05); }";
+    let body = "<div class=a><a href=/>A link</a></div><div class=b><p class=faint>Faint</p><p>\u{1F600}</p></div>";
+    assert!(site.contrast(css, body).is_empty());
+    assert_eq!(entries(), 0, "no photo was decoded");
+    // Measured text over the same photos decodes both.
+    let body = "<div class=a><p>One</p></div><div class=b><p>Two</p></div>";
+    let css = ".a { background: url(a.png); } .b { background: url(b.png); } p { color: #fdfdfd; }";
+    assert_eq!(site.contrast(css, body).len(), 2);
+    assert_eq!(entries(), 2);
+}
+
 /// The measured ratio a sampled snippet reports.
 fn ratio_of(snippet: &str) -> f64 {
     snippet

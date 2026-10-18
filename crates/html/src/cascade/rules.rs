@@ -307,10 +307,14 @@ fn extra_specified_expansions(prop: &str, value: &str) -> Vec<Expanded> {
         "align-self" => vec![("alignSelf".into(), v.to_string())],
         "justify-content" => vec![("justifyContent".into(), v.to_string())],
         "justify-items" => vec![("justifyItems".into(), v.to_string())],
-        // How image-replacement text leaves its box, and a blend the sampled
-        // path cannot reproduce (#560).
+        // How image-replacement text leaves its box, and a blend or a filter
+        // the sampled path cannot reproduce (#560).
         "text-indent" => vec![("textIndent".into(), v.to_string())],
         "mix-blend-mode" => vec![("mixBlendMode".into(), v.to_string())],
+        "filter" => vec![("filter".into(), v.to_string())],
+        "backdrop-filter" | "-webkit-backdrop-filter" => {
+            vec![("backdropFilter".into(), v.to_string())]
+        }
         // `var()` and CSS-wide keywords resolve later, per longhand; the
         // stripe adapter picks the keyword out of the resolved list.
         "flex-flow" | "place-items" | "place-self"

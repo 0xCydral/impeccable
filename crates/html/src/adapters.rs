@@ -1302,6 +1302,37 @@ fn sampled_image_contrast(
     sampled_contrast::sampled_contrast(opts, &label, &grounds, samples.points.len())
 }
 
+/// The text gates of `sampled_contrast::applies` that the element alone can
+/// answer, so the pre-pass queues no photo for text the color rule would
+/// never measure: an element with no text of its own, a `SAFE_TAGS` element
+/// (scored only on its own surface, which the rule loop decodes for lazily
+/// when it comes to that), text at or under alpha 0.1, emoji-only or
+/// glyph-only text, and text clipped to its background. A `true` here is
+/// not a verdict: the rule loop applies every gate again.
+pub(crate) fn text_may_be_sampled(el: &StaticElement<'_>) -> bool {
+    let tag = el.tag_lower();
+    if SAFE_TAGS.contains(&tag.as_str()) {
+        return false;
+    }
+    let text = el.direct_text();
+    if js::trim(&text).is_empty() || is_emoji_only_text(&text) || is_glyph_only_text(&text) {
+        return false;
+    }
+    let style = el.style();
+    let clip = {
+        let a = sv(style, "webkitBackgroundClip");
+        if a.is_empty() {
+            sv(style, "backgroundClip")
+        } else {
+            a
+        }
+    };
+    if clip == "text" {
+        return false;
+    }
+    parse_any_color(sv_opt(style, "color")).map_or(true, |c| c.alpha_or_one() > 0.1)
+}
+
 /// The ground a text element would be sampled against, with its source
 /// located but no pixel read yet: the gates of `sampled_image_contrast`
 /// that need no color options, so the page's distinct images can be

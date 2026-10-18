@@ -885,6 +885,40 @@ fn blends(mode: &str) -> bool {
         })
 }
 
+/// A `filter` or `backdrop-filter` that changes a region's colors: paint
+/// the sampler cannot reproduce. `blur()` and `drop-shadow()` leave a
+/// region's mean color where it is (a frosted panel over a photo is still
+/// the photo's colors, averaged), so a filter made of those alone is read
+/// through; any other function (`brightness()`, `invert()`, `contrast()`,
+/// a `var()` that did not resolve, an SVG `url()`) stops the walk. A
+/// CSS-wide keyword other than `inherit` is the initial value, `none`.
+fn filters(value: &str) -> bool {
+    let v = js::to_lower_case(js::trim(value));
+    if v.is_empty()
+        || matches!(
+            v.as_str(),
+            "none" | "initial" | "unset" | "revert" | "revert-layer"
+        )
+    {
+        return false;
+    }
+    let mut names = v
+        .match_indices('(')
+        .map(|(open, _)| {
+            v[..open]
+                .rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                .next()
+                .unwrap_or("")
+                .to_string()
+        })
+        .peekable();
+    if names.peek().is_none() {
+        // No function at all: not a filter value the engine knows.
+        return true;
+    }
+    names.any(|name| !matches!(name.as_str(), "blur" | "drop-shadow"))
+}
+
 /// The paint of one element, in isolation from its ancestors.
 pub fn analyze_level(cur: &StaticElement<'_>) -> LevelPaint {
     let style = cur.style();
@@ -904,8 +938,14 @@ pub fn analyze_level(cur: &StaticElement<'_>) -> LevelPaint {
         return LevelPaint::Stop;
     }
     // A blend changes what every pixel looks like in a way the sampler
-    // cannot reproduce.
-    if blends(sv(style, "backgroundBlendMode")) || blends(sv(style, "mixBlendMode")) {
+    // cannot reproduce, and so does a filter: a `backdrop-filter` on the
+    // text or a wrapper reworks what shows through behind the text, and a
+    // `filter` on a box reworks the box and everything in it.
+    if blends(sv(style, "backgroundBlendMode"))
+        || blends(sv(style, "mixBlendMode"))
+        || filters(sv(style, "filter"))
+        || filters(sv(style, "backdropFilter"))
+    {
         return LevelPaint::Stop;
     }
     let bg = level_background_color(cur, style, None);

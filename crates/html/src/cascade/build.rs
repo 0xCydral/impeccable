@@ -42,6 +42,13 @@ static REMOTE_HREF_RE: Lazy<Regex> =
 /// invisible to every element-level check.
 pub(crate) fn resolve_linked_css_path(file_dir: &str, href: &str) -> String {
     let stripped = href.split(['?', '#']).next().unwrap_or("");
+    resolve_css_path_exact(file_dir, stripped)
+}
+
+/// [`resolve_linked_css_path`] for a path with no query or fragment left to
+/// cut: an image url's path after its `%XX` escapes are decoded, where a
+/// `#` or `?` is part of the file name (#560).
+pub(crate) fn resolve_css_path_exact(file_dir: &str, stripped: &str) -> String {
     let root_relative = stripped.starts_with('/') && !stripped.starts_with("//");
     if !root_relative {
         return jsp::resolve("/", &[file_dir, stripped]);
