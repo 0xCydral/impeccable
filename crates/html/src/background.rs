@@ -902,21 +902,35 @@ fn filters(value: &str) -> bool {
     {
         return false;
     }
-    let mut names = v
-        .match_indices('(')
-        .map(|(open, _)| {
-            v[..open]
-                .rsplit(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
-                .next()
-                .unwrap_or("")
-                .to_string()
-        })
-        .peekable();
-    if names.peek().is_none() {
-        // No function at all: not a filter value the engine knows.
-        return true;
+    // Only the outer functions are filters: the color inside a
+    // `drop-shadow(0 1px 2px rgba(0, 0, 0, .3))` is its argument, however
+    // it is spelled.
+    let mut depth = 0usize;
+    let mut name = String::new();
+    let mut saw_call = false;
+    for ch in v.chars() {
+        match ch {
+            '(' => {
+                if depth == 0 {
+                    saw_call = true;
+                    if !matches!(name.as_str(), "blur" | "drop-shadow") {
+                        return true;
+                    }
+                }
+                depth += 1;
+                name.clear();
+            }
+            ')' => {
+                depth = depth.saturating_sub(1);
+                name.clear();
+            }
+            c if depth == 0 && (c.is_ascii_alphanumeric() || c == '-') => name.push(c),
+            _ if depth == 0 => name.clear(),
+            _ => {}
+        }
     }
-    names.any(|name| !matches!(name.as_str(), "blur" | "drop-shadow"))
+    // No function at all: not a filter value the engine knows.
+    !saw_call
 }
 
 /// The paint of one element, in isolation from its ancestors.
@@ -1217,6 +1231,31 @@ mod tests {
             "linear-gradient(transparent, transparent)",
         ] {
             assert_eq!(gradient_stops(scrim), None, "{scrim}");
+        }
+    }
+
+    #[test]
+    fn a_filter_stops_the_walk_only_where_it_changes_colors() {
+        for read_through in [
+            "none",
+            "initial",
+            "blur(8px)",
+            "drop-shadow(0 1px 2px #000)",
+            "drop-shadow(0 1px 2px rgba(0, 0, 0, 0.3))",
+            "blur(2px) drop-shadow(0 0 2px rgb(0 0 0 / 50%))",
+        ] {
+            assert!(!filters(read_through), "{read_through}");
+        }
+        for stop in [
+            "brightness(0.1)",
+            "blur(2px) brightness(0.5)",
+            "invert(1)",
+            "url(#frosted)",
+            "var(--fx)",
+            "contrast(2) drop-shadow(0 0 1px #000)",
+            "unknown",
+        ] {
+            assert!(filters(stop), "{stop}");
         }
     }
 

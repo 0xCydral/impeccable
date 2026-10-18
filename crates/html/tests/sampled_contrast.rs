@@ -637,6 +637,8 @@ fn a_filter_between_the_text_and_the_image_stops_the_walk() {
         // initial value change nothing.
         ("p { backdrop-filter: blur(12px); }", "<div class=hero><p>Copy</p></div>", true),
         (".hero { filter: blur(2px) drop-shadow(0 1px 2px #000); }", "<div class=hero><p>Copy</p></div>", true),
+        (".hero { filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.3)); }", "<div class=hero><p>Copy</p></div>", true),
+        ("p { backdrop-filter: blur(4px) drop-shadow(0 0 2px rgb(0 0 0 / 50%)); }", "<div class=hero><p>Copy</p></div>", true),
         ("p { backdrop-filter: none; } .hero { filter: initial; }", "<div class=hero><p>Copy</p></div>", true),
     ] {
         let found = site.contrast(&format!("{hero} {rule}"), body);
