@@ -825,7 +825,7 @@ fn a_foreign_sheet_resolves_its_urls_against_itself() {
 }
 
 #[test]
-fn a_box_keyword_in_the_shorthand_is_the_origin() {
+fn a_box_keyword_in_the_shorthand_is_the_origin_and_the_clip() {
     use impeccable_html::cascade::shorthand::background_longhands;
     let own = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
         pairs
@@ -833,9 +833,10 @@ fn a_box_keyword_in_the_shorthand_is_the_origin() {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
     };
-    // The first box keyword of a layer is its origin; a layer that names
-    // none is `padding-box` beside one that does; a shorthand with no box
-    // keyword in any layer leaves the origin alone.
+    // One box keyword in a layer sets its origin and its clip, two set the
+    // origin then the clip; a layer that names none is `padding-box` /
+    // `border-box` beside one that does; a shorthand with no box keyword
+    // in any layer leaves both alone.
     assert_eq!(
         background_longhands("background", "url(a.png) no-repeat content-box"),
         own(&[
@@ -843,6 +844,7 @@ fn a_box_keyword_in_the_shorthand_is_the_origin() {
             ("backgroundSize", "auto"),
             ("backgroundPosition", "0% 0%"),
             ("backgroundOrigin", "content-box"),
+            ("backgroundClip", "content-box"),
         ])
     );
     assert_eq!(
@@ -852,6 +854,18 @@ fn a_box_keyword_in_the_shorthand_is_the_origin() {
             ("backgroundSize", "auto, auto"),
             ("backgroundPosition", "0% 0%, 0% 0%"),
             ("backgroundOrigin", "border-box, padding-box"),
+            ("backgroundClip", "content-box, border-box"),
+        ])
+    );
+    // Every bare `var()` of a layer is kept, in order, for the slots no
+    // other token claims: once resolved, the repeat reader takes the
+    // keyword and the position slot drops it.
+    assert_eq!(
+        background_longhands("background", "#111 url(icon.png) var(--pos) var(--tile)"),
+        own(&[
+            ("backgroundRepeat", "var(--pos) var(--tile)"),
+            ("backgroundSize", "auto"),
+            ("backgroundPosition", "var(--pos) var(--tile)"),
         ])
     );
     assert_eq!(

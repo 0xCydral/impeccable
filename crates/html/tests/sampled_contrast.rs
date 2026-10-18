@@ -877,6 +877,19 @@ fn a_repeat_held_in_a_custom_property_is_read() {
             assert!(found.is_empty(), "{value}: {found:?}");
         }
     }
+    // Every custom property of the layer is read: the position in one and
+    // the repeat in another leave the icon where they say.
+    for (tile, sampled) in [("no-repeat", false), ("repeat", true)] {
+        let css = format!(
+            ":root {{ --pos: center; --tile: {tile}; }} .hero {{ background: #17150f url(icon.png) var(--pos) var(--tile); }} p {{ color: #fdfdfd; }}"
+        );
+        let found = site.contrast(&css, "<div class=hero><p>White copy</p></div>");
+        if sampled {
+            assert!(sampled_on("icon.png", &found), "{tile}: {found:?}");
+        } else {
+            assert!(found.is_empty(), "{tile}: {found:?}");
+        }
+    }
     // A custom property holding a color is not the repeat: the shorthand
     // names none and the icon tiles.
     let css = ":root { --brand: #17150f; } .hero { background: url(icon.png) var(--brand); } p { color: #fdfdfd; }";
@@ -988,6 +1001,10 @@ fn a_shifted_wash_does_not_tint_every_sample() {
         (format!(".hero {{ padding: 24px; background: {wash} repeat, url(light.png); background-origin: content-box, padding-box; }}"), true),
         // The image's own entry in the list is read for the image.
         (format!(".hero {{ padding: 24px; background: {wash} center / 100% 100% no-repeat, url(light.png); background-clip: border-box, content-box; }}"), false),
+        // Two box keywords in the shorthand set the wash's origin then its
+        // clip: tiled, it is still clipped to the content box.
+        (format!(".hero {{ padding: 24px; background: {wash} repeat padding-box content-box, url(light.png); }}"), false),
+        (format!(".hero {{ padding: 0; background: {wash} repeat padding-box content-box, url(light.png); }}"), true),
     ] {
         let found = site.contrast(&format!("{rule} {dark_text}"), "<div class=hero><p>Dark copy</p></div>");
         if sampled {

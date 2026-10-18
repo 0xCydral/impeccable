@@ -195,8 +195,8 @@ pub fn parse_static_animation(value: &str) -> StaticAnimation {
     }
 }
 
-// A `background-origin` / `background-clip` box; the first in a shorthand
-// layer is the origin.
+// A `background-origin` / `background-clip` box: one in a shorthand layer
+// sets both, two set the origin then the clip.
 static BG_BOX_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)^(?:border-box|padding-box|content-box)$").expect("BG_BOX_RE")
 });
@@ -263,27 +263,33 @@ fn size_component(token: &str) -> String {
 /// the rest of the token kept; any other function is a value and stays
 /// whole, so `/ var(--s)` is stored for the compute loop to resolve instead
 /// of collapsing to `auto`. A bare `var()` among the tokens may hold the
-/// repeat, the position, or (see `color_outside_image`) the color: it is
-/// stored in every slot no other token claims, so the compute loop
-/// resolves it and each reader takes what it can read, leaving the rest
-/// unknown (the position slot first drops what cannot be a position, see
-/// `position_slot_or_default`). One directly before the size slash can
-/// only be the position and is stored as that. The fourth value is the
-/// per-layer `background-origin` list, the first box keyword of a layer or
-/// `padding-box`, and only when some layer names one: a shorthand without
-/// a box keyword leaves the origin as it was (`background_longhands`).
-fn parse_static_background_layers(value: &str) -> (String, String, String, Option<String>) {
+/// repeat, the position, or (see `color_outside_image`) the color: the
+/// bare `var()` tokens of a layer, joined in order, are stored in every
+/// slot no other token claims, so the compute loop resolves them and each
+/// reader takes what it can read, leaving the rest unknown (the repeat
+/// reader reads keywords only, and the position slot first drops what
+/// cannot be a position, see `position_slot_or_default`). One directly
+/// before the size slash can only be the position and is stored as that.
+/// The fourth value is the per-layer `background-origin` and
+/// `background-clip` lists from the layers' box keywords (one sets both,
+/// two set the origin then the clip; a layer naming none is `padding-box`
+/// / `border-box`), and only when some layer names one: a shorthand without
+/// a box keyword leaves both as they were (`background_longhands`).
+fn parse_static_background_layers(
+    value: &str,
+) -> (String, String, String, Option<(String, String)>) {
     let mut repeats: Vec<String> = Vec::new();
     let mut sizes: Vec<String> = Vec::new();
     let mut positions: Vec<String> = Vec::new();
     let mut origins: Vec<String> = Vec::new();
+    let mut clips: Vec<String> = Vec::new();
     let mut named_box = false;
     for layer in split_layers(value) {
         let mut repeat: Vec<String> = Vec::new();
         let mut size: Vec<String> = Vec::new();
         let mut position: Vec<String> = Vec::new();
         let mut boxes: Vec<String> = Vec::new();
-        let mut var_token: Option<String> = None;
+        let mut vars: Vec<String> = Vec::new();
         let mut in_size = false;
         let tokens: Vec<String> = split_tokens(&layer).iter().flat_map(|t| unglue(t)).collect();
         for raw in join_slashes(tokens) {
@@ -326,23 +332,23 @@ fn parse_static_background_layers(value: &str) -> (String, String, String, Optio
                 continue;
             }
             // A bare `var()` may hold the repeat, a color, or a position;
-            // the first one is kept for the repeat slot and none is read as
-            // a position.
+            // every one is kept, in order, for the slots no other token
+            // claims.
             if VAR_HEAD_TOKEN_RE.is_match(token) {
-                if var_token.is_none() {
-                    var_token = Some(token.to_string());
-                }
+                vars.push(token.to_string());
                 continue;
             }
             if position.len() < 4 && BG_POSITION_RE.is_match(token) {
                 position.push(size_component(token));
             }
         }
-        // A bare `var()` fills every slot no other token claims, and each
-        // reader takes what it can read once the compute loop resolves it.
-        repeats.push(match (repeat.is_empty(), &var_token) {
+        // The bare `var()` tokens fill every slot no other token claims,
+        // and each reader takes what it can read once the compute loop
+        // resolves them.
+        let var_tokens = (!vars.is_empty()).then(|| vars.join(" "));
+        repeats.push(match (repeat.is_empty(), &var_tokens) {
             (false, _) => repeat.join(" "),
-            (true, Some(var)) => var.clone(),
+            (true, Some(vars)) => vars.clone(),
             (true, None) => "repeat".into(),
         });
         sizes.push(if size.is_empty() {
@@ -350,19 +356,26 @@ fn parse_static_background_layers(value: &str) -> (String, String, String, Optio
         } else {
             size.join(" ")
         });
-        positions.push(match (position.is_empty(), &var_token) {
+        positions.push(match (position.is_empty(), &var_tokens) {
             (false, _) => position.join(" "),
-            (true, Some(var)) => var.clone(),
+            (true, Some(vars)) => vars.clone(),
             (true, None) => "0% 0%".into(),
         });
         named_box |= !boxes.is_empty();
-        origins.push(boxes.into_iter().next().unwrap_or_else(|| "padding-box".into()));
+        origins.push(boxes.first().cloned().unwrap_or_else(|| "padding-box".into()));
+        clips.push(
+            boxes
+                .get(1)
+                .or(boxes.first())
+                .cloned()
+                .unwrap_or_else(|| "border-box".into()),
+        );
     }
     (
         repeats.join(", "),
         sizes.join(", "),
         positions.join(", "),
-        named_box.then(|| origins.join(", ")),
+        named_box.then(|| (origins.join(", "), clips.join(", "))),
     )
 }
 
@@ -664,11 +677,12 @@ fn color_outside_image(v: &str) -> Option<String> {
 ///   rule set. A shorthand whose image is a function the engine does not
 ///   read stores that value, so nothing is read through it.
 /// - `backgroundColor` for a color the shorthand names after its image.
-/// - `backgroundOrigin` from the longhand, and from a shorthand that names
-///   a box keyword (the first per layer). A shorthand that names none
-///   leaves an earlier value in place, as `backgroundClip` is left: the
-///   sampled path reads a stale `content-box` as a layer that may not cover
-///   the padding, which errs silent.
+/// - `backgroundOrigin` from the longhand, and `backgroundOrigin` and
+///   `backgroundClip` from a shorthand that names a box keyword (one per
+///   layer sets both, two set the origin then the clip). A shorthand that
+///   names none leaves earlier values in place: the sampled path reads a
+///   stale `content-box` as a layer that may not cover the padding, which
+///   errs silent.
 ///
 /// A CSS-wide keyword passes through, and a bare `var()` value is left alone
 /// the way the expansion leaves it.
@@ -736,14 +750,15 @@ fn background_shorthand_longhands(v: &str) -> Vec<Expanded> {
             ("backgroundPosition".into(), initial_or(v, "0% 0%")),
         ];
     }
-    let (repeat, size, position, origin) = parse_static_background_layers(v);
+    let (repeat, size, position, boxes) = parse_static_background_layers(v);
     let mut out: Vec<Expanded> = vec![
         ("backgroundRepeat".into(), repeat),
         ("backgroundSize".into(), size),
         ("backgroundPosition".into(), position),
     ];
-    if let Some(origin) = origin {
+    if let Some((origin, clip)) = boxes {
         out.push(("backgroundOrigin".into(), origin));
+        out.push(("backgroundClip".into(), clip));
     }
     if !has_image {
         // Neither a `url()` nor a gradient. A shorthand that names no image
