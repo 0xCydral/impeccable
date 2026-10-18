@@ -2540,7 +2540,13 @@ mod tests {
         assert!(PAGE.contains("--ks-font: system-ui,"));
         assert!(PAGE.contains("aria-label=\"Impeccable\""));
         assert!(PAGE.contains("color-scheme: light"));
-        assert!(!PAGE.contains("color-scheme: dark"));
+    }
+
+    #[test]
+    fn question_page_follows_system_theme_for_chrome_only() {
+        assert!(PAGE.contains("@media (prefers-color-scheme: dark)"));
+        assert!(PAGE.contains("color-scheme: dark"));
+        assert!(PAGE.contains("--review-media-paper"));
     }
 
     // Issue #1054: WKWebView in-app browsers can flatten the card's 3D context
