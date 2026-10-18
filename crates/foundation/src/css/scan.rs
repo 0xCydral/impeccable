@@ -436,6 +436,16 @@ fn step_translation(decls: &DeclMap) -> Option<[TranslateAxis; 3]> {
         if t.contains("matrix") {
             return Some([None; 3]);
         }
+        // A scale, rotate, skew or perspective before a translate changes how
+        // far that translate moves the box (`scale(.5) translateY(6px)`
+        // travels 3px), which this does not compute: unknown, not the
+        // declared distance. After the translate it leaves the travel alone.
+        if let Some(first) = TRANSLATE_FN_RE.find(t) {
+            let before = &t[..first.start()];
+            if ["scale", "rotate", "skew", "perspective"].iter().any(|f| before.contains(f)) {
+                return Some([None; 3]);
+            }
+        }
         for m in TRANSLATE_FN_RE.find_iter(t) {
             let f = m.as_str();
             let Some(open) = f.find('(') else { continue };

@@ -3371,6 +3371,11 @@ mod tests {
         // An online dot that breathes a pixel, and a typing indicator's 2px bob.
         assert!(pulses("@keyframes b { 0%,100% { opacity: 1; transform: translateY(0) } 50% { opacity: .5; transform: translateY(-1px) } }"));
         assert!(pulses("@keyframes ty { 0%,60%,100% { opacity: .35; transform: none } 30% { opacity: 1; transform: translateY(-2px) } }"));
+        // A scale before the translate shrinks the travel (`scale(.5)
+        // translateY(6px)` moves 3px), so the travel is unknown and the
+        // pulse stays a pulse; a scale after the translate leaves it alone.
+        assert!(pulses("@keyframes s { 0% { opacity: 1; transform: scale(.5) translateY(0) } 100% { opacity: .4; transform: scale(.5) translateY(6px) } }"));
+        assert!(!pulses("@keyframes s2 { 0% { opacity: 1; transform: translateY(0) scale(.5) } 100% { opacity: .4; transform: translateY(6px) scale(.5) } }"));
         // A percentage that changes cannot be read, and decides nothing.
         assert!(pulses("@keyframes q { 0% { transform: translate(-50%, -50%); opacity: 1 } 100% { transform: translate(-50%, -60%); opacity: 0 } }"));
         // Review of #1042: a percentage on one axis leaves the other read,
