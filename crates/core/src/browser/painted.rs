@@ -2228,6 +2228,41 @@ pub fn effective_opacity_scrolled(dom: &dyn Dom, el: ElId) -> f64 {
     o
 }
 
+/// The effective opacity `el` settles at, judged at any captured value and
+/// not only at the transparent floor: a box a scroll or view timeline holds
+/// counts at its end keyframe ([`scroll_held_end_opacity`]), and a box whose
+/// opacity an animation or transition moves at capture counts at the end
+/// frame a timed entrance holds ([`held_end_opacity`]). `None` where that end
+/// cannot be read (a transition, a loop, an entrance that hands the box back
+/// to its own style), or where a paused loop holds the box part way
+/// ([`paused_mid_loop`]): the box is not at the opacity it was captured at,
+/// and where it settles is unknown. A heading caught at 0.2 in a fade to 1
+/// settles at 1.
+pub(crate) fn settled_opacity(dom: &dyn Dom, el: ElId) -> Option<f64> {
+    let mut o = 1.0f64;
+    let mut cur = Some(el);
+    while let Some(c) = cur {
+        let v = if let Some(end) = scroll_held_end_opacity(dom, c) {
+            end
+        } else if paused_mid_loop(dom, c) {
+            return None;
+        } else if opacity_in_motion(dom, c) {
+            let entry = sole_opacity_entry(dom, c)?;
+            held_end_opacity(dom, &entry)?.clamp(0.0, 1.0)
+        } else {
+            let raw = dom.style(c, "opacity");
+            if raw.is_empty() {
+                1.0
+            } else {
+                js::parse_float(&raw)
+            }
+        };
+        o *= v;
+        cur = dom.parent(c);
+    }
+    Some(o)
+}
+
 /// Whether `el`, an absolutely positioned box with area, lies wholly outside
 /// an ancestor that clips it, where every ancestor that clips it has area on
 /// the axis it clips: the answer of a closed accordion that parks its panel

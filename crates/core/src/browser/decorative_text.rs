@@ -157,7 +157,9 @@ fn marked_signature(dom: &dyn Dom, el: ElId) -> bool {
 /// wordmark. A colour that does not parse counts as opaque.
 fn shown_opacity(dom: &dyn Dom, el: ElId) -> f64 {
     let ink = parse_rgb_or_any(&dom.style(el, "color")).map_or(1.0, |c| c.alpha_or_one());
-    super::painted::effective_opacity_scrolled(dom, el) * ink
+    // A heading whose opacity is moving toward an end the capture cannot
+    // read, or that a paused loop holds part way, is not known to be faint.
+    super::painted::settled_opacity(dom, el).unwrap_or(1.0) * ink
 }
 
 /// The names the site goes by: its host name run together and without its
@@ -353,6 +355,19 @@ mod tests {
         );
         d.set_running_animations(footer, &["opacity"]);
         assert_eq!(decorative_text_shape_dom(&d, mark), None);
+        // Review of #1044: caught at 0.2 part way through the same fade, it
+        // settles at 1 and is not a wordmark either.
+        d.set_style(footer, "opacity", "0.2");
+        assert_eq!(decorative_text_shape_dom(&d, mark), None);
+        // An opacity transition running, whose end the capture cannot read,
+        // leaves where it settles unknown: not a wordmark.
+        d.set_styles(footer, &[("animationName", "none"), ("transitionProperty", "opacity"), ("transitionDuration", "0.6s")]);
+        assert_eq!(decorative_text_shape_dom(&d, mark), None);
+        // The same footer at 0.2 with nothing moving it is a faint wordmark.
+        d.set_running_animations(footer, &[]);
+        assert_eq!(decorative_text_shape_dom(&d, mark), Some(DecorativeShape::Wordmark));
+        d.set_styles(footer, &[("animationName", "reveal"), ("opacity", "0"), ("transitionProperty", "all"), ("transitionDuration", "0s")]);
+        d.set_running_animations(footer, &["opacity"]);
         // A section name in the middle of a title is not the site's name,
         // and a hyphen separates nothing.
         d.add_text(title, " | Blog | Latest");
