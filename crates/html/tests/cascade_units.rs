@@ -617,9 +617,9 @@ fn background_longhands_ride_beside_the_expansion() {
     assert_eq!(
         pairs("background", "var(--brand) url(a.png) center no-repeat"),
         own(&[
-            ("backgroundRepeat", "no-repeat var(--brand)"),
+            ("backgroundRepeat", "var(--brand) no-repeat"),
             ("backgroundSize", "auto"),
-            ("backgroundPosition", "center var(--brand)"),
+            ("backgroundPosition", "var(--brand) center"),
             ("backgroundOrigin", "var(--brand)"),
             ("backgroundClip", "var(--brand)"),
         ])
@@ -845,6 +845,43 @@ fn a_foreign_sheet_resolves_its_urls_against_itself() {
 }
 
 #[test]
+fn a_longhand_is_read_through_the_same_ungluing_as_the_shorthand() {
+    use impeccable_html::cascade::shorthand::background_longhands;
+    let own = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    };
+    // The css-tree generator writes `100% auto` as `100%auto` and `0% 50%`
+    // as `0%50%`; each component is still read, per layer.
+    assert_eq!(
+        background_longhands("background-size", "100%auto"),
+        own(&[("backgroundSize", "100% auto")])
+    );
+    assert_eq!(
+        background_longhands("background-size", "100%auto, cover"),
+        own(&[("backgroundSize", "100% auto, cover")])
+    );
+    assert_eq!(
+        background_longhands("background-position", "0%50%"),
+        own(&[("backgroundPosition", "0% 50%")])
+    );
+    assert_eq!(
+        background_longhands("background-repeat", "no-repeat repeat"),
+        own(&[("backgroundRepeat", "no-repeat repeat")])
+    );
+    assert_eq!(
+        background_longhands("background-size", "var(--w)"),
+        own(&[("backgroundSize", "var(--w)")])
+    );
+    assert_eq!(
+        background_longhands("background-size", "initial"),
+        own(&[("backgroundSize", "auto")])
+    );
+}
+
+#[test]
 fn a_box_keyword_in_the_shorthand_is_the_origin_and_the_clip() {
     use impeccable_html::cascade::shorthand::background_longhands;
     let own = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
@@ -896,9 +933,31 @@ fn a_box_keyword_in_the_shorthand_is_the_origin_and_the_clip() {
     assert_eq!(
         background_longhands("background", "#111 url(light.png) 0 var(--y) no-repeat"),
         own(&[
-            ("backgroundRepeat", "no-repeat var(--y)"),
+            ("backgroundRepeat", "var(--y) no-repeat"),
             ("backgroundSize", "auto"),
             ("backgroundPosition", "0 var(--y)"),
+            ("backgroundOrigin", "var(--y)"),
+            ("backgroundClip", "var(--y)"),
+        ])
+    );
+    // Where it stood among the literal tokens: a variable before the
+    // repeat keyword or the position component names the x axis.
+    assert_eq!(
+        background_longhands("background", "#111 url(light.png) var(--x) no-repeat"),
+        own(&[
+            ("backgroundRepeat", "var(--x) no-repeat"),
+            ("backgroundSize", "auto"),
+            ("backgroundPosition", "var(--x)"),
+            ("backgroundOrigin", "var(--x)"),
+            ("backgroundClip", "var(--x)"),
+        ])
+    );
+    assert_eq!(
+        background_longhands("background", "#111 url(light.png) var(--y) 0 no-repeat"),
+        own(&[
+            ("backgroundRepeat", "var(--y) no-repeat"),
+            ("backgroundSize", "auto"),
+            ("backgroundPosition", "var(--y) 0"),
             ("backgroundOrigin", "var(--y)"),
             ("backgroundClip", "var(--y)"),
         ])

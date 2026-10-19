@@ -921,6 +921,25 @@ fn a_repeat_held_in_a_custom_property_is_read() {
     let css = ":root { --brand: #17150f; } .hero { background: url(icon.png) var(--brand) no-repeat; } p { color: #fdfdfd; }";
     let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
     assert!(found.is_empty(), "{found:?}");
+    // A size the generator writes glued (`100%auto`) is read apart: the
+    // x axis is covered by the percentage and the y axis by tiling.
+    let css = ".hero { background: #17150f url(light.png) no-repeat repeat; background-size: 100% auto; } p { color: #fdfdfd; }";
+    let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
+    assert!(sampled_on("light.png", &found), "{found:?}");
+    // A custom property before the repeat keyword names the x axis: the
+    // image fills the box only when the axis the size leaves open tiles.
+    for (x, sampled) in [("repeat", false), ("no-repeat", true)] {
+        let css = format!(
+            ":root {{ --x: {x}; }} .hero {{ background: #17150f url(light.png) var(--x) {}; background-size: 100% auto; }} p {{ color: #fdfdfd; }}",
+            if x == "repeat" { "no-repeat" } else { "repeat" }
+        );
+        let found = site.contrast(&css, "<div class=hero><p>White copy</p></div>");
+        if sampled {
+            assert!(sampled_on("light.png", &found), "{x}: {found:?}");
+        } else {
+            assert!(found.is_empty(), "{x}: {found:?}");
+        }
+    }
 }
 
 #[test]

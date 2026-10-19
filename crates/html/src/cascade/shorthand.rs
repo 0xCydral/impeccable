@@ -264,10 +264,11 @@ fn size_component(token: &str) -> String {
 /// whole, so `/ var(--s)` is stored for the compute loop to resolve instead
 /// of collapsing to `auto`. A bare `var()` among the tokens may hold the
 /// repeat, the position, a box, or (see `color_outside_image`) the color:
-/// the bare `var()` tokens of a layer, joined in order, are stored in every
-/// slot they could still hold beside the literal tokens (further position
-/// components up to four, further repeat keywords up to two, the origin
-/// and the clip beside a literal box keyword), so the compute loop
+/// the bare `var()` tokens of a layer are stored in every slot they could
+/// still hold beside the literal tokens, each where it stood among them
+/// (further position components up to four, further repeat keywords up to
+/// two, the origin and the clip beside a literal box keyword), so the
+/// compute loop
 /// resolves them and each reader takes what it can read, leaving the rest
 /// unknown (the repeat reader reads keywords only, the position slot first
 /// drops what cannot be a position, see `position_slot_or_default`, and
@@ -289,14 +290,16 @@ fn parse_static_background_layers(
     let mut clips: Vec<String> = Vec::new();
     let mut named_box = false;
     for layer in split_layers(value) {
-        let mut repeat: Vec<String> = Vec::new();
+        // Slot entries carry their source order, so a `var()` merges into a
+        // slot where it stood: `var(--x) no-repeat` names the x axis first.
+        let mut repeat: Vec<(usize, String)> = Vec::new();
         let mut size: Vec<String> = Vec::new();
-        let mut position: Vec<String> = Vec::new();
+        let mut position: Vec<(usize, String)> = Vec::new();
         let mut boxes: Vec<String> = Vec::new();
-        let mut vars: Vec<String> = Vec::new();
+        let mut vars: Vec<(usize, String)> = Vec::new();
         let mut in_size = false;
         let tokens: Vec<String> = split_tokens(&layer).iter().flat_map(|t| unglue(t)).collect();
-        for raw in join_slashes(tokens) {
+        for (order, raw) in join_slashes(tokens).into_iter().enumerate() {
             let token: &str = match BG_IMAGE_CALL_RE.find(&raw) {
                 Some(call) => &raw[css_call_end(&raw, call.end() - 1)..],
                 None => raw.as_str(),
@@ -313,7 +316,7 @@ fn parse_static_background_layers(
                     && position.len() < 4
                     && (BG_POSITION_RE.is_match(before) || VAR_HEAD_TOKEN_RE.is_match(before))
                 {
-                    position.push(size_component(before));
+                    position.push((order, size_component(before)));
                 }
                 in_size = true;
                 size.clear();
@@ -328,33 +331,40 @@ fn parse_static_background_layers(
             }
             in_size = false;
             if repeat.len() < 2 && BG_REPEAT_RE.is_match(token) {
-                repeat.push(js::to_lower_case(token));
+                repeat.push((order, js::to_lower_case(token)));
                 continue;
             }
             if boxes.len() < 2 && BG_BOX_RE.is_match(token) {
                 boxes.push(js::to_lower_case(token));
                 continue;
             }
-            // A bare `var()` may hold the repeat, a color, or a position;
-            // every one is kept, in order, for the slots no other token
-            // claims.
+            // A bare `var()` may hold the repeat, a box, a color, or a
+            // position; every one is kept, with its place, for the slots it
+            // could still fill.
             if VAR_HEAD_TOKEN_RE.is_match(token) {
-                vars.push(token.to_string());
+                vars.push((order, token.to_string()));
                 continue;
             }
             if position.len() < 4 && BG_POSITION_RE.is_match(token) {
-                position.push(size_component(token));
+                position.push((order, size_component(token)));
             }
         }
         // The bare `var()` tokens fill every slot they could still hold
-        // beside the literal tokens, and each reader takes what it can read
-        // once the compute loop resolves them.
+        // beside the literal tokens, in source order, and each reader takes
+        // what it can read once the compute loop resolves them.
         let has_vars = !vars.is_empty();
-        let with_vars = |mut parts: Vec<String>, room: usize| -> Vec<String> {
+        let var_text = || {
+            vars.iter()
+                .map(|(_, v)| v.as_str())
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let with_vars = |mut parts: Vec<(usize, String)>, room: usize| -> Vec<String> {
             if parts.len() < room {
                 parts.extend(vars.iter().cloned());
+                parts.sort_by_key(|(order, _)| *order);
             }
-            parts
+            parts.into_iter().map(|(_, v)| v).collect()
         };
         let repeat = with_vars(repeat, 2);
         repeats.push(if repeat.is_empty() {
@@ -376,14 +386,14 @@ fn parse_static_background_layers(
         named_box |= !boxes.is_empty() || has_vars;
         origins.push(match boxes.first() {
             Some(first) => first.clone(),
-            None if has_vars => vars.join(" "),
+            None if has_vars => var_text(),
             None => "padding-box".into(),
         });
         clips.push(match (boxes.get(1), boxes.first()) {
             (Some(second), _) => second.clone(),
-            (None, Some(first)) if has_vars => format!("{first} {}", vars.join(" ")),
+            (None, Some(first)) if has_vars => format!("{first} {}", var_text()),
             (None, Some(first)) => first.clone(),
-            (None, None) if has_vars => vars.join(" "),
+            (None, None) if has_vars => var_text(),
             (None, None) => "border-box".into(),
         });
     }
@@ -686,7 +696,8 @@ fn color_outside_image(v: &str) -> Option<String> {
 ///   sampled-contrast path (#560) can tell a tiled or cover image from a
 ///   no-repeat icon or a shifted one. Every `background` shorthand resets
 ///   all three to what it names, the defaults when it names nothing, as in
-///   CSS.
+///   CSS. The longhands are read through the same ungluing as the
+///   shorthand, since the generator writes `100% auto` as `100%auto`.
 /// - `backgroundImage: none` for a shorthand that names no image, which the
 ///   expansion only resets for `background: none`. Without it
 ///   `.card.plain { background: transparent }` keeps the image an earlier
@@ -716,15 +727,38 @@ pub fn background_longhands(prop: &str, value: &str) -> Vec<Expanded> {
     }
     match js::to_lower_case(prop).as_str() {
         "background" => background_shorthand_longhands(v),
-        "background-repeat" => vec![("backgroundRepeat".into(), initial_or(v, "repeat"))],
-        "background-size" => vec![("backgroundSize".into(), initial_or(v, "auto"))],
-        "background-position" => vec![("backgroundPosition".into(), initial_or(v, "0% 0%"))],
+        "background-repeat" => vec![(
+            "backgroundRepeat".into(),
+            initial_or(&unglued_layers(v), "repeat"),
+        )],
+        "background-size" => vec![("backgroundSize".into(), initial_or(&unglued_layers(v), "auto"))],
+        "background-position" => vec![(
+            "backgroundPosition".into(),
+            initial_or(&unglued_layers(v), "0% 0%"),
+        )],
         "background-origin" => vec![("backgroundOrigin".into(), initial_or(v, "padding-box"))],
         // Not part of the shorthand, so it is never reset by one; the
         // sampled-contrast path stands down on any mode but `normal`.
         "background-blend-mode" => vec![("backgroundBlendMode".into(), v.to_string())],
         _ => Vec::new(),
     }
+}
+
+/// A longhand value as the css-tree generator writes it, with the
+/// components it glued (`100%auto`, `0%50%`) read apart, per layer, so the
+/// readers see what the shorthand parser sees.
+fn unglued_layers(value: &str) -> String {
+    split_layers(value)
+        .iter()
+        .map(|layer| {
+            split_tokens(layer)
+                .iter()
+                .flat_map(|t| unglue(t))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// `initial`, `unset`, and `revert` are the property's initial value for
