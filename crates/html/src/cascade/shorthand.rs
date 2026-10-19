@@ -263,18 +263,22 @@ fn size_component(token: &str) -> String {
 /// the rest of the token kept; any other function is a value and stays
 /// whole, so `/ var(--s)` is stored for the compute loop to resolve instead
 /// of collapsing to `auto`. A bare `var()` among the tokens may hold the
-/// repeat, the position, or (see `color_outside_image`) the color: the
-/// bare `var()` tokens of a layer, joined in order, are stored in every
-/// slot no other token claims, so the compute loop resolves them and each
-/// reader takes what it can read, leaving the rest unknown (the repeat
-/// reader reads keywords only, and the position slot first drops what
-/// cannot be a position, see `position_slot_or_default`). One directly
-/// before the size slash can only be the position and is stored as that.
-/// The fourth value is the per-layer `background-origin` and
-/// `background-clip` lists from the layers' box keywords (one sets both,
-/// two set the origin then the clip; a layer naming none is `padding-box`
-/// / `border-box`), and only when some layer names one: a shorthand without
-/// a box keyword leaves both as they were (`background_longhands`).
+/// repeat, the position, a box, or (see `color_outside_image`) the color:
+/// the bare `var()` tokens of a layer, joined in order, are stored in every
+/// slot they could still hold beside the literal tokens (further position
+/// components up to four, further repeat keywords up to two, the origin
+/// and the clip beside a literal box keyword), so the compute loop
+/// resolves them and each reader takes what it can read, leaving the rest
+/// unknown (the repeat reader reads keywords only, the position slot first
+/// drops what cannot be a position, see `position_slot_or_default`, and
+/// the padding read looks for a `content-box` token). One directly before
+/// the size slash can only be the position and is stored as that. The
+/// fourth value is the per-layer `background-origin` and `background-clip`
+/// lists from the layers' box keywords and bare `var()` tokens (one keyword
+/// sets both, two set the origin then the clip; a layer naming none is
+/// `padding-box` / `border-box`), and only when some layer names one or
+/// holds a `var()`: a shorthand without either leaves both as they were
+/// (`background_longhands`).
 fn parse_static_background_layers(
     value: &str,
 ) -> (String, String, String, Option<(String, String)>) {
@@ -342,34 +346,46 @@ fn parse_static_background_layers(
                 position.push(size_component(token));
             }
         }
-        // The bare `var()` tokens fill every slot no other token claims,
-        // and each reader takes what it can read once the compute loop
-        // resolves them.
-        let var_tokens = (!vars.is_empty()).then(|| vars.join(" "));
-        repeats.push(match (repeat.is_empty(), &var_tokens) {
-            (false, _) => repeat.join(" "),
-            (true, Some(vars)) => vars.clone(),
-            (true, None) => "repeat".into(),
+        // The bare `var()` tokens fill every slot they could still hold
+        // beside the literal tokens, and each reader takes what it can read
+        // once the compute loop resolves them.
+        let has_vars = !vars.is_empty();
+        let with_vars = |mut parts: Vec<String>, room: usize| -> Vec<String> {
+            if parts.len() < room {
+                parts.extend(vars.iter().cloned());
+            }
+            parts
+        };
+        let repeat = with_vars(repeat, 2);
+        repeats.push(if repeat.is_empty() {
+            "repeat".into()
+        } else {
+            repeat.join(" ")
         });
         sizes.push(if size.is_empty() {
             "auto".into()
         } else {
             size.join(" ")
         });
-        positions.push(match (position.is_empty(), &var_tokens) {
-            (false, _) => position.join(" "),
-            (true, Some(vars)) => vars.clone(),
-            (true, None) => "0% 0%".into(),
+        let position = with_vars(position, 4);
+        positions.push(if position.is_empty() {
+            "0% 0%".into()
+        } else {
+            position.join(" ")
         });
-        named_box |= !boxes.is_empty();
-        origins.push(boxes.first().cloned().unwrap_or_else(|| "padding-box".into()));
-        clips.push(
-            boxes
-                .get(1)
-                .or(boxes.first())
-                .cloned()
-                .unwrap_or_else(|| "border-box".into()),
-        );
+        named_box |= !boxes.is_empty() || has_vars;
+        origins.push(match boxes.first() {
+            Some(first) => first.clone(),
+            None if has_vars => vars.join(" "),
+            None => "padding-box".into(),
+        });
+        clips.push(match (boxes.get(1), boxes.first()) {
+            (Some(second), _) => second.clone(),
+            (None, Some(first)) if has_vars => format!("{first} {}", vars.join(" ")),
+            (None, Some(first)) => first.clone(),
+            (None, None) if has_vars => vars.join(" "),
+            (None, None) => "border-box".into(),
+        });
     }
     (
         repeats.join(", "),
@@ -679,10 +695,10 @@ fn color_outside_image(v: &str) -> Option<String> {
 /// - `backgroundColor` for a color the shorthand names after its image.
 /// - `backgroundOrigin` from the longhand, and `backgroundOrigin` and
 ///   `backgroundClip` from a shorthand that names a box keyword (one per
-///   layer sets both, two set the origin then the clip). A shorthand that
-///   names none leaves earlier values in place: the sampled path reads a
-///   stale `content-box` as a layer that may not cover the padding, which
-///   errs silent.
+///   layer sets both, two set the origin then the clip) or holds a bare
+///   `var()` that may resolve to one. A shorthand with neither leaves
+///   earlier values in place: the sampled path reads a stale `content-box`
+///   as a layer that may not cover the padding, which errs silent.
 ///
 /// A CSS-wide keyword passes through, and a bare `var()` value is left alone
 /// the way the expansion leaves it.

@@ -639,6 +639,11 @@ fn a_filter_between_the_text_and_the_image_stops_the_walk() {
         // applies to nothing, above the image element as below it.
         (".section { display: contents; filter: contrast(0); }", "<div class=section><div class=hero><p>Copy</p></div></div>", true),
         (".wrap { display: contents; filter: contrast(0); }", "<div class=hero><div class=wrap><p>Copy</p></div></div>", true),
+        // A blend on a boxed ancestor above the image reworks image and
+        // text together with what is behind it; on a boxless one it does
+        // not apply.
+        (".section { mix-blend-mode: screen; }", "<div class=section><div class=hero><p>Copy</p></div></div>", false),
+        (".section { display: contents; mix-blend-mode: screen; }", "<div class=section><div class=hero><p>Copy</p></div></div>", true),
         // A blur or a drop shadow leaves the region's mean color where it
         // is (a frosted panel is still the photo, averaged); `none` and the
         // initial value change nothing.
@@ -826,6 +831,19 @@ fn a_shifted_image_is_not_known_to_cover_a_color() {
     let css = ":root { --brand: #17150f; } .hero { background: url(light.png) var(--brand) no-repeat; background-size: 100% 100%; } p { color: #fdfdfd; }";
     let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
     assert!(sampled_on("light.png", &found), "{found:?}");
+    // Beside a literal position component, the custom property may be the
+    // next one: an offset held in it is a shift, zero or a keyword is not.
+    for (value, sampled) in [("200px", false), ("0", true), ("center", true)] {
+        let css = format!(
+            ":root {{ --y: {value}; }} .hero {{ background: #17150f url(light.png) 0 var(--y) no-repeat; background-size: 100% 100%; }} p {{ color: #fdfdfd; }}"
+        );
+        let found = site.contrast(&css, "<div class=hero><p>White copy</p></div>");
+        if sampled {
+            assert!(sampled_on("light.png", &found), "{value}: {found:?}");
+        } else {
+            assert!(found.is_empty(), "{value}: {found:?}");
+        }
+    }
 }
 
 #[test]
@@ -851,6 +869,10 @@ fn a_layer_painted_inside_the_padding_is_not_the_ground() {
         (format!(".hero {{ padding: 0 24px; {hero} repeat-y; background-origin: content-box; }}"), false),
         (format!(".hero {{ padding: 24px 0; {hero} repeat-y; background-origin: content-box; }}"), true),
         (format!(".hero {{ padding: var(--pad); {hero} no-repeat; background-origin: content-box; }}"), false),
+        // A box keyword held in a custom property reaches the origin and
+        // the clip once it resolves.
+        (format!(":root {{ --box: content-box; }} .hero {{ padding: 24px; {hero} no-repeat var(--box); }}"), false),
+        (format!(":root {{ --box: padding-box; }} .hero {{ padding: 24px; {hero} no-repeat var(--box); }}"), true),
     ] {
         let found = site.contrast(&format!("{rule} p {{ color: #fdfdfd; }}"), body);
         if sampled {

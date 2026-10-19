@@ -329,9 +329,11 @@ impl ImageSampler {
             .as_ref()
             .map(|dir| dir.join(format!("{}.json", fnv64(key.as_bytes()))));
         let entry = cache_file.as_deref().and_then(|f| read_entry(f, None));
-        if self.mode == ImageSamples::CacheOnly {
-            // Not even the payload is decoded: the entry carries the size.
-            let entry = entry?;
+        // An entry carries the size and the samples, so neither mode
+        // decodes the payload of an image the cache holds. Without one,
+        // `detect` reads the size from the decoded payload's header (the
+        // pixels decode where they are needed) and the hook has nothing.
+        if let Some(entry) = entry {
             return Some(ImageSource {
                 key: key.to_string(),
                 cache_file,
@@ -342,6 +344,9 @@ impl ImageSampler {
                 cached: RefCell::new(Some(entry.samples.map(Rc::new))),
             });
         }
+        if self.mode == ImageSamples::CacheOnly {
+            return None;
+        }
         let (width, height) = dimensions(Cursor::new(data_uri_bytes(url)?))?;
         Some(ImageSource {
             key: key.to_string(),
@@ -350,7 +355,7 @@ impl ImageSampler {
             stat: None,
             width,
             height,
-            cached: RefCell::new(entry.map(|e| e.samples.map(Rc::new))),
+            cached: RefCell::new(None),
         })
     }
 
@@ -921,6 +926,35 @@ mod tests {
         let warm = samples_of(&sampler(&dir, ImageSamples::CacheOnly, &cache), "ramp.png").unwrap();
         assert_eq!(*cold, *warm);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_cached_data_uri_is_not_decoded_again() {
+        let bytes = png_bytes(8, 8, [240, 236, 228, 255]);
+        let uri = format!(
+            "data:image/png;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(&bytes)
+        );
+        let cache = temp_dir("data-cached");
+        let first = sampler(Path::new("/nonexistent"), ImageSamples::Decode, &cache);
+        assert_eq!(samples_of(&first, &uri).unwrap().points[21].r, 240.0);
+        // The entry rewritten with another size and sentinel samples: a
+        // second `detect` scan answers from the entry, size and samples
+        // alike, and never decodes the payload.
+        let file = std::fs::read_dir(&cache).unwrap().next().unwrap().unwrap().path();
+        let mut json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        json["w"] = 5.into();
+        json["h"] = 3.into();
+        json["samples"] = serde_json::Value::String(
+            base64::engine::general_purpose::STANDARD.encode(vec![7u8; GRID * GRID * 4]),
+        );
+        std::fs::write(&file, json.to_string()).unwrap();
+        let second = sampler(Path::new("/nonexistent"), ImageSamples::Decode, &cache);
+        let source = second.find_source(&uri).expect("the entry answers");
+        assert_eq!((source.width, source.height), (5, 3));
+        assert_eq!(samples_of(&second, &uri).unwrap().points[21].r, 7.0);
+        std::fs::remove_dir_all(&cache).ok();
     }
 
     fn filetime_set(path: &Path, to: std::time::SystemTime) {

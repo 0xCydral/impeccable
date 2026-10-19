@@ -484,6 +484,8 @@ fn background_longhands_ride_beside_the_expansion() {
             ("backgroundRepeat", "var(--tile)"),
             ("backgroundSize", "auto"),
             ("backgroundPosition", "var(--tile)"),
+            ("backgroundOrigin", "var(--tile)"),
+            ("backgroundClip", "var(--tile)"),
             ("backgroundColor", "var(--tile)")
         ])
     );
@@ -516,14 +518,18 @@ fn background_longhands_ride_beside_the_expansion() {
         ])
     );
     // A bare `var()` after the image is stored as the color too, the one
-    // slot the expansion never reads on that side; glued to the size slash
-    // it is the position, and inside another function it is not read.
+    // slot the expansion never reads on that side, beside every slot it
+    // could still hold (the second repeat keyword, the position, the
+    // origin and the clip); glued to the size slash it is the position,
+    // and inside another function it is not read.
     assert_eq!(
         pairs("background", "url(icon.png) no-repeat var(--brand)"),
         own(&[
-            ("backgroundRepeat", "no-repeat"),
+            ("backgroundRepeat", "no-repeat var(--brand)"),
             ("backgroundSize", "auto"),
             ("backgroundPosition", "var(--brand)"),
+            ("backgroundOrigin", "var(--brand)"),
+            ("backgroundClip", "var(--brand)"),
             ("backgroundColor", "var(--brand)")
         ])
     );
@@ -533,7 +539,9 @@ fn background_longhands_ride_beside_the_expansion() {
             ("backgroundRepeat", "var(--x)"),
             ("backgroundSize", "auto"),
             ("backgroundPosition", "var(--x)"),
-            ("backgroundColor", "var(--x)")
+            ("backgroundOrigin", "var(--x)"),
+            ("backgroundClip", "var(--x)"),
+            ("backgroundColor", "var(--x)"),
         ])
     );
     // A whole final layer that is a `var()` is unknown paint beneath the
@@ -543,7 +551,9 @@ fn background_longhands_ride_beside_the_expansion() {
         own(&[
             ("backgroundRepeat", "repeat, var(--brand)"),
             ("backgroundSize", "auto, auto"),
-            ("backgroundPosition", "0% 0%, var(--brand)")
+            ("backgroundPosition", "0% 0%, var(--brand)"),
+            ("backgroundOrigin", "padding-box, var(--brand)"),
+            ("backgroundClip", "border-box, var(--brand)"),
         ])
     );
     // A literal color beside the `var()` is the color, whichever comes
@@ -554,7 +564,9 @@ fn background_longhands_ride_beside_the_expansion() {
             ("backgroundRepeat", "var(--tile)"),
             ("backgroundSize", "auto"),
             ("backgroundPosition", "var(--tile)"),
-            ("backgroundColor", "#17150f")
+            ("backgroundOrigin", "var(--tile)"),
+            ("backgroundClip", "var(--tile)"),
+            ("backgroundColor", "#17150f"),
         ])
     );
     assert_eq!(
@@ -563,7 +575,9 @@ fn background_longhands_ride_beside_the_expansion() {
             ("backgroundRepeat", "var(--tile)"),
             ("backgroundSize", "auto"),
             ("backgroundPosition", "var(--tile)"),
-            ("backgroundColor", "rgba(0, 0, 0, 0.5)")
+            ("backgroundOrigin", "var(--tile)"),
+            ("backgroundClip", "var(--tile)"),
+            ("backgroundColor", "rgba(0, 0, 0, 0.5)"),
         ])
     );
     assert_eq!(
@@ -572,7 +586,9 @@ fn background_longhands_ride_beside_the_expansion() {
             ("backgroundRepeat", "var(--brand, #fff)"),
             ("backgroundSize", "auto"),
             ("backgroundPosition", "var(--brand, #fff)"),
-            ("backgroundColor", "var(--brand, #fff)")
+            ("backgroundOrigin", "var(--brand, #fff)"),
+            ("backgroundClip", "var(--brand, #fff)"),
+            ("backgroundColor", "var(--brand, #fff)"),
         ])
     );
     assert_eq!(
@@ -593,15 +609,19 @@ fn background_longhands_ride_beside_the_expansion() {
             ("backgroundRepeat", "var(--repeat)"),
             ("backgroundSize", "auto"),
             ("backgroundPosition", "var(--repeat)"),
-            ("backgroundColor", "var(--repeat)")
+            ("backgroundOrigin", "var(--repeat)"),
+            ("backgroundClip", "var(--repeat)"),
+            ("backgroundColor", "var(--repeat)"),
         ])
     );
     assert_eq!(
         pairs("background", "var(--brand) url(a.png) center no-repeat"),
         own(&[
-            ("backgroundRepeat", "no-repeat"),
+            ("backgroundRepeat", "no-repeat var(--brand)"),
             ("backgroundSize", "auto"),
-            ("backgroundPosition", "center")
+            ("backgroundPosition", "center var(--brand)"),
+            ("backgroundOrigin", "var(--brand)"),
+            ("backgroundClip", "var(--brand)"),
         ])
     );
     // The position keeps its lengths and functions for the sampler to
@@ -857,15 +877,41 @@ fn a_box_keyword_in_the_shorthand_is_the_origin_and_the_clip() {
             ("backgroundClip", "content-box, border-box"),
         ])
     );
-    // Every bare `var()` of a layer is kept, in order, for the slots no
-    // other token claims: once resolved, the repeat reader takes the
-    // keyword and the position slot drops it.
+    // Every bare `var()` of a layer is kept, in order, for every slot it
+    // could still hold beside the literal tokens: once resolved, the repeat
+    // reader takes the keyword, the position slot drops it, and the
+    // padding read looks for a box keyword.
     assert_eq!(
         background_longhands("background", "#111 url(icon.png) var(--pos) var(--tile)"),
         own(&[
             ("backgroundRepeat", "var(--pos) var(--tile)"),
             ("backgroundSize", "auto"),
             ("backgroundPosition", "var(--pos) var(--tile)"),
+            ("backgroundOrigin", "var(--pos) var(--tile)"),
+            ("backgroundClip", "var(--pos) var(--tile)"),
+        ])
+    );
+    // Beside a literal position component it may be the next one, beside
+    // one repeat keyword the second, and beside one box keyword the clip.
+    assert_eq!(
+        background_longhands("background", "#111 url(light.png) 0 var(--y) no-repeat"),
+        own(&[
+            ("backgroundRepeat", "no-repeat var(--y)"),
+            ("backgroundSize", "auto"),
+            ("backgroundPosition", "0 var(--y)"),
+            ("backgroundOrigin", "var(--y)"),
+            ("backgroundClip", "var(--y)"),
+        ])
+    );
+    assert_eq!(
+        background_longhands("background", "url(a.png) content-box var(--v)"),
+        own(&[
+            ("backgroundRepeat", "var(--v)"),
+            ("backgroundSize", "auto"),
+            ("backgroundPosition", "var(--v)"),
+            ("backgroundOrigin", "content-box"),
+            ("backgroundClip", "content-box var(--v)"),
+            ("backgroundColor", "var(--v)"),
         ])
     );
     assert_eq!(

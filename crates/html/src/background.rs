@@ -941,12 +941,17 @@ fn filters(value: &str) -> bool {
 /// `analyze_level` reads) carries a `filter` that changes colors. A
 /// `backdrop-filter` above reworks what lies behind that ancestor, not what
 /// it contains, so only `filter` counts here.
-/// A color-changing `filter` on an ancestor of `el` that generates a box.
-/// A `display: contents` ancestor has no box, so its filter applies to
-/// nothing, as `analyze_level` reads past one below the image.
-fn ancestor_filters(el: &StaticElement<'_>) -> bool {
-    std::iter::successors(el.parent_element(), |e| e.parent_element())
-        .any(|e| !paints_no_box(e.style()) && filters(sv(e.style(), "filter")))
+/// A color-changing `filter` or a `mix-blend-mode` on an ancestor of `el`
+/// that generates a box: either reworks the image and the text together
+/// with what is behind the ancestor, which the samples cannot show. A
+/// `display: contents` ancestor has no box, so neither applies, as
+/// `analyze_level` reads past one below the image.
+fn ancestor_reworks_colors(el: &StaticElement<'_>) -> bool {
+    std::iter::successors(el.parent_element(), |e| e.parent_element()).any(|e| {
+        let style = e.style();
+        !paints_no_box(style)
+            && (filters(sv(style, "filter")) || blends(sv(style, "mixBlendMode")))
+    })
 }
 
 /// The paint of one element, in isolation from its ancestors.
@@ -957,15 +962,24 @@ fn ancestor_filters(el: &StaticElement<'_>) -> bool {
 /// the content box by `background-clip: content-box` on every axis, with
 /// padding on that axis (any value not known to be zero). Text positioned
 /// in that padding is not under the layer, and without layout the model
-/// cannot tell it from text in the content box.
+/// cannot tell it from text in the content box. An entry is read token by
+/// token, since a shorthand's bare `var()` may have resolved into it beside
+/// a literal keyword, and one still holding a `var()` is not known to
+/// paint the padding.
 pub(crate) fn layer_inset_by_padding(
     style: &StyleValues,
     origin: &str,
     clip: &str,
     repeat: &str,
 ) -> (bool, bool) {
-    let inside = origin.eq_ignore_ascii_case("content-box");
-    let clipped = clip.eq_ignore_ascii_case("content-box");
+    let names_content_box = |entry: &str| {
+        entry.contains("var(")
+            || entry
+                .split_whitespace()
+                .any(|token| token.eq_ignore_ascii_case("content-box"))
+    };
+    let inside = names_content_box(origin);
+    let clipped = names_content_box(clip);
     if !inside && !clipped {
         return (false, false);
     }
@@ -1192,10 +1206,10 @@ pub fn find_image_ground(el: &StaticElement<'_>, levels: &LevelCache) -> Option<
                         None => parent_ground,
                     }
                 };
-                // A color-changing `filter` on any boxed ancestor of the
-                // image element reworks the image and the text together,
-                // which the samples cannot show: the walk gives up.
-                if ancestor_filters(&cur) {
+                // A color-changing `filter` or a blend on any boxed ancestor
+                // of the image element reworks the image and the text
+                // together, which the samples cannot show: the walk gives up.
+                if ancestor_reworks_colors(&cur) {
                     return None;
                 }
                 return Some(ImageGround {
