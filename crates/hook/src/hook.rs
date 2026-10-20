@@ -657,10 +657,14 @@ pub fn run_stop_hook(rt: &Runtime, stdin: &str) -> RunResult {
             }
         }
     }
-    let project_cwd = rt.resolve(&[str_field(&event, "cwd").unwrap_or(&rt.proc_cwd)]);
-    audit.insert("cwd".into(), Value::String(project_cwd.clone()));
     let session_value = session_id_of(&event);
     let session_id = session_key(&session_value);
+    let project_cwd = resolve_stop_cwd(
+        rt,
+        &rt.resolve(&[str_field(&event, "cwd").unwrap_or(&rt.proc_cwd)]),
+        &session_id,
+    );
+    audit.insert("cwd".into(), Value::String(project_cwd.clone()));
     audit.insert(
         "session".into(),
         session_value.unwrap_or_else(|| Value::from("unknown")),

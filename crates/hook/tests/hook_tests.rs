@@ -2684,6 +2684,26 @@ fn stop_cache_syncs_after_clean_scan_so_reintroductions_fire() {
 }
 
 #[test]
+fn stop_from_a_subfolder_finds_the_root_cache() {
+    // #1088: the per-edit pass keys the cache to the project root; Stop from a
+    // subfolder, even one with its own `.impeccable/`, must still find it.
+    let t = Tmp::new();
+    t.write("package.json", "{}");
+    let cwd = t.path();
+    let css = t.write("src/a.css", SIDE_TAB_CSS);
+    let docs = jsp::join(&[&cwd, "docs"]);
+    t.write("docs/readme.txt", "x");
+    let app = jsp::join(&[&cwd, "app"]);
+    t.write("app/.impeccable/live/roots.json", "{}");
+    for (session, sub) in [("s1", &docs), ("s2", &app)] {
+        hook::run_hook(&rt(&cwd), &edit_event(&cwd, &css, session));
+        let res = hook::run_stop_hook(&rt(sub), &stop_event(sub, session));
+        assert!(res.stdout.contains("[side-tab]"), "{session}: {}", res.stdout);
+        assert_eq!(audit_str(&res.audit, "cwd"), Some(cwd.as_str()));
+    }
+}
+
+#[test]
 fn codex_stop_emits_decision_block() {
     // #603: Codex Stop rejects Claude's hookSpecificOutput shape; findings
     // that should continue the turn are a top-level blocking decision.
