@@ -342,12 +342,7 @@ pub fn resolve_cache_cwd(rt: &Runtime, primary_file: Option<&str>, session_cwd: 
 /// session's cache to a project root above the session cwd (#1088). Use the
 /// nearest directory, from the session cwd up to (not including) the home
 /// dir, whose cache lists files this session touched; else the session cwd.
-/// `build-phase` keeps its state under its own cwd, so a session cwd holding
-/// a comp build stays the root: its reminder, config and cache stay together.
 pub fn resolve_stop_cwd(rt: &Runtime, session_cwd: &str, session_id: &str) -> String {
-    if exists(&jsp::join(&[session_cwd, ".impeccable/build/state.json"])) {
-        return session_cwd.to_string();
-    }
     let mut dir = session_cwd.to_string();
     let home = rt.resolve(&[&rt.homedir()]);
     while dir != home {
