@@ -268,8 +268,10 @@ fn size_component(token: &str) -> String {
 /// still hold beside the literal tokens, each where it stood among them
 /// (further position components up to four, further repeat keywords up to
 /// two, the origin and the clip beside a literal box keyword, and the size
-/// as the shorthand's own `from-shorthand(...)` when the layer names no
-/// literal size, since the `var()` may hold one behind its own slash), so
+/// as the shorthand's own `from-shorthand(...)`, holding the layer's tokens
+/// in source order, when the layer names no literal size, since the `var()`
+/// may hold one behind its own slash and a literal component after it may
+/// continue that size), so
 /// the compute loop resolves them and each reader takes what it can read,
 /// leaving the rest unknown (the repeat reader reads keywords only, the
 /// position slot first drops what cannot be a position, see
@@ -300,6 +302,9 @@ fn parse_static_background_layers(
         let mut position: Vec<(usize, String)> = Vec::new();
         let mut boxes: Vec<String> = Vec::new();
         let mut vars: Vec<(usize, String)> = Vec::new();
+        // Every token of the layer but the image call, in source order: what
+        // the size slot stores around a bare `var()` (see below).
+        let mut layer_tokens: Vec<String> = Vec::new();
         let mut in_size = false;
         let tokens: Vec<String> = split_tokens(&layer).iter().flat_map(|t| unglue(t)).collect();
         for (order, raw) in join_slashes(tokens).into_iter().enumerate() {
@@ -311,6 +316,7 @@ fn parse_static_background_layers(
                 in_size = false;
                 continue;
             }
+            layer_tokens.push(token.to_string());
             // `center/cover`, `center / cover`, or `center/ cover`: the size
             // is what follows the slash, one or two values; what precedes it
             // is the last position component.
@@ -375,10 +381,14 @@ fn parse_static_background_layers(
         } else {
             repeat.join(" ")
         });
+        // A bare `var()` may hold the size behind its own slash, and a
+        // literal component after it may continue that size (`var(--l)
+        // 100%` with `--l: center / 100%` is `100% 100%`), so the slot
+        // stores the layer's tokens around the `var()` as they stand.
         sizes.push(if !size.is_empty() {
             size.join(" ")
         } else if has_vars {
-            format!("{FROM_SHORTHAND}({})", var_text())
+            format!("{FROM_SHORTHAND}({})", layer_tokens.join(" "))
         } else {
             "auto".into()
         });
@@ -649,11 +659,12 @@ pub fn position_slot_or_default(value: &str) -> String {
     }
 }
 
-/// The marker a `background` shorthand's bare `var()` is stored under in
-/// the size slot when the layer names no literal size: the `var()` may hold
-/// the size behind its own slash (`--layout: center / cover`), which the
-/// parser cannot see, and a longhand never carries the marker, so the
-/// computed slot can tell the shorthand's own value from one a later
+/// The marker a `background` shorthand's layer is stored under in the size
+/// slot when it holds a bare `var()` and names no literal size: the `var()`
+/// may hold the size behind its own slash (`--layout: center / cover`),
+/// which the parser cannot see, a literal component after it may continue
+/// that size, and a longhand never carries the marker, so the computed
+/// slot can tell the shorthand's own value from one a later
 /// `background-size` declaration set. The name holds no `var(`, which the
 /// resolver would take for the call itself.
 const FROM_SHORTHAND: &str = "from-shorthand";
@@ -664,8 +675,10 @@ static FROM_SHORTHAND_RE: Lazy<Regex> =
 /// compute loop resolved the `var()` inside it: the layer computes to the
 /// one or two size components behind a top-level slash in the resolved
 /// value (`center / cover` gives `cover`, `0 0 / 100% auto` gives `100%
-/// auto`), and to `auto`, the size the shorthand named, when it holds none
-/// (a repeat, a position, a color; a slash inside `calc()` is not one). A
+/// auto`, and `center / 100% 100% no-repeat`, a literal `100%` continuing
+/// what the `var()` held, gives `100% 100%`), and to `auto`, the size the
+/// shorthand named, when it holds none (a repeat, a position, a color; a
+/// slash inside `calc()` is not one). A
 /// `var()` the loop could not resolve is left in place, unknown to the size
 /// reader as it is to every other. A slot without the marker, a longhand's
 /// or a literal size's, is returned as it came.
@@ -1156,6 +1169,10 @@ mod tests {
             ("from-shorthand(0 0 / 100% auto)", "100% auto"),
             ("from-shorthand(center / cover no-repeat)", "cover"),
             ("from-shorthand(/cover)", "cover"),
+            // The layer's literal tokens stand around the resolved `var()`.
+            ("from-shorthand(#111 center / 100% 100% no-repeat)", "100% 100%"),
+            ("from-shorthand(#111 center 100% no-repeat)", "auto"),
+            ("from-shorthand(center / cover 100%)", "cover 100%"),
             ("from-shorthand(no-repeat)", "auto"),
             ("from-shorthand(center)", "auto"),
             ("from-shorthand(50% 50%)", "auto"),

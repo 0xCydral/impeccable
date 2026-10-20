@@ -1287,4 +1287,13 @@ fn a_size_held_in_a_custom_property_is_read() {
     let css = ":root { --layout: center / cover; } .hero { background-size: auto; background: #17150f url(icon.png) var(--layout) no-repeat; } p { color: #fdfdfd; }";
     let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
     assert!(sampled_on("icon.png", &found), "{found:?}");
+    // A literal component after the property continues what it held: a
+    // second size behind its slash (`100% 100%`), or a second position
+    // component when it held no slash.
+    let css = ":root { --layout: center / 100%; } .hero { background: #17150f url(icon.png) var(--layout) 100% no-repeat; } p { color: #fdfdfd; }";
+    let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
+    assert!(sampled_on("icon.png", &found), "{found:?}");
+    let css = ":root { --layout: center; } .hero { background: #17150f url(icon.png) var(--layout) 100% no-repeat; } p { color: #fdfdfd; }";
+    let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
+    assert!(found.is_empty(), "{found:?}");
 }
