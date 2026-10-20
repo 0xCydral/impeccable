@@ -1273,4 +1273,18 @@ fn a_size_held_in_a_custom_property_is_read() {
     let css = ":root { --layout: center / 100% auto; } .hero { background: #17150f url(icon.png) var(--layout) no-repeat; } p { color: #fdfdfd; }";
     let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
     assert!(found.is_empty(), "{found:?}");
+    // Each slot carries its own copy of the property, as the cascade does:
+    // a later `background-size` longhand resets the size the property held
+    // and leaves the icon small, and a later `background-position` longhand
+    // moves the icon without taking its size away.
+    let css = ":root { --layout: center / cover; } .hero { background: #17150f url(icon.png) var(--layout) no-repeat; background-size: auto; } p { color: #fdfdfd; }";
+    let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
+    assert!(found.is_empty(), "{found:?}");
+    let css = ":root { --layout: center / cover; } .hero { background: #17150f url(icon.png) var(--layout) no-repeat; background-position: left top; } p { color: #fdfdfd; }";
+    let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
+    assert!(sampled_on("icon.png", &found), "{found:?}");
+    // The longhand declared first loses to the shorthand after it.
+    let css = ":root { --layout: center / cover; } .hero { background-size: auto; background: #17150f url(icon.png) var(--layout) no-repeat; } p { color: #fdfdfd; }";
+    let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
+    assert!(sampled_on("icon.png", &found), "{found:?}");
 }

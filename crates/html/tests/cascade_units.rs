@@ -482,7 +482,7 @@ fn background_longhands_ride_beside_the_expansion() {
         pairs("background", "url(icon.png)var(--tile)"),
         own(&[
             ("backgroundRepeat", "var(--tile)"),
-            ("backgroundSize", "auto"),
+            ("backgroundSize", "from-shorthand(var(--tile))"),
             ("backgroundPosition", "var(--tile)"),
             ("backgroundOrigin", "var(--tile)"),
             ("backgroundClip", "var(--tile)"),
@@ -526,7 +526,7 @@ fn background_longhands_ride_beside_the_expansion() {
         pairs("background", "url(icon.png) no-repeat var(--brand)"),
         own(&[
             ("backgroundRepeat", "no-repeat var(--brand)"),
-            ("backgroundSize", "auto"),
+            ("backgroundSize", "from-shorthand(var(--brand))"),
             ("backgroundPosition", "var(--brand)"),
             ("backgroundOrigin", "var(--brand)"),
             ("backgroundClip", "var(--brand)"),
@@ -537,7 +537,7 @@ fn background_longhands_ride_beside_the_expansion() {
         pairs("background", "url(icon.png)var(--x)"),
         own(&[
             ("backgroundRepeat", "var(--x)"),
-            ("backgroundSize", "auto"),
+            ("backgroundSize", "from-shorthand(var(--x))"),
             ("backgroundPosition", "var(--x)"),
             ("backgroundOrigin", "var(--x)"),
             ("backgroundClip", "var(--x)"),
@@ -550,7 +550,7 @@ fn background_longhands_ride_beside_the_expansion() {
         pairs("background", "url(a.png), var(--brand)"),
         own(&[
             ("backgroundRepeat", "repeat, var(--brand)"),
-            ("backgroundSize", "auto, auto"),
+            ("backgroundSize", "auto, from-shorthand(var(--brand))"),
             ("backgroundPosition", "0% 0%, var(--brand)"),
             ("backgroundOrigin", "padding-box, var(--brand)"),
             ("backgroundClip", "border-box, var(--brand)"),
@@ -562,7 +562,7 @@ fn background_longhands_ride_beside_the_expansion() {
         pairs("background", "url(hero.jpg) #17150f var(--tile)"),
         own(&[
             ("backgroundRepeat", "var(--tile)"),
-            ("backgroundSize", "auto"),
+            ("backgroundSize", "from-shorthand(var(--tile))"),
             ("backgroundPosition", "var(--tile)"),
             ("backgroundOrigin", "var(--tile)"),
             ("backgroundClip", "var(--tile)"),
@@ -573,7 +573,7 @@ fn background_longhands_ride_beside_the_expansion() {
         pairs("background", "url(hero.jpg) var(--tile) rgba(0, 0, 0, 0.5)"),
         own(&[
             ("backgroundRepeat", "var(--tile)"),
-            ("backgroundSize", "auto"),
+            ("backgroundSize", "from-shorthand(var(--tile))"),
             ("backgroundPosition", "var(--tile)"),
             ("backgroundOrigin", "var(--tile)"),
             ("backgroundClip", "var(--tile)"),
@@ -584,7 +584,7 @@ fn background_longhands_ride_beside_the_expansion() {
         pairs("background", "url(hero.jpg) var(--brand, #fff)"),
         own(&[
             ("backgroundRepeat", "var(--brand, #fff)"),
-            ("backgroundSize", "auto"),
+            ("backgroundSize", "from-shorthand(var(--brand, #fff))"),
             ("backgroundPosition", "var(--brand, #fff)"),
             ("backgroundOrigin", "var(--brand, #fff)"),
             ("backgroundClip", "var(--brand, #fff)"),
@@ -607,7 +607,7 @@ fn background_longhands_ride_beside_the_expansion() {
         pairs("background", "url(icon.png) var(--repeat)"),
         own(&[
             ("backgroundRepeat", "var(--repeat)"),
-            ("backgroundSize", "auto"),
+            ("backgroundSize", "from-shorthand(var(--repeat))"),
             ("backgroundPosition", "var(--repeat)"),
             ("backgroundOrigin", "var(--repeat)"),
             ("backgroundClip", "var(--repeat)"),
@@ -618,7 +618,7 @@ fn background_longhands_ride_beside_the_expansion() {
         pairs("background", "var(--brand) url(a.png) center no-repeat"),
         own(&[
             ("backgroundRepeat", "var(--brand) no-repeat"),
-            ("backgroundSize", "auto"),
+            ("backgroundSize", "from-shorthand(var(--brand))"),
             ("backgroundPosition", "var(--brand) center"),
             ("backgroundOrigin", "var(--brand)"),
             ("backgroundClip", "var(--brand)"),
@@ -916,13 +916,14 @@ fn a_box_keyword_in_the_shorthand_is_the_origin_and_the_clip() {
     );
     // Every bare `var()` of a layer is kept, in order, for every slot it
     // could still hold beside the literal tokens: once resolved, the repeat
-    // reader takes the keyword, the position slot drops it, and the
-    // padding read looks for a box keyword.
+    // reader takes the keyword, the position slot drops it, the size slot
+    // takes only what follows a slash (as the shorthand's own, marked), and
+    // the padding read looks for a box keyword.
     assert_eq!(
         background_longhands("background", "#111 url(icon.png) var(--pos) var(--tile)"),
         own(&[
             ("backgroundRepeat", "var(--pos) var(--tile)"),
-            ("backgroundSize", "auto"),
+            ("backgroundSize", "from-shorthand(var(--pos) var(--tile))"),
             ("backgroundPosition", "var(--pos) var(--tile)"),
             ("backgroundOrigin", "var(--pos) var(--tile)"),
             ("backgroundClip", "var(--pos) var(--tile)"),
@@ -934,7 +935,7 @@ fn a_box_keyword_in_the_shorthand_is_the_origin_and_the_clip() {
         background_longhands("background", "#111 url(light.png) 0 var(--y) no-repeat"),
         own(&[
             ("backgroundRepeat", "var(--y) no-repeat"),
-            ("backgroundSize", "auto"),
+            ("backgroundSize", "from-shorthand(var(--y))"),
             ("backgroundPosition", "0 var(--y)"),
             ("backgroundOrigin", "var(--y)"),
             ("backgroundClip", "var(--y)"),
@@ -946,7 +947,7 @@ fn a_box_keyword_in_the_shorthand_is_the_origin_and_the_clip() {
         background_longhands("background", "#111 url(light.png) var(--x) no-repeat"),
         own(&[
             ("backgroundRepeat", "var(--x) no-repeat"),
-            ("backgroundSize", "auto"),
+            ("backgroundSize", "from-shorthand(var(--x))"),
             ("backgroundPosition", "var(--x)"),
             ("backgroundOrigin", "var(--x)"),
             ("backgroundClip", "var(--x)"),
@@ -956,7 +957,7 @@ fn a_box_keyword_in_the_shorthand_is_the_origin_and_the_clip() {
         background_longhands("background", "#111 url(light.png) var(--y) 0 no-repeat"),
         own(&[
             ("backgroundRepeat", "var(--y) no-repeat"),
-            ("backgroundSize", "auto"),
+            ("backgroundSize", "from-shorthand(var(--y))"),
             ("backgroundPosition", "var(--y) 0"),
             ("backgroundOrigin", "var(--y)"),
             ("backgroundClip", "var(--y)"),
@@ -966,7 +967,7 @@ fn a_box_keyword_in_the_shorthand_is_the_origin_and_the_clip() {
         background_longhands("background", "url(a.png) content-box var(--v)"),
         own(&[
             ("backgroundRepeat", "var(--v)"),
-            ("backgroundSize", "auto"),
+            ("backgroundSize", "from-shorthand(var(--v))"),
             ("backgroundPosition", "var(--v)"),
             ("backgroundOrigin", "content-box"),
             ("backgroundClip", "content-box var(--v)"),

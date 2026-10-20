@@ -267,13 +267,16 @@ fn size_component(token: &str) -> String {
 /// the bare `var()` tokens of a layer are stored in every slot they could
 /// still hold beside the literal tokens, each where it stood among them
 /// (further position components up to four, further repeat keywords up to
-/// two, the origin and the clip beside a literal box keyword), so the
-/// compute loop
-/// resolves them and each reader takes what it can read, leaving the rest
-/// unknown (the repeat reader reads keywords only, the position slot first
-/// drops what cannot be a position, see `position_slot_or_default`, and
-/// the padding read looks for a `content-box` token). One directly before
-/// the size slash can only be the position and is stored as that. The
+/// two, the origin and the clip beside a literal box keyword, and the size
+/// as the shorthand's own `from-shorthand(...)` when the layer names no
+/// literal size, since the `var()` may hold one behind its own slash), so
+/// the compute loop resolves them and each reader takes what it can read,
+/// leaving the rest unknown (the repeat reader reads keywords only, the
+/// position slot first drops what cannot be a position, see
+/// `position_slot_or_default`, the size slot takes a size only from behind
+/// a slash, see `size_slot_or_default`, and the padding read looks for a
+/// `content-box` token). One directly before the size slash can only be
+/// the position and is stored as that. The
 /// fourth value is the per-layer `background-origin` and `background-clip`
 /// lists from the layers' box keywords and bare `var()` tokens (one keyword
 /// sets both, two set the origin then the clip; a layer naming none is
@@ -372,10 +375,12 @@ fn parse_static_background_layers(
         } else {
             repeat.join(" ")
         });
-        sizes.push(if size.is_empty() {
-            "auto".into()
-        } else {
+        sizes.push(if !size.is_empty() {
             size.join(" ")
+        } else if has_vars {
+            format!("{FROM_SHORTHAND}({})", var_text())
+        } else {
+            "auto".into()
         });
         let position = with_vars(position, 4);
         positions.push(if position.is_empty() {
@@ -604,18 +609,36 @@ pub fn position_slot_or_default(value: &str) -> String {
         .iter()
         .map(|layer| {
             let tokens = join_slashes(split_tokens(layer).iter().flat_map(|t| unglue(t)).collect());
-            let kept: Vec<&String> = tokens
-                .iter()
-                .filter(|token| {
-                    let drop = outside_position(token);
-                    dropped |= drop;
-                    !drop
-                })
-                .collect();
+            let mut kept: Vec<String> = Vec::new();
+            // A `var()` may have held the size behind its slash too
+            // (`center / cover`): the slash and the one or two size
+            // components after it are the size slot's (`size_slot_or_default`),
+            // not a position.
+            let mut sizes_left = 0usize;
+            for token in tokens {
+                if let Some((before, after)) = split_size_slash(&token) {
+                    dropped = true;
+                    if !before.is_empty() && !outside_position(before) {
+                        kept.push(before.to_string());
+                    }
+                    sizes_left = if after.is_empty() { 2 } else { 1 };
+                    continue;
+                }
+                if sizes_left > 0 && BG_SIZE_RE.is_match(&token) {
+                    sizes_left -= 1;
+                    continue;
+                }
+                sizes_left = 0;
+                if outside_position(&token) {
+                    dropped = true;
+                    continue;
+                }
+                kept.push(token);
+            }
             if kept.is_empty() {
                 "0% 0%".to_string()
             } else {
-                kept.iter().map(|t| t.as_str()).collect::<Vec<_>>().join(" ")
+                kept.join(" ")
             }
         })
         .collect();
@@ -626,72 +649,72 @@ pub fn position_slot_or_default(value: &str) -> String {
     }
 }
 
+/// The marker a `background` shorthand's bare `var()` is stored under in
+/// the size slot when the layer names no literal size: the `var()` may hold
+/// the size behind its own slash (`--layout: center / cover`), which the
+/// parser cannot see, and a longhand never carries the marker, so the
+/// computed slot can tell the shorthand's own value from one a later
+/// `background-size` declaration set. The name holds no `var(`, which the
+/// resolver would take for the call itself.
+const FROM_SHORTHAND: &str = "from-shorthand";
+static FROM_SHORTHAND_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^from-shorthand\(").expect("FROM_SHORTHAND_RE"));
+
+/// A size slot holding the shorthand's `from-shorthand(...)` (#560), once the
+/// compute loop resolved the `var()` inside it: the layer computes to the
+/// one or two size components behind a top-level slash in the resolved
+/// value (`center / cover` gives `cover`, `0 0 / 100% auto` gives `100%
+/// auto`), and to `auto`, the size the shorthand named, when it holds none
+/// (a repeat, a position, a color; a slash inside `calc()` is not one). A
+/// `var()` the loop could not resolve is left in place, unknown to the size
+/// reader as it is to every other. A slot without the marker, a longhand's
+/// or a literal size's, is returned as it came.
+pub fn size_slot_or_default(value: &str) -> String {
+    if !value.contains(FROM_SHORTHAND) {
+        return value.to_string();
+    }
+    let layers: Vec<String> = split_layers(value)
+        .iter()
+        .map(|layer| {
+            let Some(head) = FROM_SHORTHAND_RE.find(layer) else {
+                return layer.clone();
+            };
+            let open = head.end() - 1;
+            let end = css_call_end(layer, open);
+            let inner = layer[open + 1..end.saturating_sub(1).max(open + 1)].trim();
+            if VAR_ANYWHERE_RE.is_match(inner) {
+                return inner.to_string();
+            }
+            let tokens = join_slashes(split_tokens(inner).iter().flat_map(|t| unglue(t)).collect());
+            let mut found: Vec<String> = Vec::new();
+            let mut in_size = false;
+            for token in tokens {
+                if let Some((_, after)) = split_size_slash(&token) {
+                    in_size = true;
+                    found.clear();
+                    if !after.is_empty() && BG_SIZE_RE.is_match(after) {
+                        found.push(size_component(after));
+                    }
+                    continue;
+                }
+                if in_size && found.len() < 2 && BG_SIZE_RE.is_match(&token) {
+                    found.push(size_component(&token));
+                    continue;
+                }
+                in_size = false;
+            }
+            if found.is_empty() {
+                "auto".to_string()
+            } else {
+                found.join(" ")
+            }
+        })
+        .collect();
+    layers.join(", ")
+}
+
 static BG_SIZE_KEYWORD_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)^(?:auto|cover|contain)$").expect("BG_SIZE_KEYWORD_RE"));
-
-/// A `background` shorthand's bare `var()` stored in the position slot may
-/// have held the size behind its slash too (`--layout: center / cover`),
-/// which the parser could not see before the compute loop resolved it
-/// (#560). A layer of the resolved position slot with a top-level slash is
-/// split here: what precedes the slash stays the position (`0% 0%` when
-/// nothing does), and what follows it, one or two size components, becomes
-/// that layer's size where the shorthand named no literal one (its slot
-/// reads `auto`). `None` when no layer holds such a slash, a slash inside
-/// `calc()` included, so the slots stay as they came.
-pub fn split_position_sizes(position: &str, size: &str) -> Option<(String, String)> {
-    if !position.contains('/') {
-        return None;
-    }
-    let mut sizes: Vec<String> = split_layers(size)
-        .iter()
-        .map(|layer| layer.trim().to_string())
-        .collect();
-    let mut positions: Vec<String> = Vec::new();
-    let mut split = false;
-    for (index, layer) in split_layers(position).iter().enumerate() {
-        let tokens = join_slashes(split_tokens(layer).iter().flat_map(|t| unglue(t)).collect());
-        let mut kept: Vec<String> = Vec::new();
-        let mut found: Vec<String> = Vec::new();
-        let mut in_size = false;
-        let mut slashed = false;
-        for token in tokens {
-            if let Some((before, after)) = split_size_slash(&token) {
-                slashed = true;
-                if !before.is_empty() {
-                    kept.push(before.to_string());
-                }
-                in_size = true;
-                found.clear();
-                if !after.is_empty() && BG_SIZE_RE.is_match(after) {
-                    found.push(size_component(after));
-                }
-                continue;
-            }
-            if in_size && found.len() < 2 && BG_SIZE_RE.is_match(&token) {
-                found.push(size_component(&token));
-                continue;
-            }
-            in_size = false;
-            kept.push(token);
-        }
-        if !slashed {
-            positions.push(layer.trim().to_string());
-            continue;
-        }
-        split = true;
-        positions.push(if kept.is_empty() {
-            "0% 0%".to_string()
-        } else {
-            position_slot_or_default(&kept.join(" "))
-        });
-        if let Some(slot) = sizes.get_mut(index) {
-            if slot == "auto" && !found.is_empty() {
-                *slot = found.join(" ");
-            }
-        }
-    }
-    split.then(|| (positions.join(", "), sizes.join(", ")))
-}
 // The color keywords `extract_static_color` does not read as a color.
 static COLOR_KEYWORD_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)^(?:transparent|currentcolor)$").expect("COLOR_KEYWORD_RE"));
@@ -1099,6 +1122,12 @@ mod tests {
             ("cover", "0% 0%"),
             ("no-repeat, center", "0% 0%, center"),
             ("0 200px no-repeat", "0 200px"),
+            // The size the `var()` held behind its slash is the size slot's.
+            ("center/cover", "center"),
+            ("center / cover no-repeat", "center"),
+            ("0 0 / 100% 100%", "0 0"),
+            ("/cover", "0% 0%"),
+            ("center/cover, 0% 0%", "center, 0% 0%"),
         ] {
             assert_eq!(position_slot_or_default(resolved), position, "{resolved}");
         }
@@ -1112,7 +1141,7 @@ mod tests {
             "calc(50% - 10px) 0",
             "var(--pos)",
             "var(--c, #fff)",
-            "center/cover",
+            "calc(50% / 2) 0",
             "150% 0",
         ] {
             assert_eq!(position_slot_or_default(value), value);
@@ -1120,25 +1149,29 @@ mod tests {
     }
 
     #[test]
-    fn a_slash_in_the_resolved_position_slot_gives_the_layer_its_size() {
-        let split = |position: &str, size: &str| {
-            split_position_sizes(position, size).map(|(p, s)| (p, s))
-        };
-        let some = |p: &str, s: &str| Some((p.to_string(), s.to_string()));
-        assert_eq!(split("center/cover", "auto"), some("center", "cover"));
-        assert_eq!(split("center / cover", "auto"), some("center", "cover"));
-        assert_eq!(split("0 0/100% 100%", "auto"), some("0 0", "100% 100%"));
-        assert_eq!(split("center/100% auto", "auto"), some("center", "100% auto"));
-        assert_eq!(split("/cover", "auto"), some("0% 0%", "cover"));
-        assert_eq!(split("center/cover no-repeat", "auto"), some("center", "cover"));
-        assert_eq!(split("center/cover, 0% 0%", "auto, auto"), some("center, 0% 0%", "cover, auto"));
-        // A literal size stands; the slashed value still loses its tail.
-        assert_eq!(split("center/cover", "64px"), some("center", "64px"));
-        // Nothing to split: a position without a slash, or a slash inside
-        // `calc()`, leaves both slots as they came.
-        assert_eq!(split("center", "auto"), None);
-        assert_eq!(split("50% 50%", "auto"), None);
-        assert_eq!(split("calc(50% / 2) 0", "auto"), None);
-        assert_eq!(split("var(--layout)", "auto"), None);
+    fn the_shorthands_var_in_the_size_slot_computes_to_what_follows_its_slash() {
+        for (resolved, size) in [
+            ("from-shorthand(center / cover)", "cover"),
+            ("from-shorthand(center/cover)", "cover"),
+            ("from-shorthand(0 0 / 100% auto)", "100% auto"),
+            ("from-shorthand(center / cover no-repeat)", "cover"),
+            ("from-shorthand(/cover)", "cover"),
+            ("from-shorthand(no-repeat)", "auto"),
+            ("from-shorthand(center)", "auto"),
+            ("from-shorthand(50% 50%)", "auto"),
+            ("from-shorthand(0 0)", "auto"),
+            ("from-shorthand(#17150f)", "auto"),
+            ("from-shorthand(calc(50% / 2) 0)", "auto"),
+            ("from-shorthand(center / cover), auto", "cover, auto"),
+            ("64px, from-shorthand(center)", "64px, auto"),
+            // Unresolved: the `var()` stays, unknown to the size reader.
+            ("from-shorthand(var(--layout))", "var(--layout)"),
+        ] {
+            assert_eq!(size_slot_or_default(resolved), size, "{resolved}");
+        }
+        // A longhand's or a literal size's slot is returned as it came.
+        for value in ["auto", "cover", "100% auto", "calc(100% / 3) auto", "var(--s)", "auto, 64px"] {
+            assert_eq!(size_slot_or_default(value), value);
+        }
     }
 }
