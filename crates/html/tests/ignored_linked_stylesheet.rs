@@ -17,7 +17,7 @@ fn ids(waive_sheet: bool) -> Vec<String> {
     let html = r#"<!doctype html><html lang="en"><head><meta charset="utf-8"><title>mock</title>
 <link rel="stylesheet" href="vendor/lib.css"></head>
 <body><main><h1>Mock</h1><p class="pale">Pale body copy on white</p></main></body></html>"#;
-    let ignored = |path: &str| path.ends_with("vendor/lib.css");
+    let ignored = |path: &str| path.replace('\\', "/").ends_with("vendor/lib.css");
     let options = DetectHtmlOptions {
         ignored_linked_stylesheet: waive_sheet.then_some(&ignored as &dyn Fn(&str) -> bool),
         ..Default::default()
