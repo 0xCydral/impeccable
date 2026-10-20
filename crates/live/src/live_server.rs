@@ -100,10 +100,13 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
     }
 
     if argv.iter().any(|a| a == "--background") {
+        // `--target` was consumed above; forward the resolved root so the
+        // child re-enters it instead of re-resolving from the new cwd.
         let child_args: Vec<String> = argv
             .iter()
             .filter(|a| *a != "--background")
             .cloned()
+            .chain(roots.as_ref().map(|r| format!("--target={}", r.app_root)))
             .collect();
         return match crate::server::spawn_detached_with_args(&cwd, &env, &child_args) {
             Some(info) => {
