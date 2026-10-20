@@ -28,7 +28,7 @@ pub fn gemini_shell_identity(rt: &Runtime, event: &serde_json::Map<String, Value
     Some(json!({"hookSpecificOutput":{"tool_input":{"command":format!("{prefix}{command}")}}}).to_string())
 }
 
-pub fn reminder(rt: &Runtime, cwd: &str, cache_cwd: &str, session: &str, active: bool, cache: &mut Cache) -> Option<String> {
+pub fn reminder(rt: &Runtime, cwd: &str, session: &str, active: bool, cache: &mut Cache) -> Option<String> {
     if session == "unknown" || session.is_empty() { return None; }
     // A continuation this hook started itself (findings shown over a recorded
     // ship) is ours to follow up once: the fixes it asked for changed the build.
@@ -36,7 +36,7 @@ pub fn reminder(rt: &Runtime, cwd: &str, cache_cwd: &str, session: &str, active:
     // Stop, so a later continuation another hook starts is never taken over.
     let marker = if active {
         let taken = ensure_session(cache, session).remove(FINDINGS_AFTER_FINISH);
-        if taken.is_some() && !persist_cache(rt, cache_cwd, cache) { return None; }
+        if taken.is_some() && !persist_cache(rt, cwd, cache) { return None; }
         taken.and_then(|v| v.as_str().map(String::from))
     } else { None };
     let root = Path::new(cwd);
@@ -60,7 +60,7 @@ pub fn reminder(rt: &Runtime, cwd: &str, cache_cwd: &str, session: &str, active:
         "build":key, "count":count+1, "boundSha256":current_hash
     }));
     // Never emit an unbounded continuation if the counter cannot be saved.
-    if !persist_cache(rt, cache_cwd, cache) { return None; }
+    if !persist_cache(rt, cwd, cache) { return None; }
     let open = report["openPhases"].as_array()?.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ");
     if report["status"] == "changed-after-finish" {
         let changed = report["changedSinceFinish"].as_array().into_iter().flatten().filter_map(Value::as_str).take(6).collect::<Vec<_>>().join(", ");

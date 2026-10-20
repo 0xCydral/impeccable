@@ -659,10 +659,11 @@ pub fn run_stop_hook(rt: &Runtime, stdin: &str) -> RunResult {
     }
     let session_value = session_id_of(&event);
     let session_id = session_key(&session_value);
-    // `build-phase` keeps its state under its own cwd, so the build root stays
-    // the session cwd while the hook cache may sit at an ancestor (#1088).
-    let build_cwd = rt.resolve(&[str_field(&event, "cwd").unwrap_or(&rt.proc_cwd)]);
-    let project_cwd = resolve_stop_cwd(rt, &build_cwd, &session_id);
+    let project_cwd = resolve_stop_cwd(
+        rt,
+        &rt.resolve(&[str_field(&event, "cwd").unwrap_or(&rt.proc_cwd)]),
+        &session_id,
+    );
     audit.insert("cwd".into(), Value::String(project_cwd.clone()));
     audit.insert(
         "session".into(),
@@ -694,12 +695,12 @@ pub fn run_stop_hook(rt: &Runtime, stdin: &str) -> RunResult {
             ],
         ))
     };
-    if std::path::Path::new(&build_cwd).join(".impeccable/build/state.json").is_file() {
+    if std::path::Path::new(&project_cwd).join(".impeccable/build/state.json").is_file() {
         if let Some(skip) = native_skip(&mut platform_memo) { return skip; }
     }
     let mut cache = read_cache(&project_cwd);
     if matches!(harness, "claude" | "codex" | "gemini") {
-        if let Some(message) = crate::build_completion::reminder(rt, &build_cwd, &project_cwd, &session_id, stop_hook_active, &mut cache) {
+        if let Some(message) = crate::build_completion::reminder(rt, &project_cwd, &session_id, stop_hook_active, &mut cache) {
             return RunResult {
                 stdout: payload(&message, "Stop", harness),
                 audit: with(&audit, vec![("kind", Value::from("build-completion")), ("emitted", Value::Bool(true)), ("durationMs", ms_since(started))]),
@@ -868,7 +869,7 @@ pub fn run_stop_hook(rt: &Runtime, stdin: &str) -> RunResult {
         append_design_system_note_once(rt, &text, scan, &mut cache, &session_id, &config);
     // Findings shown over a comp build already recorded as shipped: a fix voids
     // that finish, so say so with the findings, not after the agent stops.
-    let text = match crate::build_completion::finished_build_note(rt, &build_cwd, &session_id, &mut cache) {
+    let text = match crate::build_completion::finished_build_note(rt, &project_cwd, &session_id, &mut cache) {
         Some(note) => format!("{text}\n\n{note}"),
         None => text,
     };

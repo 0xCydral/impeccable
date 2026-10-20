@@ -2704,9 +2704,9 @@ fn stop_from_a_subfolder_finds_the_root_cache() {
 }
 
 #[test]
-fn stop_from_a_subfolder_build_reads_its_state_beside_a_root_cache() {
-    // #1088: the hook cache may sit at the root, but `build-phase` keeps its
-    // state under its own cwd, so the reminder reads the subfolder's build.
+fn stop_from_a_subfolder_build_stays_on_that_build() {
+    // #1088: `build-phase` keeps its state under its own cwd, so a Stop there
+    // keeps that folder's build, config and cache even with a root cache.
     let t = Tmp::new();
     t.write("package.json", "{}");
     let cwd = t.path();
@@ -2721,6 +2721,9 @@ fn stop_from_a_subfolder_build_reads_its_state_beside_a_root_cache() {
     let app = jsp::join(&[&cwd, "app"]);
     let res = hook::run_stop_hook(&rt(&app), &stop_event(&app, "owner"));
     assert!(res.stdout.contains("Comp build"), "{}", res.stdout);
+    t.write("app/.impeccable/config.json", r#"{"hook":{"enabled":false}}"#);
+    let res = hook::run_stop_hook(&rt(&app), &stop_event(&app, "owner"));
+    assert_eq!(audit_str(&res.audit, "skipped"), Some("config-disabled"));
 }
 
 #[test]
