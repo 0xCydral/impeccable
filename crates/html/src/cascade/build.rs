@@ -9,7 +9,7 @@
 //! (`customPropMap` is `null`, `overrides` is `null`).
 
 use super::checks_shim::CustomProps;
-use super::shorthand::{names_background_geometry, position_slot_or_default};
+use super::shorthand::{names_background_geometry, position_slot_or_default, split_position_sizes};
 use super::{
     apply_static_declaration, collect_static_css_rules, collect_static_css_rules_from,
     compare_static_priority, is_static_inherited_prop, make_default_style,
@@ -424,7 +424,10 @@ fn mark_pseudo_rule(
 ///   box, or color token, `0% 0%` when nothing is left
 ///   (`position_slot_or_default`), so the position reader does not take a
 ///   `no-repeat` for a shift and leave a covering image unread;
-/// - the repeat reader reads keywords only, so that slot needs nothing.
+/// - the repeat reader reads keywords only, so that slot needs nothing;
+/// - a position slot whose `var()` held the size too (`center / cover`) is
+///   split once every slot is computed (`split_position_sizes`, below the
+///   compute loop), the size going to the size slot where it read `auto`.
 fn shorthand_slot_or_default(prop: &str, value: String) -> String {
     match prop {
         "backgroundColor" if names_background_geometry(&value) => "transparent".to_string(),
@@ -765,6 +768,18 @@ fn compute_styles(
             );
             let next = shorthand_slot_or_default(prop, next);
             values.insert(prop.clone(), next);
+        }
+        // The position slot's `var()` may have held the size behind its
+        // slash too (`--layout: center / cover`): resolved, the slash splits
+        // it, and the size goes to the size slot where the shorthand named
+        // none (`split_position_sizes`).
+        if let (Some(position), Some(size)) =
+            (values.get("backgroundPosition"), values.get("backgroundSize"))
+        {
+            if let Some((position, size)) = split_position_sizes(position, size) {
+                values.insert("backgroundPosition".to_string(), position);
+                values.insert("backgroundSize".to_string(), size);
+            }
         }
 
         // Hover pass: color / backgroundColor only.

@@ -182,6 +182,9 @@ pub fn wash_fills_box(repeat: &str, size: &str, position: &str, font_size: f64) 
     let (repeat_x, repeat_y) = repeat_axes(repeat);
     let in_box = position_stays_in_box(position);
     let size = size.trim().to_ascii_lowercase();
+    if paints_no_tile(&size) {
+        return false;
+    }
     let parts = size_components(&size);
     let fills = |token: Option<&str>, tiles: bool| match token.unwrap_or("auto") {
         "auto" | "cover" | "contain" => tiles || in_box,
@@ -192,6 +195,28 @@ pub fn wash_fills_box(repeat: &str, size: &str, position: &str, font_size: f64) 
         }
     };
     fills(parts.first().copied(), repeat_x) && fills(parts.get(1).copied(), repeat_y)
+}
+
+/// Whether a `background-size` component lays out no tile: a zero length or
+/// percentage (`0`, `0px`, `0%`). A negative one is invalid CSS the browser
+/// drops, leaving the layer at `auto`; it is not read as zero.
+fn zero_size(token: &str) -> bool {
+    match size_token(token, 16.0) {
+        SizeToken::Px(v) | SizeToken::Percent(v) => v == 0.0,
+        SizeToken::Unknown => !token.contains('(') && parse_float(token) == 0.0,
+        SizeToken::Auto => false,
+    }
+}
+
+/// Whether a layer with this `background-size` entry paints nothing: a zero
+/// length or percentage on either axis (`0`, `0px`, `0%`, an `auto` beside
+/// one scales to zero with it). The browser lays out no tile for such a
+/// layer however it repeats, so the html crate's walk reads past it as it
+/// does a `none` layer, and the extent readers below never take it for a
+/// ground or a wash.
+pub fn paints_no_tile(size: &str) -> bool {
+    let size = size.trim().to_ascii_lowercase();
+    size_components(&size).iter().any(|token| zero_size(token))
 }
 
 /// Whether a `background-position` keeps the image inside its box: edge and
@@ -222,6 +247,11 @@ pub fn layer_extents(
 ) -> (Extent, Extent) {
     let (repeat_x, repeat_y) = repeat_axes(repeat);
     let size = size.trim().to_ascii_lowercase();
+    // A zero size lays out no tile: the layer paints nothing, so neither
+    // tiling nor its position can make it the ground.
+    if paints_no_tile(&size) {
+        return (Extent::Px(0.0), Extent::Px(0.0));
+    }
     let sized = |token: SizeToken| match token {
         SizeToken::Px(v) => Extent::Px(v),
         SizeToken::Percent(p) if p >= 100.0 => Extent::Covers,
@@ -453,6 +483,30 @@ mod tests {
         assert_eq!(points[35], (88, 58));
         assert_eq!(grid_points(1, 1), vec![(0, 0); 36]);
         assert!(grid_points(0, 10).is_empty());
+    }
+
+    #[test]
+    fn a_zero_size_paints_nothing() {
+        // `background-size: 0` lays out no tile, so the layer shows nothing
+        // however it repeats: decoration, never a cover, and a wash sized
+        // to zero tints nothing.
+        for size in ["0px", "0", "0%", "0 auto", "auto 0", "0px 0px", "0rem"] {
+            assert!(decoration("repeat", size, 1200.0, 800.0), "{size}");
+            assert!(!covers("repeat", size), "{size}");
+            assert!(!covers("round", size), "{size}");
+            assert!(!wash_fills_box("repeat", size, "", 16.0), "{size}");
+        }
+        assert!(covers("repeat", "1px"));
+        assert!(wash_fills_box("repeat", "1px", "", 16.0));
+        assert!(paints_no_tile(" 0 "));
+        assert!(!paints_no_tile("auto"));
+        assert!(!paints_no_tile("cover"));
+        assert!(!paints_no_tile("calc(0px)"));
+        // A negative size is invalid and dropped by the browser, which then
+        // tiles the image at its own size: not a zero.
+        assert!(!paints_no_tile("-10px"));
+        assert!(!paints_no_tile("-1%"));
+        assert!(covers("repeat", "-10px"));
     }
 
     #[test]

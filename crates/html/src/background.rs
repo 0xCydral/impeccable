@@ -15,7 +15,9 @@ use impeccable_core::checks::measures::{
     parse_radius_token_px, CustomProps, ROOT_FONT_SIZE_PX,
 };
 use impeccable_core::checks::rules::Corners;
-use impeccable_core::checks::sampled_contrast::{repeat_tiles, uniform_wash, wash_fills_box};
+use impeccable_core::checks::sampled_contrast::{
+    paints_no_tile, repeat_tiles, uniform_wash, wash_fills_box,
+};
 use impeccable_core::color::{
     composite_color_over, is_no_paint_color_value, parse_any_color, parse_gradient_colors,
     parse_rgb, split_top_level_commas, Rgba,
@@ -1054,6 +1056,13 @@ pub fn analyze_level(cur: &StaticElement<'_>) -> LevelPaint {
             if layer.is_empty() || layer.eq_ignore_ascii_case("none") {
                 continue;
             }
+            // A layer sized to zero lays out no tile however it repeats:
+            // it paints nothing, image or wash, and is read past like
+            // `none`.
+            let size = layer_entry(sv(style, "backgroundSize"), index);
+            if paints_no_tile(&size) {
+                continue;
+            }
             if let Some((name, open)) = top_level_call(bg_image, from, to, is_gradient_name) {
                 // An opaque gradient is the ground; a scrim that varies is
                 // placed under the text on purpose, and without layout the
@@ -1070,7 +1079,6 @@ pub fn analyze_level(cur: &StaticElement<'_>) -> LevelPaint {
                     return LevelPaint::Stop;
                 };
                 let repeat = layer_entry(sv(style, "backgroundRepeat"), index);
-                let size = layer_entry(sv(style, "backgroundSize"), index);
                 let position = layer_entry(sv(style, "backgroundPosition"), index);
                 if !wash_fills_box(&repeat, &size, &position, font_size) {
                     return LevelPaint::Stop;
@@ -1106,7 +1114,7 @@ pub fn analyze_level(cur: &StaticElement<'_>) -> LevelPaint {
             return LevelPaint::Image(ImageLayer {
                 call,
                 repeat: layer_entry(sv(style, "backgroundRepeat"), index),
-                size: layer_entry(sv(style, "backgroundSize"), index),
+                size,
                 position: layer_entry(sv(style, "backgroundPosition"), index),
                 origin: layer_entry(sv(style, "backgroundOrigin"), index),
                 clip: layer_entry(background_clip(style), index),

@@ -628,6 +628,70 @@ pub fn position_slot_or_default(value: &str) -> String {
 
 static BG_SIZE_KEYWORD_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)^(?:auto|cover|contain)$").expect("BG_SIZE_KEYWORD_RE"));
+
+/// A `background` shorthand's bare `var()` stored in the position slot may
+/// have held the size behind its slash too (`--layout: center / cover`),
+/// which the parser could not see before the compute loop resolved it
+/// (#560). A layer of the resolved position slot with a top-level slash is
+/// split here: what precedes the slash stays the position (`0% 0%` when
+/// nothing does), and what follows it, one or two size components, becomes
+/// that layer's size where the shorthand named no literal one (its slot
+/// reads `auto`). `None` when no layer holds such a slash, a slash inside
+/// `calc()` included, so the slots stay as they came.
+pub fn split_position_sizes(position: &str, size: &str) -> Option<(String, String)> {
+    if !position.contains('/') {
+        return None;
+    }
+    let mut sizes: Vec<String> = split_layers(size)
+        .iter()
+        .map(|layer| layer.trim().to_string())
+        .collect();
+    let mut positions: Vec<String> = Vec::new();
+    let mut split = false;
+    for (index, layer) in split_layers(position).iter().enumerate() {
+        let tokens = join_slashes(split_tokens(layer).iter().flat_map(|t| unglue(t)).collect());
+        let mut kept: Vec<String> = Vec::new();
+        let mut found: Vec<String> = Vec::new();
+        let mut in_size = false;
+        let mut slashed = false;
+        for token in tokens {
+            if let Some((before, after)) = split_size_slash(&token) {
+                slashed = true;
+                if !before.is_empty() {
+                    kept.push(before.to_string());
+                }
+                in_size = true;
+                found.clear();
+                if !after.is_empty() && BG_SIZE_RE.is_match(after) {
+                    found.push(size_component(after));
+                }
+                continue;
+            }
+            if in_size && found.len() < 2 && BG_SIZE_RE.is_match(&token) {
+                found.push(size_component(&token));
+                continue;
+            }
+            in_size = false;
+            kept.push(token);
+        }
+        if !slashed {
+            positions.push(layer.trim().to_string());
+            continue;
+        }
+        split = true;
+        positions.push(if kept.is_empty() {
+            "0% 0%".to_string()
+        } else {
+            position_slot_or_default(&kept.join(" "))
+        });
+        if let Some(slot) = sizes.get_mut(index) {
+            if slot == "auto" && !found.is_empty() {
+                *slot = found.join(" ");
+            }
+        }
+    }
+    split.then(|| (positions.join(", "), sizes.join(", ")))
+}
 // The color keywords `extract_static_color` does not read as a color.
 static COLOR_KEYWORD_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)^(?:transparent|currentcolor)$").expect("COLOR_KEYWORD_RE"));
@@ -1053,5 +1117,28 @@ mod tests {
         ] {
             assert_eq!(position_slot_or_default(value), value);
         }
+    }
+
+    #[test]
+    fn a_slash_in_the_resolved_position_slot_gives_the_layer_its_size() {
+        let split = |position: &str, size: &str| {
+            split_position_sizes(position, size).map(|(p, s)| (p, s))
+        };
+        let some = |p: &str, s: &str| Some((p.to_string(), s.to_string()));
+        assert_eq!(split("center/cover", "auto"), some("center", "cover"));
+        assert_eq!(split("center / cover", "auto"), some("center", "cover"));
+        assert_eq!(split("0 0/100% 100%", "auto"), some("0 0", "100% 100%"));
+        assert_eq!(split("center/100% auto", "auto"), some("center", "100% auto"));
+        assert_eq!(split("/cover", "auto"), some("0% 0%", "cover"));
+        assert_eq!(split("center/cover no-repeat", "auto"), some("center", "cover"));
+        assert_eq!(split("center/cover, 0% 0%", "auto, auto"), some("center, 0% 0%", "cover, auto"));
+        // A literal size stands; the slashed value still loses its tail.
+        assert_eq!(split("center/cover", "64px"), some("center", "64px"));
+        // Nothing to split: a position without a slash, or a slash inside
+        // `calc()`, leaves both slots as they came.
+        assert_eq!(split("center", "auto"), None);
+        assert_eq!(split("50% 50%", "auto"), None);
+        assert_eq!(split("calc(50% / 2) 0", "auto"), None);
+        assert_eq!(split("var(--layout)", "auto"), None);
     }
 }

@@ -1218,3 +1218,59 @@ fn an_escaped_path_resolves_to_its_file() {
     let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
     assert!(found.is_empty(), "{found:?}");
 }
+
+#[test]
+fn a_zero_sized_layer_paints_nothing() {
+    let site = Site::new("zero-size");
+    // `background-size: 0` hides the image: the browser lays out no tile
+    // however the layer repeats, so the light pixels are not the ground
+    // and white copy on the dark fallback is not flagged.
+    for size in ["0px", "0", "0%", "0 auto"] {
+        let css = format!(
+            ".hero {{ background: #17150f url(light.png) 0 0 / {size} repeat; }} p {{ color: #fdfdfd; }}"
+        );
+        let found = site.contrast(&css, "<div class=hero><p>White copy</p></div>");
+        assert!(found.is_empty(), "{size}: {found:?}");
+    }
+    // The layer is read past like `none`: a zero-sized dark image on a
+    // wrapper leaves the parent's light image as the ground.
+    let css = ".hero { background: url(light.png); } .inner { background: url(dark.png) 0 0 / 0px repeat; } p { color: #fdfdfd; }";
+    let found = site.contrast(css, "<div class=hero><div class=inner><p>White copy</p></div></div>");
+    assert!(sampled_on("light.png", &found), "{found:?}");
+    // A wash sized to zero paints nothing either: it tints no sample, and
+    // white copy on the light image beneath it fails as it does on the page.
+    let css = ".hero { background: linear-gradient(rgba(23, 21, 15, 0.9), rgba(23, 21, 15, 0.9)) 0 0 / 0px repeat, url(light.png); } p { color: #fdfdfd; }";
+    let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
+    assert!(sampled_on("light.png", &found), "{found:?}");
+}
+
+#[test]
+fn a_size_held_in_a_custom_property_is_read() {
+    let site = Site::new("var-size");
+    // `--layout: center / cover` stretches the icon over the box: its
+    // pixels are the ground, not the dark fallback.
+    for layout in ["center / cover", "center/cover", "center / cover no-repeat"] {
+        let css = format!(
+            ":root {{ --layout: {layout}; }} .hero {{ background: #17150f url(icon.png) var(--layout) no-repeat; }} p {{ color: #fdfdfd; }}"
+        );
+        let found = site.contrast(&css, "<div class=hero><p>White copy</p></div>");
+        assert!(sampled_on("icon.png", &found), "{layout}: {found:?}");
+    }
+    // The same custom property holding only a position leaves the icon its
+    // size: decoration, and the color stays the ground.
+    for layout in ["center", "50% 50%", "right 8px top 8px"] {
+        let css = format!(
+            ":root {{ --layout: {layout}; }} .hero {{ background: #17150f url(icon.png) var(--layout) no-repeat; }} p {{ color: #fdfdfd; }}"
+        );
+        let found = site.contrast(&css, "<div class=hero><p>White copy</p></div>");
+        assert!(found.is_empty(), "{layout}: {found:?}");
+    }
+    // A size the property holds beside a literal position, and one that
+    // fills the box only along one axis, are read the same way.
+    let css = ":root { --size: / 100% 100%; } .hero { background: #17150f url(icon.png) center var(--size) no-repeat; } p { color: #fdfdfd; }";
+    let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
+    assert!(sampled_on("icon.png", &found), "{found:?}");
+    let css = ":root { --layout: center / 100% auto; } .hero { background: #17150f url(icon.png) var(--layout) no-repeat; } p { color: #fdfdfd; }";
+    let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
+    assert!(found.is_empty(), "{found:?}");
+}
