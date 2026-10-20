@@ -2704,6 +2704,26 @@ fn stop_from_a_subfolder_finds_the_root_cache() {
 }
 
 #[test]
+fn stop_from_a_subfolder_build_reads_its_state_beside_a_root_cache() {
+    // #1088: the hook cache may sit at the root, but `build-phase` keeps its
+    // state under its own cwd, so the reminder reads the subfolder's build.
+    let t = Tmp::new();
+    t.write("package.json", "{}");
+    let cwd = t.path();
+    let css = t.write("src/a.css", SIDE_TAB_CSS);
+    t.write("app/index.html", "<main>In progress</main>");
+    t.write("app/.impeccable/build/state.json", &json!({
+        "tool":"build-phase", "version":2, "startedAt":"build-one",
+        "sessionId":"owner", "artifact":"index.html", "finish":null,
+        "phases":{"hero":{"status":"open"}}
+    }).to_string());
+    hook::run_hook(&rt(&cwd), &edit_event(&cwd, &css, "owner"));
+    let app = jsp::join(&[&cwd, "app"]);
+    let res = hook::run_stop_hook(&rt(&app), &stop_event(&app, "owner"));
+    assert!(res.stdout.contains("Comp build"), "{}", res.stdout);
+}
+
+#[test]
 fn codex_stop_emits_decision_block() {
     // #603: Codex Stop rejects Claude's hookSpecificOutput shape; findings
     // that should continue the turn are a top-level blocking decision.
