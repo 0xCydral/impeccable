@@ -38,7 +38,7 @@ use impeccable_core::checks::rules::{
     HoverContrastOpts, IconTileOpts, ItalicSerifOpts, KickerCandidate, MotionOpts, RuleHit,
     SafeTagTextSeen, Sides,
 };
-use impeccable_core::checks::sampled_contrast::{self, Extent, Sampled};
+use impeccable_core::checks::sampled_contrast::{self, Extent, Ink, Sampled};
 use impeccable_core::checks::text_rules::{
     check_numbered_section_labels, is_kicker_candidate, is_numbered_section_label_candidate,
     parse_numbered_label_text, KickerCandidateInput, NumberedLabelCandidate,
@@ -1176,7 +1176,7 @@ pub fn check_element_colors(
     let sampled = if pseudo_surface_read {
         None
     } else {
-        sampled_image_contrast(el, &color_opts, images)
+        sampled_image_contrast(el, &color_opts, images, Ink::Text)
     };
     let mut findings = match &sampled {
         Some(_) => check_colors_deduped_shaped(
@@ -1201,40 +1201,50 @@ pub fn check_element_colors(
             findings.extend(hits);
         }
     }
-    if tag == "input" || tag == "textarea" {
-        let placeholder = el.get_attribute("placeholder").unwrap_or("").trim();
-        if !placeholder.is_empty() {
-            let skip = if tag == "input" {
-                let t = js::to_lower_case(el.get_attribute("type").unwrap_or("text"));
-                matches!(
-                    t.as_str(),
-                    "hidden" | "checkbox" | "radio" | "file" | "submit" | "button" | "image"
-                        | "reset" | "range" | "color"
-                ) || el
-                    .get_attribute("value")
-                    .is_some_and(|v| !js::trim(v).is_empty())
-            } else {
-                !js::trim(&direct_text).is_empty()
+    // A control's placeholder, when the rule scores one (`scored_placeholder`).
+    if let Some((placeholder, ph_style)) = scored_placeholder(el, &tag, &direct_text) {
+        let ph_color = custom_props
+            .and_then(|m| measures::parse_color_resolved(sv_opt(ph_style, "color"), Some(m)))
+            .or_else(|| parse_rgb(sv_opt(ph_style, "color")))
+            .or_else(|| parse_any_color(sv_opt(ph_style, "color")));
+        if let Some(ph_color) = ph_color {
+            // The placeholder sits where the host's own text would: over a
+            // `url()` layer the engine can read, its pixels are the ground
+            // (#560), read with the `::placeholder` ink in place of the
+            // host's text, and the analytic placeholder answer gets no say
+            // whichever way the sampled verdict goes. Without one, the
+            // analytic check stands.
+            let ph_opts = ColorOpts {
+                text_color: Some(ph_color),
+                visible_text: None,
+                has_direct_text: true,
+                is_emoji_only: is_emoji_only_text(placeholder),
+                is_glyph_only: is_glyph_only_text(placeholder),
+                ..color_opts.clone()
             };
-            if !skip {
-                if let Some(ph_style) = el.doc.get_placeholder_style(el.id()) {
-                    let ph_color = custom_props
-                        .and_then(|m| {
-                            measures::parse_color_resolved(sv_opt(ph_style, "color"), Some(m))
-                        })
-                        .or_else(|| parse_rgb(sv_opt(ph_style, "color")))
-                        .or_else(|| parse_any_color(sv_opt(ph_style, "color")));
-                    if let Some(ph_color) = ph_color {
-                        let mut hits = check_placeholder_colors(&color_opts, placeholder, ph_color);
-                        if hits.iter().any(|h| h.id == "low-contrast")
-                            && (is_decorative() || crate::field_label::field_has_visible_label(el))
-                        {
-                            impeccable_core::checks::rules::demote_low_contrast(&mut hits);
-                        }
-                        findings.extend(hits);
+            let sampled = if pseudo_surface_read {
+                None
+            } else {
+                sampled_image_contrast(el, &ph_opts, images, Ink::Placeholder)
+            };
+            let mut hits = match sampled {
+                Some(Sampled::Pass) => Vec::new(),
+                Some(Sampled::Fail(mut hit)) => {
+                    hit.snippet = format!("placeholder \"{}\" {}", placeholder, hit.snippet);
+                    if keep(&hit) {
+                        vec![hit]
+                    } else {
+                        Vec::new()
                     }
                 }
+                None => check_placeholder_colors(&color_opts, placeholder, ph_color),
+            };
+            if hits.iter().any(|h| h.id == "low-contrast")
+                && (is_decorative() || crate::field_label::field_has_visible_label(el))
+            {
+                impeccable_core::checks::rules::demote_low_contrast(&mut hits);
             }
+            findings.extend(hits);
         }
     }
     // A disabled control is faded on purpose: its colours are not a contrast
@@ -1249,13 +1259,16 @@ pub fn check_element_colors(
 /// the engine can read, measure it against the grid samples of that image.
 /// The gates up to the pixels are `sampled_ground`'s; the samples come from
 /// the persistent cache, from this process, or from a decode, by the
-/// sampler's mode.
+/// sampler's mode. `ink` says whose text `opts` carries: the element's own,
+/// or a control's `::placeholder` color, which skips the `SAFE_TAGS` gate
+/// as the analytic placeholder check does.
 fn sampled_image_contrast(
     el: &StaticElement<'_>,
     opts: &ColorOpts,
     images: &ImageSampler,
+    ink: Ink,
 ) -> Option<Sampled> {
-    if !sampled_contrast::applies(opts) {
+    if !ink.applies(opts) {
         return None;
     }
     let (ground, source) = sampled_ground(el, images)?;
@@ -1276,7 +1289,7 @@ fn sampled_image_contrast(
             }),
             ..opts.clone()
         };
-        if !sampled_contrast::applies(&seen) {
+        if !ink.applies(&seen) {
             return None;
         }
     }
@@ -1299,7 +1312,13 @@ fn sampled_image_contrast(
                 Some(fold_opacity(&text, &layers, &base))
             })
             .collect();
-        return sampled_contrast::sampled_contrast_pairs(opts, &label, &pairs, samples.points.len());
+        return sampled_contrast::sampled_contrast_pairs(
+            opts,
+            &label,
+            &pairs,
+            samples.points.len(),
+            ink,
+        );
     }
     let overlays: Vec<Rgba> = ground.overlays.iter().map(|(_, c)| *c).collect();
     let grounds: Vec<Rgba> = samples
@@ -1307,16 +1326,18 @@ fn sampled_image_contrast(
         .iter()
         .filter_map(|point| sampled_contrast::composite_sample(*point, ground.under, &overlays))
         .collect();
-    sampled_contrast::sampled_contrast(opts, &label, &grounds, samples.points.len())
+    sampled_contrast::sampled_contrast(opts, &label, &grounds, samples.points.len(), ink)
 }
 
 /// The text gates of `sampled_contrast::applies` that the element alone can
 /// answer, so the pre-pass queues no photo for text the color rule would
-/// never measure: an element with no text of its own, a `SAFE_TAGS` element
-/// (scored only on its own surface, which the rule loop decodes for lazily
-/// when it comes to that), text at or under alpha 0.1, emoji-only or
-/// glyph-only text, and text clipped to its background. A `true` here is
-/// not a verdict: the rule loop applies every gate again.
+/// never measure: an element with no text of its own (a control with a
+/// `placeholder` has the placeholder's ink, which the rule loop reads from
+/// its `::placeholder` style), a `SAFE_TAGS` element (scored only on its
+/// own surface, which the rule loop decodes for lazily when it comes to
+/// that), text at or under alpha 0.1, emoji-only or glyph-only text, and
+/// text clipped to its background. A `true` here is not a verdict: the
+/// rule loop applies every gate again.
 /// The layer's extents on an element whose padding it does not paint: an
 /// axis `layer_inset_by_padding` names is not known to be covered.
 fn inset_by_padding(
@@ -1337,14 +1358,63 @@ fn inset_by_padding(
 // Only the decoding sampler's pre-pass calls this; the stub built without
 // the feature decodes nothing ahead.
 #[cfg_attr(not(feature = "image-sampling"), allow(dead_code))]
+/// The placeholder a control paints and the `::placeholder` style that inks
+/// it, when the rule scores one: an `input` of a text-like type with no
+/// `value`, or a `textarea` with no content of its own, carrying a non-empty
+/// `placeholder` attribute and matched by a `::placeholder` rule. What the
+/// placeholder branch of `check_element_colors` scores, and so what the
+/// pre-pass queues a decode for.
+fn scored_placeholder<'a>(
+    el: &'a StaticElement<'_>,
+    tag: &str,
+    direct_text: &str,
+) -> Option<(&'a str, &'a StyleValues)> {
+    if tag != "input" && tag != "textarea" {
+        return None;
+    }
+    let placeholder = el.get_attribute("placeholder").unwrap_or("").trim();
+    if placeholder.is_empty() {
+        return None;
+    }
+    let skip = if tag == "input" {
+        let t = js::to_lower_case(el.get_attribute("type").unwrap_or("text"));
+        matches!(
+            t.as_str(),
+            "hidden" | "checkbox" | "radio" | "file" | "submit" | "button" | "image" | "reset"
+                | "range" | "color"
+        ) || el
+            .get_attribute("value")
+            .is_some_and(|v| !js::trim(v).is_empty())
+    } else {
+        !js::trim(direct_text).is_empty()
+    };
+    if skip {
+        return None;
+    }
+    let ph_style = el.doc.get_placeholder_style(el.id())?;
+    Some((placeholder, ph_style))
+}
+
 pub(crate) fn text_may_be_sampled(el: &StaticElement<'_>) -> bool {
     let tag = el.tag_lower();
-    if SAFE_TAGS.contains(&tag.as_str()) {
+    let text = el.direct_text();
+    // A control's placeholder is the text the rule scores for it, past the
+    // `SAFE_TAGS` gate the analytic placeholder check skips too, and only
+    // where the rule would score it.
+    let placeholder = scored_placeholder(el, &tag, &text);
+    if placeholder.is_none() && SAFE_TAGS.contains(&tag.as_str()) {
         return false;
     }
-    let text = el.direct_text();
-    if js::trim(&text).is_empty() || is_emoji_only_text(&text) || is_glyph_only_text(&text) {
-        return false;
+    match placeholder {
+        Some((ink, _)) if is_emoji_only_text(ink) || is_glyph_only_text(ink) => return false,
+        Some(_) => {}
+        None if js::trim(&text).is_empty()
+            || is_emoji_only_text(&text)
+            || is_glyph_only_text(&text) =>
+        {
+            return false
+        }
+        None => {}
     }
     let style = el.style();
     // The color check's own early exits (`check_element_colors`): text it
@@ -1366,7 +1436,11 @@ pub(crate) fn text_may_be_sampled(el: &StaticElement<'_>) -> bool {
     if clip == "text" {
         return false;
     }
-    parse_any_color(sv_opt(style, "color")).map_or(true, |c| c.alpha_or_one() > 0.1)
+    let ink = match placeholder {
+        Some((_, ph_style)) => sv_opt(ph_style, "color"),
+        None => sv_opt(style, "color"),
+    };
+    parse_any_color(ink).map_or(true, |c| c.alpha_or_one() > 0.1)
 }
 
 /// The ground a text element would be sampled against, with its source

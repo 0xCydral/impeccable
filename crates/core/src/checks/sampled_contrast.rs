@@ -30,11 +30,12 @@ const FAIL_PERCENTILE: f64 = 0.9;
 /// failure; the floor is the one the background walk uses for a surface.
 const MIN_TEXT_ALPHA: f64 = 0.1;
 
-/// The color rule's own gates plus the alpha floor, so the sampler never
-/// fires where `check_colors` would not have measured a resolved background.
-/// Bare text in a `SAFE_TAGS` element belongs to the deduped safe-tag path
-/// and is not sampled.
-pub fn applies(opts: &ColorOpts) -> bool {
+/// The ink gates of the color rule plus the alpha floor: text that paints,
+/// is not emoji-only or glyph-only, and is not clipped to its background.
+/// What `sampled_contrast_pairs` requires of any ink, a control's
+/// placeholder included (the analytic placeholder check skips the
+/// `SAFE_TAGS` gate the same way).
+pub fn ink_applies(opts: &ColorOpts) -> bool {
     opts.has_direct_text
         && opts
             .text_color
@@ -42,7 +43,34 @@ pub fn applies(opts: &ColorOpts) -> bool {
         && !opts.is_emoji_only
         && !opts.is_glyph_only
         && opts.bg_clip.as_deref() != Some("text")
-        && !scores_safe_tag_text(opts)
+}
+
+/// The color rule's own gates plus the alpha floor, so the sampler never
+/// fires where `check_colors` would not have measured a resolved background.
+/// Bare text in a `SAFE_TAGS` element belongs to the deduped safe-tag path
+/// and is not sampled.
+pub fn applies(opts: &ColorOpts) -> bool {
+    ink_applies(opts) && !scores_safe_tag_text(opts)
+}
+
+/// Whose ink the sampler measures: an element's own text, which keeps the
+/// `SAFE_TAGS` gate of `check_colors`, or a control's placeholder, which
+/// skips it as the analytic placeholder check does (the control is such an
+/// element, and the placeholder is the only text it paints).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Ink {
+    Text,
+    Placeholder,
+}
+
+impl Ink {
+    /// The gates this ink has to pass before any pixel is read.
+    pub fn applies(self, opts: &ColorOpts) -> bool {
+        match self {
+            Ink::Text => applies(opts),
+            Ink::Placeholder => ink_applies(opts),
+        }
+    }
 }
 
 /// The sample positions over a `width` x `height` raster: cell centers of
@@ -372,6 +400,7 @@ pub fn sampled_contrast(
     ground: &str,
     samples: &[Rgba],
     grid_total: usize,
+    ink: Ink,
 ) -> Option<Sampled> {
     let text = opts.text_color?;
     let pairs: Vec<(Rgba, Rgba)> = samples
@@ -385,7 +414,7 @@ pub fn sampled_contrast(
             (fg, *bg)
         })
         .collect();
-    sampled_contrast_pairs(opts, ground, &pairs, grid_total)
+    sampled_contrast_pairs(opts, ground, &pairs, grid_total, ink)
 }
 
 /// [`sampled_contrast`] over `pairs` of (ink, ground) the caller has already
@@ -398,8 +427,9 @@ pub fn sampled_contrast_pairs(
     ground: &str,
     pairs: &[(Rgba, Rgba)],
     grid_total: usize,
+    ink: Ink,
 ) -> Option<Sampled> {
-    if !applies(opts) {
+    if !ink.applies(opts) {
         return None;
     }
     let text = opts.text_color?;
@@ -653,7 +683,7 @@ mod tests {
         let dark = rgba(26.0, 24.0, 22.0, 1.0);
         let all_light: Vec<Rgba> = vec![light; 36];
         let Some(Sampled::Fail(hit)) =
-            sampled_contrast(&opts(white, 16.0), "hero.png", &all_light, 36)
+            sampled_contrast(&opts(white, 16.0), "hero.png", &all_light, 36, Ink::Text)
         else {
             panic!("white on a light image fails");
         };
@@ -667,18 +697,18 @@ mod tests {
             .map(|i| if i % 2 == 0 { light } else { dark })
             .collect();
         assert_eq!(
-            sampled_contrast(&opts(white, 16.0), "hero.png", &split, 36),
+            sampled_contrast(&opts(white, 16.0), "hero.png", &split, 36, Ink::Text),
             Some(Sampled::Pass)
         );
         // Three dark samples out of 36 are not enough to save it.
         let mostly: Vec<Rgba> = (0..36).map(|i| if i < 3 { dark } else { light }).collect();
         assert!(matches!(
-            sampled_contrast(&opts(white, 16.0), "hero.png", &mostly, 36),
+            sampled_contrast(&opts(white, 16.0), "hero.png", &mostly, 36, Ink::Text),
             Some(Sampled::Fail(_))
         ));
         // Too few resolved samples: no verdict either way.
         assert_eq!(
-            sampled_contrast(&opts(white, 16.0), "hero.png", &all_light[..20], 36),
+            sampled_contrast(&opts(white, 16.0), "hero.png", &all_light[..20], 36, Ink::Text),
             None
         );
         // Just under the bar is advisory, as the analytic pair reports it;
@@ -686,7 +716,7 @@ mod tests {
         let gray = rgba(119.0, 119.0, 119.0, 1.0);
         let on_white: Vec<Rgba> = vec![rgba(255.0, 255.0, 255.0, 1.0); 36];
         let Some(Sampled::Fail(near)) =
-            sampled_contrast(&opts(gray, 16.0), "hero.png", &on_white, 36)
+            sampled_contrast(&opts(gray, 16.0), "hero.png", &on_white, 36, Ink::Text)
         else {
             panic!("#777 on white sits just under 4.5:1");
         };
@@ -696,7 +726,7 @@ mod tests {
         let mid = rgba(150.0, 150.0, 150.0, 1.0);
         let on_mid: Vec<Rgba> = vec![mid; 36];
         let Some(Sampled::Fail(large)) =
-            sampled_contrast(&opts(white, 28.0), "hero.png", &on_mid, 36)
+            sampled_contrast(&opts(white, 28.0), "hero.png", &on_mid, 36, Ink::Text)
         else {
             panic!("white on mid gray fails at 3:1");
         };
@@ -704,10 +734,10 @@ mod tests {
         // Safe tags and gradient-clipped text never sample.
         let mut anchor = opts(white, 16.0);
         anchor.tag = "a".into();
-        assert_eq!(sampled_contrast(&anchor, "hero.png", &all_light, 36), None);
+        assert_eq!(sampled_contrast(&anchor, "hero.png", &all_light, 36, Ink::Text), None);
         let mut clipped = opts(white, 16.0);
         clipped.bg_clip = Some("text".into());
-        assert_eq!(sampled_contrast(&clipped, "hero.png", &all_light, 36), None);
+        assert_eq!(sampled_contrast(&clipped, "hero.png", &all_light, 36, Ink::Text), None);
     }
 
     #[test]
@@ -717,7 +747,7 @@ mod tests {
         for hidden in [rgba(0.0, 0.0, 0.0, 0.0), rgba(253.0, 253.0, 253.0, 0.05)] {
             assert!(!applies(&opts(hidden, 16.0)));
             assert_eq!(
-                sampled_contrast(&opts(hidden, 16.0), "logo.png", &light, 36),
+                sampled_contrast(&opts(hidden, 16.0), "logo.png", &light, 36, Ink::Text),
                 None
             );
         }
@@ -725,12 +755,12 @@ mod tests {
         let faint = rgba(0.0, 0.0, 0.0, 0.3);
         assert!(applies(&opts(faint, 16.0)));
         assert!(matches!(
-            sampled_contrast(&opts(faint, 16.0), "hero.png", &light, 36),
+            sampled_contrast(&opts(faint, 16.0), "hero.png", &light, 36, Ink::Text),
             Some(Sampled::Fail(_))
         ));
         let solid = rgba(0.0, 0.0, 0.0, 0.9);
         assert_eq!(
-            sampled_contrast(&opts(solid, 16.0), "hero.png", &light, 36),
+            sampled_contrast(&opts(solid, 16.0), "hero.png", &light, 36, Ink::Text),
             Some(Sampled::Pass)
         );
     }

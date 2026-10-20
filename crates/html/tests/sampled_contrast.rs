@@ -709,6 +709,18 @@ fn the_pre_pass_decodes_nothing_for_text_the_rule_never_measures() {
     let css = ".a { background: url(a.png); } .b { background: url(b.png); } p { color: #fdfdfd; }";
     assert_eq!(site.contrast(css, body).len(), 2);
     assert_eq!(entries(), 2);
+    // A control whose placeholder the rule never scores queues nothing
+    // either: ink at zero alpha (a floating label's), a filled-in value, a
+    // type that shows no placeholder, or no `::placeholder` rule at all.
+    site.png("d.png", 320, 200, LIGHT);
+    let css = ".d { background: url(d.png); } .clear::placeholder { color: transparent; } .inked::placeholder { color: #fdfdfd; }";
+    let body = "<input class=\"d clear\" placeholder=\"Search\"><input class=\"d inked\" placeholder=\"Search\" value=\"filled\"><input class=\"d inked\" type=checkbox placeholder=\"Search\"><input class=d placeholder=\"Search\">";
+    assert!(site.contrast(css, body).is_empty());
+    assert_eq!(entries(), 2, "no photo behind an unscored placeholder was decoded");
+    // The placeholder the rule scores decodes its photo.
+    let body = "<input class=\"d inked\" placeholder=\"Search\">";
+    assert_eq!(site.contrast(css, body).len(), 1);
+    assert_eq!(entries(), 3);
 }
 
 /// The measured ratio a sampled snippet reports.
@@ -1296,4 +1308,41 @@ fn a_size_held_in_a_custom_property_is_read() {
     let css = ":root { --layout: center; } .hero { background: #17150f url(icon.png) var(--layout) 100% no-repeat; } p { color: #fdfdfd; }";
     let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
     assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn an_image_backed_placeholder_is_measured() {
+    let site = Site::new("placeholder");
+    let field = "<input class=search placeholder=\"Search the site\">";
+    // Placeholder ink over a light image: the analytic placeholder check
+    // has no resolved ground there and used to pass it; the sampler reads
+    // the pixels with the `::placeholder` color in place of the host's text.
+    let css = ".search { background: url(light.png); border: 0; } .search::placeholder { color: #fdfdfd; }";
+    let found = site.contrast(css, field);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].starts_with("placeholder \"Search the site\" sampled (coarse) "),
+        "{found:?}"
+    );
+    assert!(found[0].contains(" on light.png;"), "{found:?}");
+    // The same ink reads on the dark image.
+    let css = ".search { background: url(dark.png); border: 0; } .search::placeholder { color: #fdfdfd; }";
+    assert!(site.contrast(css, field).is_empty());
+    // A fallback color the image covers gets no say, as for the host's own
+    // text: ink that reads on the color but not on the image is flagged on
+    // the image, and ink that reads on the image but not on the color is
+    // not flagged against the color.
+    let css = ".search { background: #17150f url(light.png) center / cover; border: 0; } .search::placeholder { color: #fdfdfd; }";
+    let found = site.contrast(css, field);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("sampled (coarse)"), "{found:?}");
+    let css = ".search { background: #f4f1ea url(dark.png) center / cover; border: 0; } .search::placeholder { color: #fdfdfd; }";
+    assert!(site.contrast(css, field).is_empty());
+    // The hook reads only what `detect` sampled: an image no scan sampled
+    // yet is silent there, and read once `detect` has cached it.
+    site.png("field.png", 320, 200, LIGHT);
+    let css = ".search { background: url(field.png); border: 0; } .search::placeholder { color: #fdfdfd; }";
+    assert!(site.contrast_as(css, field, ImageSamples::CacheOnly).is_empty());
+    assert_eq!(site.contrast(css, field).len(), 1);
+    assert_eq!(site.contrast_as(css, field, ImageSamples::CacheOnly).len(), 1);
 }
