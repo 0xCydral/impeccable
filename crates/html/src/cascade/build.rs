@@ -158,18 +158,25 @@ impl StaticCss {
 /// resolved relative to `file_dir` (query/hash stripped), joined with `\n`.
 /// `warn` receives the JS `process.stderr.write` notice for an unreadable
 /// linked stylesheet (once per resolved path per scan).
+///
+/// Returns that text, as the cascade's [`StaticCss`], plus a second one for
+/// the page-level pattern scan: the same join minus the linked sheets
+/// `ignored` accepts (given the resolved path). The cascade keeps the full
+/// text.
 pub fn collect_static_css_text(
     doc: &StaticDocument,
     file_dir: &Path,
     profile: Option<&dyn ProfileSink>,
     file_path: &str,
     warn: Option<&dyn Fn(&str)>,
-) -> StaticCss {
+    ignored: Option<&dyn Fn(&str) -> bool>,
+) -> (StaticCss, String) {
     let file_dir_str = file_dir.to_string_lossy().into_owned();
     let mut css = StaticCss {
         page_dir: file_dir_str.clone(),
         ..StaticCss::default()
     };
+    let mut pattern_texts: Vec<String> = Vec::new();
     let mut pieces = 0usize;
     // `style_texts.join('\n')`, built in place so a sheet's span is known.
     let mut push = |css: &mut StaticCss, piece: &str, foreign_dir: Option<String>| {
@@ -190,7 +197,9 @@ pub fn collect_static_css_text(
     let mut warned_missing_stylesheets: std::collections::HashSet<String> =
         std::collections::HashSet::new();
     for style_el in doc.query_selector_all("style") {
-        push(&mut css, &style_el.text_content(), None);
+        let text = style_el.text_content();
+        push(&mut css, &text, None);
+        pattern_texts.push(text);
     }
     for link in doc.query_selector_all("link") {
         let rel = link.get_attribute("rel").unwrap_or("");
@@ -208,7 +217,11 @@ pub fn collect_static_css_text(
             Ok(bytes) => {
                 let sheet_dir = jsp::dirname(&css_path);
                 let foreign_dir = (sheet_dir != file_dir_str).then_some(sheet_dir);
-                push(&mut css, &String::from_utf8_lossy(&bytes), foreign_dir);
+                let text = String::from_utf8_lossy(&bytes).into_owned();
+                push(&mut css, &text, foreign_dir);
+                if !ignored.is_some_and(|f| f(&css_path)) {
+                    pattern_texts.push(text);
+                }
             }
             Err(_) => {
                 if warned_missing_stylesheets.insert(css_path.clone()) {
@@ -221,7 +234,7 @@ pub fn collect_static_css_text(
             }
         }
     }
-    css
+    (css, pattern_texts.join("\n"))
 }
 
 static PSEUDO_RULE_RE: Lazy<Regex> = Lazy::new(|| {

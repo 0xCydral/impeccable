@@ -58,6 +58,10 @@ pub struct ScanOptions {
     /// Static HTML scans only: whether the sampled-contrast path may decode
     /// an image, or reads its persistent cache alone.
     pub image_samples: ImageSamples,
+    /// Whether `detector.ignoreFiles` waives a linked stylesheet (given its
+    /// absolute path). The static HTML engine still reads it for the cascade
+    /// but leaves it out of the page-level pattern scan.
+    pub ignored_linked_stylesheet: Option<Rc<dyn Fn(&str) -> bool>>,
 }
 
 /// A URL scan's findings plus the notes the CLI prints about how the page

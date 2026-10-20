@@ -1376,7 +1376,8 @@ mod tests {
 
     fn document(html: &str) -> StaticDocument {
         let mut doc = StaticDocument::parse(html);
-        let css = collect_static_css_text(&doc, Path::new("/nonexistent"), None, "x.html", None);
+        let (css, _) =
+            collect_static_css_text(&doc, Path::new("/nonexistent"), None, "x.html", None, None);
         build_static_style_map(&mut doc, &css, None, "x.html");
         doc
     }
