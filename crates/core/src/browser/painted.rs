@@ -214,14 +214,34 @@ pub fn page_form_painted(dom: &dyn Dom, rule_id: &str, matches: &[ElId]) -> bool
         || matches.iter().any(|&el| painted_at_capture(dom, el))
 }
 
+/// The text rules that also stand down when the hit-test stacks show an
+/// opaque layer drawn over the text ([`TextLayers::Covered`]): the size,
+/// leading and measure of text nobody sees at capture. metlife.com's mobile
+/// breadcrumbs under its opaque nav, and bordeaux-metropole.fr's standfirst
+/// under its consent modal (observations-1006 row 8). Contrast reads the
+/// same verdict on its own path. Where the stacks cannot answer (a point
+/// never asked, below the fold) the finding stays.
+///
+/// [`TextLayers::Covered`]: super::text_layers::TextLayers::Covered
+pub const PAINT_GATED_COVERED_RULES: &[&str] = &["line-length", "tight-leading", "tiny-text", "undersized-ui-text"];
+
 /// Drop the findings on `el` whose rule needs a painted element when `el` is
-/// not painted. Each gate is evaluated at most once per element, and not at
-/// all when no finding needs it.
+/// not painted, and those in [`PAINT_GATED_COVERED_RULES`] when a layer
+/// covers its text. Each gate is evaluated at most once per element, and not
+/// at all when no finding needs it.
 pub fn retain_painted(dom: &dyn Dom, el: ElId, findings: &mut Vec<BrowserFinding>) {
     let mut painted: [Option<bool>; 4] = [None; 4];
-    findings.retain(|f| match paint_gate(&f.type_) {
-        None => true,
-        Some(gate) => *painted[gate as usize].get_or_insert_with(|| unpainted_for(dom, el, gate).is_none()),
+    let mut covered: Option<bool> = None;
+    findings.retain(|f| {
+        let shown = match paint_gate(&f.type_) {
+            None => true,
+            Some(gate) => *painted[gate as usize].get_or_insert_with(|| unpainted_for(dom, el, gate).is_none()),
+        };
+        shown
+            && !(PAINT_GATED_COVERED_RULES.contains(&f.type_.as_str())
+                && *covered.get_or_insert_with(|| {
+                    super::text_layers::layers_at_text(dom, el, None, None) == super::text_layers::TextLayers::Covered
+                }))
     });
 }
 
@@ -2927,6 +2947,51 @@ mod tests {
         assert_eq!(text(&d, chips[6]), None);
         // The tracking walk still sees the cut.
         assert!(!text_shown_across(&d, chips[6]));
+    }
+
+    /// metlife.com (observations-1006 row 8): mobile breadcrumbs under the
+    /// opaque nav. The size, leading and measure rules stand down where the
+    /// stacks show a layer over the text; contrast reads the verdict on its
+    /// own path, and the other rules are untouched.
+    #[test]
+    fn size_and_leading_rules_stand_down_under_a_covering_layer() {
+        let (mut d, body) = page();
+        d.inner_width = 390.0;
+        d.inner_height = 844.0;
+        let crumb = d.add(Some(body), "span");
+        d.set_styles(crumb, &[("fontSize", "10px"), ("color", "rgb(80, 80, 80)")]);
+        resolved(&mut d, crumb);
+        d.set_rect(crumb, 16.0, 100.0, 120.0, 14.0);
+        d.add_text(crumb, "Health/Accident");
+        let nav = d.add(Some(body), "nav");
+        d.set_styles(nav, &[("position", "fixed"), ("backgroundColor", "rgb(255, 255, 255)"), ("opacity", "1")]);
+        d.set_rect(nav, 0.0, 60.0, 390.0, 100.0);
+        let findings = || {
+            vec![
+                BrowserFinding::new("undersized-ui-text", "10px functional text"),
+                BrowserFinding::new("tight-leading", "line-height 1.2x"),
+                BrowserFinding::new("tiny-text", "10px"),
+                BrowserFinding::new("line-length", "120 characters"),
+                BrowserFinding::new("wide-tracking", "0.2em"),
+            ]
+        };
+        let ids = |d: &FakeDom| {
+            let mut f = findings();
+            retain_painted(d, crumb, &mut f);
+            f.into_iter().map(|f| f.type_).collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&d), vec!["wide-tracking"]);
+        // Should-flag twins: a translucent nav shows the crumb, and so does
+        // a nav that lies elsewhere.
+        d.set_style(nav, "backgroundColor", "rgba(255, 255, 255, 0.5)");
+        assert_eq!(ids(&d).len(), 5);
+        d.set_style(nav, "backgroundColor", "rgb(255, 255, 255)");
+        d.set_rect(nav, 0.0, 300.0, 390.0, 100.0);
+        assert_eq!(ids(&d).len(), 5);
+        // Below the fold no point is answered: the findings stay.
+        d.set_rect(nav, 0.0, 1000.0, 390.0, 100.0);
+        d.set_rect(crumb, 16.0, 1040.0, 120.0, 14.0);
+        assert_eq!(ids(&d).len(), 5);
     }
 
     /// jyes.com.tw's Slick dots: the label of each dot is `font-size: 0`.
