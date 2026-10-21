@@ -376,13 +376,46 @@ pub fn flat_type_samples_from_dom(dom: &dyn Dom, skip_selector: Option<&str>) ->
         if !font_size.is_finite() || font_size < 8.0 || font_size >= 200.0 {
             continue;
         }
+        let role = type_hierarchy_role(&tag_lower(dom, el));
+        // A body element that sets one or two characters of its own is a
+        // chip or a cell value, not body text: hardyn.com.br's 415 size
+        // swatches ("P", "M", "GG") at 20px outvoted the 16px copy. An
+        // element whose text all sits in elements sampled on their own
+        // keeps its sample, as before.
+        if role == "body" && matches!(own_type_chars(dom, el), 1 | 2) {
+            continue;
+        }
         samples.push(TypeSample {
-            role: type_hierarchy_role(&tag_lower(dom, el)),
+            role,
             size: font_size,
             weight: parse_font_weight(&dom.style(el, "fontWeight")),
         });
     }
     samples
+}
+
+/// The characters `el` sets at its own size: its text, less what an element
+/// the type samples count on its own sets (a `p` in an `li`), and less
+/// whitespace. Text in a `script`, `style`, `template` or `noscript` is never
+/// shown.
+fn own_type_chars(dom: &dyn Dom, el: ElId) -> usize {
+    fn walk(dom: &dyn Dom, el: ElId, n: &mut usize) {
+        for child in dom.child_nodes(el) {
+            match child {
+                super::dom::DomChild::Text(text) => *n += text.chars().filter(|c| !c.is_whitespace()).count(),
+                super::dom::DomChild::Element(c) => {
+                    let tag = tag_lower(dom, c);
+                    let sampled = TYPE_HIERARCHY_SELECTOR.split(',').any(|t| t == tag);
+                    if !sampled && !matches!(tag.as_str(), "script" | "style" | "template" | "noscript") {
+                        walk(dom, c, n);
+                    }
+                }
+            }
+        }
+    }
+    let mut n = 0;
+    walk(dom, el, &mut n);
+    n
 }
 
 /// Whether `el` is drawn as a card, read from its computed box rather than
@@ -5057,6 +5090,46 @@ mod tests {
             typeset(&mut d, hidden, "p", "hidden", "Inter, sans-serif");
         }
         assert_eq!(font_finding(&d).as_deref(), Some("Primary font: inter (100% of text)"));
+    }
+
+    /// observations-1006 row 15, hardyn.com.br: size swatches of one or two
+    /// letters are not body text, so a grid of them does not set the body
+    /// size the ladder starts from.
+    #[test]
+    fn flat_type_hierarchy_leaves_out_one_and_two_letter_chips() {
+        let detail = |chip: &str| {
+            let mut d = FakeDom::new();
+            let (_h, body) = d.with_page();
+            for (tag, size, text) in [
+                ("p", "16px", "Body copy long enough to read as a paragraph."),
+                ("p", "16px", "A second paragraph of body copy on the page."),
+                ("h2", "22px", "Section"),
+                ("h1", "24px", "Title"),
+            ] {
+                let el = d.add(Some(body), tag);
+                d.add_text(el, text);
+                d.set_style(el, "fontSize", size);
+            }
+            let list = d.add(Some(body), "ul");
+            for _ in 0..6 {
+                let li = d.add(Some(list), "li");
+                d.add_text(li, chip);
+                d.set_style(li, "fontSize", "20px");
+            }
+            check_typography(&d)
+                .into_iter()
+                .filter(|f| f.type_ == "flat-type-hierarchy")
+                .map(|f| f.detail)
+                .collect::<Vec<_>>()
+        };
+        // "P", "GG": the body is the 16px copy, and 16 / 22 / 24 has a step.
+        assert!(detail("P").is_empty(), "{:?}", detail("P"));
+        assert!(detail(" GG ").is_empty());
+        // Three letters are text, and the 20px items set the body.
+        assert_eq!(
+            detail("XGG"),
+            vec!["Role sizes: body 20px, h2 22px, h1 24px (largest adjacent step 1.10:1; target 1.25:1)".to_string()]
+        );
     }
 
     #[test]
