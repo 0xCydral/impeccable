@@ -621,8 +621,9 @@ pub const COOKIE_NOTICE_MAX_BLUR_PX: f64 = 12.0;
 ///   ancestor that adds no text, control or media of its own, so a strip
 ///   inside a site header, or a bar stacked with a buy bar, is the notice
 ///   alone and its container stays;
-/// - that box, or an ancestor of it, is `position: fixed`, or `position:
-///   absolute` covering at least 90% of the viewport (a layer, not the page);
+/// - that box, an ancestor of it, or a box the widening passed through is
+///   `position: fixed`, or `position: absolute` covering at least 90% of the
+///   viewport (a layer, not the page);
 /// - the control is what the page hit-tests at its centre, and is in the
 ///   viewport;
 /// - the box holds no text field, `select`, `textarea`, password or email
@@ -742,7 +743,9 @@ fn cookie_notice_js() -> String {
         chain.push(a);
         box = a;
       }}
-      if (!layered(box)) continue;
+      // On a layer: the box, an ancestor, or a box the widening passed
+      // through (ktk.de's dialog sits in a layer inside a static wrapper).
+      if (!chain.some(layered)) continue;
       if (!showing(box)) continue;
       const text = shownText(box);
       if (!text || text.length > {max_text}) continue;
