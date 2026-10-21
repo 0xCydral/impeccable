@@ -277,28 +277,42 @@ pub fn rides_a_running_track(dom: &dyn Dom, el: ElId) -> bool {
         if Some(clip) == root || Some(clip) == body {
             break;
         }
-        if matches!(overflow_x(dom, clip).as_str(), "hidden" | "clip") {
-            let client = dom.client_width(clip);
-            let mut inner = dom.parent(el);
-            while let Some(t) = inner {
-                if t == clip {
-                    break;
-                }
-                let content = dom.scroll_width(t);
-                if client.is_finite()
-                    && client > 0.0
-                    && content.is_finite()
-                    && content > client + 1.0
-                    && is_transformed(dom, t)
-                    && runs_endless_animation(dom, t)
-                    && holds_row(dom, t)
-                {
-                    return true;
-                }
-                inner = dom.parent(t);
-            }
+        if runs_a_track_inside(dom, el, clip) {
+            return true;
         }
         cur = dom.parent(clip);
+    }
+    false
+}
+
+/// Whether `clip`, a box that hides its horizontal overflow, holds a track
+/// that is moving at capture and carries `el`: a box between the two whose
+/// content runs past `clip`'s width, which a running, endlessly repeating CSS
+/// animation transforms and which lays out a row ([`rides_a_running_track`]
+/// for one clip).
+pub(crate) fn runs_a_track_inside(dom: &dyn Dom, el: ElId, clip: ElId) -> bool {
+    if !matches!(overflow_x(dom, clip).as_str(), "hidden" | "clip") {
+        return false;
+    }
+    let client = dom.client_width(clip);
+    if !(client.is_finite() && client > 0.0) {
+        return false;
+    }
+    let mut inner = dom.parent(el);
+    while let Some(t) = inner {
+        if t == clip {
+            break;
+        }
+        let content = dom.scroll_width(t);
+        if content.is_finite()
+            && content > client + 1.0
+            && is_transformed(dom, t)
+            && runs_endless_animation(dom, t)
+            && holds_row(dom, t)
+        {
+            return true;
+        }
+        inner = dom.parent(t);
     }
     false
 }

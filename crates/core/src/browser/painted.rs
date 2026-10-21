@@ -41,7 +41,7 @@
 use super::dom::{class_attr, has_direct_text_longer_than, tag_lower, Dom, ElId, Rect};
 use super::element_checks::effective_opacity_dom;
 use super::page_checks::is_dialog_el;
-use super::text_geometry::phrasing_text_extent;
+use super::text_geometry::{phrasing_text_extent, runs_a_track_inside};
 use super::BrowserFinding;
 use crate::checks::measures::{clipped_by_inset, clipped_by_rect};
 use crate::js;
@@ -366,6 +366,22 @@ impl Visible {
         }
         self.shown = (js::math_max(self.shown.0, lo), js::math_min(self.shown.1, hi));
         self.under_floor()
+    }
+
+    /// Whether this walk applies a visible-share floor.
+    fn has_floor(&self) -> bool {
+        self.min_share > 0.0
+    }
+
+    /// Cut the shown part to `[lo, hi]` under a floor of the whole
+    /// measurement: true when more than a pixel of it is cut away. A walk
+    /// that has not measured the text cuts nothing.
+    fn cut_to_whole(&mut self, lo: f64, hi: f64) -> bool {
+        if !self.measured {
+            return false;
+        }
+        self.shown = (js::math_max(self.shown.0, lo), js::math_min(self.shown.1, hi));
+        !self.shown_across()
     }
 
     fn scroll(&mut self, lo: f64, hi: f64) {
@@ -1179,7 +1195,20 @@ fn clip_outcome(
     // A text measurement has to show enough of its width inside the box to be
     // read. A box that truncates its line with an ellipsis shows the start of
     // it, which is what a reader reads.
+    // Text on a track an endless animation runs through the box (a logo
+    // marquee) is where the capture caught it, and moves on: a chip 89%
+    // inside reachmcp.com's ticker at the scan was off its edge by the
+    // screenshot (observations-1006 row 18). Only a copy wholly inside the
+    // box is scored there; the copies inside it carry the strip.
     if clip_x
+        && dom.style(p, "textOverflow") != "ellipsis"
+        && vis.has_floor()
+        && runs_a_track_inside(dom, el, p)
+    {
+        if vis.cut_to_whole(cr.left, cr.right) {
+            return Err(Unpainted::ClippedOut);
+        }
+    } else if clip_x
         && dom.style(p, "textOverflow") != "ellipsis"
         && vis.cut(cr.left, cr.right, || parks_copies(dom, el, p, &cr, viewport_w))
     {
@@ -2850,6 +2879,54 @@ mod tests {
         d.set_rect(note, 10.0, 2110.0, 280.0, 20.0);
         d.add_text(note, "Related reading");
         assert_eq!(text(&d, note), None);
+    }
+
+    /// reachmcp.com (observations-1006 row 18): a logo chip 89% inside a
+    /// marquee's clip at the scan was off its edge 1.5s later. On a track an
+    /// endless animation moves, only a chip wholly inside the clip is
+    /// scored. A track a script parks (no running loop) keeps the 25% floor.
+    #[test]
+    fn text_on_a_running_marquee_needs_to_show_whole() {
+        use crate::browser::dom::KeyframeFrame;
+        let (mut d, body) = page();
+        let clip = d.add(Some(body), "div");
+        d.set_styles(clip, &[("overflowX", "hidden"), ("overflowY", "hidden")]);
+        d.set_rect(clip, 0.0, 600.0, 1000.0, 40.0);
+        d.el_mut(clip).client_width = 1000.0;
+        let track = d.add(Some(clip), "div");
+        d.set_styles(
+            track,
+            &[("transform", "matrix(1, 0, 0, 1, -300, 0)"), ("animationName", "marquee"), ("animationIterationCount", "infinite")],
+        );
+        d.keyframes.insert(
+            "marquee".into(),
+            vec![KeyframeFrame { decls: vec![("transform".into(), "translateX(-50%)".into())] }],
+        );
+        d.set_rect(track, -300.0, 600.0, 2400.0, 40.0);
+        d.el_mut(track).scroll_width = 2400.0;
+        let mut chips = Vec::new();
+        for i in 0..12 {
+            let chip = d.add(Some(track), "div");
+            d.set_rect(chip, -300.0 + 200.0 * i as f64, 600.0, 200.0, 40.0);
+            d.set_text_rect(chip, -276.0 + 200.0 * i as f64, 610.0, 152.0, 20.0);
+            d.add_text(chip, "Qonto");
+            chips.push(chip);
+        }
+        // Chip 6 runs from 924 to 1076: about half of it inside the clip.
+        assert_eq!(text(&d, chips[3]), None);
+        assert_eq!(text(&d, chips[6]), Some(Unpainted::ClippedOut));
+        // The same strip held still: the floor is the share again.
+        d.set_style(track, "animationName", "none");
+        assert_eq!(text(&d, chips[6]), None);
+        // Nor does a running loop that only pulses the track.
+        d.set_style(track, "animationName", "marquee");
+        d.keyframes.insert(
+            "marquee".into(),
+            vec![KeyframeFrame { decls: vec![("transform".into(), "scale(1.02)".into())] }],
+        );
+        assert_eq!(text(&d, chips[6]), None);
+        // The tracking walk still sees the cut.
+        assert!(!text_shown_across(&d, chips[6]));
     }
 
     /// jyes.com.tw's Slick dots: the label of each dot is `font-size: 0`.
