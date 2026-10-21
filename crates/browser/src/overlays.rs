@@ -292,7 +292,7 @@ pub fn preloader_js() -> String {
       if (shown.length > (loader ? {max_text} : {intro_max_text})) continue;
       // A layer that asks to be entered is a splash gate: it never goes on
       // its own, so it is not waited for (`splashes`).
-      if (enterText(shown)) continue;
+      if (enterText(shown) && shown.length <= {splash_max_text}) continue;
       // An intro fronts a page that is already there; a fixed hero is the page.
       if (!loader && !frontsPage(el, points)) continue;
       // The outermost match stands for the ones inside it.

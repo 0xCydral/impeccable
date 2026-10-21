@@ -655,7 +655,15 @@ fn cookie_notice_js() -> String {
     if (!body || !vw || !vh) return;
     const names = [];
     const report = n => {{ if (!names.includes(n)) names.push(n); }};
-    for (const el of q('[' + COOKIE_MARK + ']')) {{ const n = el.getAttribute(COOKIE_MARK); if (n && !n.startsWith('lock ')) report(n); }}
+    for (const el of q('[' + COOKIE_MARK + ']')) {{
+      const n = el.getAttribute(COOKIE_MARK);
+      if (n && !n.startsWith('lock ')) report(n);
+      // A late script may rewrite the inline style of a notice or lock this
+      // pass hid; hide it again.
+      try {{
+        if (getComputedStyle(el).display !== 'none') {{ el.style.setProperty('display', 'none', 'important'); out.changed = true; }}
+      }} catch (e) {{}}
+    }}
     // A whole label that accepts or refuses, in the languages the corpus
     // reads; and the softer labels that only dismiss.
     const strict = /^(?:(?:i )?(?:accept|agree|allow|reject|refuse|decline|deny)(?: (?:all|everything))?(?: (?:cookies|all cookies|non-essential|non-essential cookies|optional cookies|necessary|necessary cookies|essential|only necessary|necessary only|essential only|and close|and continue))?|alle(?: cookies)? (?:akzeptieren|ablehnen|zulassen|erlauben)|(?:akzeptieren|ablehnen|zustimmen|zulassen|einverstanden)|(?:tout |tous )?(?:accepter|refuser)(?: tout| et fermer| les cookies| tous les cookies)?|j.accepte|(?:aceptar|rechazar)(?: todo| todas| todas las cookies| cookies)?|(?:aceitar|rejeitar|recusar)(?: todos| tudo| cookies)?|(?:accetta|accetto|rifiuta)(?: tutti| tutto| i cookie)?|(?:alles )?(?:accepteren|weigeren)|接受|全部接受|接受全部|同意|全部同意|拒絕|拒绝|全部拒绝|允許|允许|동의|모두 동의|거부|허용|すべて同意|同意する|拒否|принять|принять все|отклонить|kabul et|tümünü kabul et|reddet)$/;

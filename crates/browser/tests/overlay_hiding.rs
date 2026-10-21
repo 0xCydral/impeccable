@@ -358,6 +358,23 @@ fn an_intro_that_never_ends_is_hidden_after_its_budget() {
     assert!(report.waited_ms >= impeccable_browser::overlays::INTRO_WAIT_MS, "{}", report.waited_ms);
 }
 
+/// A named intro whose text is longer than a splash allows and mentions
+/// entering is still an intro: waited for, then hidden.
+#[test]
+fn a_long_named_intro_that_says_enter_is_still_hidden() {
+    let Some(engine) = engine() else { return };
+    let port = serve();
+    let url = format!("http://127.0.0.1:{port}/intro-enter-text.html");
+    let mut browser = engine.launch().expect("launch");
+    let (findings, evidence) =
+        detect_url_evidence(&mut browser, &url, &ScanOptions::default(), "load", 100, &EvidenceRequest::default())
+            .expect("scan");
+    browser.close();
+    assert!(has(&flagged(&findings), "low-contrast", "#covered-copy"), "{findings:#?}");
+    let report = evidence.overlays.as_ref().expect("overlay report");
+    assert_eq!(report.hidden, vec![hidden("intro", "div.cine-intro")]);
+}
+
 /// The review's probes: a one-screen site, a curtain hero with an Enter
 /// link, and a fixed hero named intro are the page, not a layer in front of
 /// it. Nothing is hidden and nothing is waited for.
