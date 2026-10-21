@@ -622,7 +622,8 @@ pub const COOKIE_NOTICE_MAX_LABEL: usize = 40;
 /// layer beside it (same parent, no element children, no text) is the
 /// notice's lock layer and is hidden too. Once a notice is hidden, an inline
 /// `filter` that blurs (`blur(`) on `html`, `body` or an element up to two
-/// levels below `body` outside the notice is removed (`unlocked`:
+/// levels below `body` outside the notice, covering at least half the
+/// viewport, is removed (`unlocked`:
 /// `filter <name>`), and so is an inline `overflow` / `overflow-y: hidden` on
 /// `html` or `body` when the notice covered at least half the viewport and
 /// no other dialog is showing.
@@ -714,7 +715,8 @@ fn cookie_notice_js() -> String {
       const near = [document.documentElement, body];
       for (const c of Array.from(body.children)) {{ near.push(c); for (const g of Array.from(c.children)) near.push(g); }}
       for (const el of near) {{
-        if (notice(el)) continue;
+        // Only a box the size of the page: a blurred decoration stays.
+        if (notice(el) || !covers(el.getBoundingClientRect(), 0.5)) continue;
         const f = el.style.getPropertyValue('filter');
         if (f && /blur\(/.test(f)) {{ el.style.removeProperty('filter'); out.unlocked.push('filter ' + describe(el)); out.changed = true; }}
       }}
