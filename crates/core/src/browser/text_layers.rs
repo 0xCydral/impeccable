@@ -29,7 +29,7 @@
 //! alone wherever it cannot tell.
 
 use super::dom::{flat_contains, tag_lower, Dom, ElId};
-use super::element_checks::{effective_opacity_dom, parse_rgb_or_any};
+use super::element_checks::{blur_radius_px, effective_opacity_dom, parse_rgb_or_any};
 use super::page_checks::{
     occlusion_grid_size, occlusion_probe_points, occlusion_probe_rect, occlusion_viewport,
     rect_holds_point,
@@ -126,22 +126,46 @@ fn distance(a: &Rgba, b: &Rgba) -> f64 {
     (a.r - b.r).abs() + (a.g - b.g).abs() + (a.b - b.b).abs()
 }
 
-/// Whether a layer above the text hides it at `(x, y)`: an image, a video, a
-/// canvas, or an opaque fill, at full opacity, where the capture put it.
-/// Raster backgrounds are not counted, because a transparent texture drawn
-/// over a hero is one too.
+/// The fill alpha, times the layer's effective opacity, at which a layer
+/// above the text hides it: a reader no longer reads text under a fill
+/// that strong (observations-1006 row 8).
+const SCRIM_COVER_MIN_ALPHA: f64 = 0.75;
+
+/// The same for a layer that also blurs what is under it
+/// (`backdrop-filter: blur()` of [`SCRIM_MIN_BLUR_PX`] or more): glass over
+/// text leaves it a smear. shinebythara.lovable.app's fixed nav,
+/// `bg-background/80 backdrop-blur-md`, over its promo row.
+const SCRIM_BLURRED_MIN_ALPHA: f64 = 0.6;
+
+/// The backdrop blur from which a layer's glass makes the text under it
+/// illegible, the blur text-occlusion takes as illegible.
+const SCRIM_MIN_BLUR_PX: f64 = 4.0;
+
+/// Whether a layer above the text hides it at `(x, y)`: an image, a video or
+/// a canvas at full opacity, or a fill strong enough to hide what is under
+/// it ([`SCRIM_COVER_MIN_ALPHA`], or [`SCRIM_BLURRED_MIN_ALPHA`] over a
+/// backdrop blur), where the capture put it. Raster backgrounds are not
+/// counted, because a transparent texture drawn over a hero is one too.
 fn covers(dom: &dyn Dom, node: ElId, x: f64, y: f64) -> bool {
     if is_document_surface(dom, node) || !rect_holds_point(&dom.rect(node), x, y) {
         return false;
     }
-    if js::trim(&dom.style(node, "visibility")) == "hidden"
-        || effective_opacity_dom(dom, node) < COVER_MIN_OPACITY
-    {
+    if js::trim(&dom.style(node, "visibility")) == "hidden" {
         return false;
     }
-    MEDIA_TAGS.contains(&tag_lower(dom, node).as_str())
-        || parse_rgb_or_any(&dom.style(node, "backgroundColor"))
-            .map_or(false, |c| c.alpha_or_one() >= COVER_MIN_ALPHA)
+    let opacity = effective_opacity_dom(dom, node);
+    if MEDIA_TAGS.contains(&tag_lower(dom, node).as_str()) {
+        return opacity >= COVER_MIN_OPACITY;
+    }
+    let Some(fill) = parse_rgb_or_any(&dom.style(node, "backgroundColor")) else {
+        return false;
+    };
+    let strength = fill.alpha_or_one() * opacity;
+    if strength >= SCRIM_COVER_MIN_ALPHA {
+        return true;
+    }
+    strength >= SCRIM_BLURRED_MIN_ALPHA
+        && blur_radius_px(&dom.style(node, "backdropFilter")) >= SCRIM_MIN_BLUR_PX
 }
 
 /// What a box that is nobody's ancestor paints under the text.

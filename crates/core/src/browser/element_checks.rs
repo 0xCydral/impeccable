@@ -2957,7 +2957,7 @@ re!(
 );
 
 /// The widest `blur()` radius in a filter-shaped value, in px.
-fn blur_radius_px(value: &str) -> f64 {
+pub(crate) fn blur_radius_px(value: &str) -> f64 {
     let mut widest = 0.0f64;
     for m in BLUR_FN_RE.captures_iter(value) {
         let n = parse_float(m.get(1).map(|g| g.as_str()).unwrap_or(""));
@@ -10320,6 +10320,36 @@ mod tests {
         assert!(reports_contrast(&run((0.0, 645.0, 1280.0, 155.0), "0.5", 700.0)));
         // Below the fold no point can be asked, and the verdict stands.
         assert!(reports_contrast(&run((0.0, 645.0, 1280.0, 1000.0), "1", 900.0)));
+    }
+
+    /// shinebythara.lovable.app (observations-1006 row 8): a fixed nav at
+    /// `rgba(251, 250, 249, 0.8)` with `backdrop-filter: blur(12px)` over a
+    /// promo row. A fill at 0.75 or more hides the text under it, and so does
+    /// one at 0.6 or more over a backdrop blur of 4px or more. Fainter
+    /// glass, or the same fill without the blur, shows the text.
+    #[test]
+    fn text_under_a_strong_scrim_or_frosted_glass_is_not_scored() {
+        let run = |fill: &str, opacity: &str, backdrop: &str| {
+            let (mut d, body) = page();
+            let hero = bare_box(&mut d, body, "section", (0.0, 0.0, 1280.0, 1400.0));
+            let p = faint_copy(&mut d, hero, "rgb(170, 170, 170)", (16.0, 20.0, 300.0, 28.0));
+            let nav = bare_box(&mut d, body, "nav", (0.0, 0.0, 1280.0, 64.0));
+            d.set_styles(
+                nav,
+                &[("position", "fixed"), ("backgroundColor", fill), ("opacity", opacity), ("backdropFilter", backdrop)],
+            );
+            reports_contrast(&colors(&d, p))
+        };
+        assert!(!run("rgba(251, 250, 249, 0.8)", "1", "blur(12px)"));
+        assert!(!run("rgba(251, 250, 249, 0.8)", "1", "none"));
+        assert!(!run("rgba(251, 250, 249, 0.65)", "1", "blur(12px)"));
+        assert!(!run("rgb(251, 250, 249)", "0.8", "none"));
+        // Should-flag twins.
+        assert!(run("rgba(251, 250, 249, 0.65)", "1", "none"), "glass without blur");
+        assert!(run("rgba(251, 250, 249, 0.65)", "1", "blur(2px)"), "a light blur");
+        assert!(run("rgba(251, 250, 249, 0.5)", "1", "blur(12px)"), "faint glass");
+        assert!(run("rgba(251, 250, 249, 0.8)", "0.7", "blur(12px)"), "a faded layer");
+        assert!(run("rgba(251, 250, 249, 0.7)", "1", ""), "an unrecorded backdrop");
     }
 
     #[test]
