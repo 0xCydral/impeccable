@@ -40,6 +40,7 @@
 
 use super::dom::{class_attr, has_direct_text_longer_than, tag_lower, Dom, ElId, Rect};
 use super::element_checks::effective_opacity_dom;
+use super::page_checks::is_dialog_el;
 use super::text_geometry::phrasing_text_extent;
 use super::BrowserFinding;
 use crate::checks::measures::{clipped_by_inset, clipped_by_rect};
@@ -49,7 +50,9 @@ use crate::js;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unpainted {
     /// `display: none` or `content-visibility: hidden` on an ancestor, or
-    /// `visibility: hidden` / `checkVisibility()` false on the element.
+    /// `visibility: hidden` / `checkVisibility()` false on the element, or
+    /// the element or an ancestor is a dialog switched off with `inert`
+    /// ([`closed_inert_dialog`]).
     NotRendered,
     /// The element's effective opacity is at or near 0.
     Transparent,
@@ -420,6 +423,9 @@ fn unpainted_walk(
     if turned_away(dom, el) {
         return Some(Unpainted::TurnedAway);
     }
+    if closed_inert_dialog(dom, el) {
+        return Some(Unpainted::NotRendered);
+    }
 
     match own {
         OwnOpacity::Toggled => {
@@ -489,6 +495,9 @@ fn unpainted_walk(
         }
         if turned_away(dom, p) {
             return Some(Unpainted::TurnedAway);
+        }
+        if closed_inert_dialog(dom, p) {
+            return Some(Unpainted::NotRendered);
         }
         if Some(p) == clip_root {
             clip_tests = false;
@@ -562,6 +571,19 @@ fn unpainted_walk(
         return None;
     }
     outside_document(dom, &band, vis, viewport_w)
+}
+
+/// Whether `el` is a dialog (a `<dialog>`, `role="dialog"` or
+/// `"alertdialog"`, or `aria-modal="true"`) that itself carries `inert`: a
+/// closed off-canvas menu or modal its script switched off rather than
+/// hiding. ktk.de's mmenu.js drawer (`nav#menumobile`, observations-1006
+/// row 1) stays laid out on screen at `z-index: 0` under an opaque page
+/// layer, and `inert` keeps it out of every hit-test stack, so neither the
+/// paint walk nor the occlusion probe would see it as covered. A dialog a
+/// visitor is looking at is never inert: it could not be used. `inert`
+/// alone is not enough: the page behind an open modal is inert and shown.
+fn closed_inert_dialog(dom: &dyn Dom, el: ElId) -> bool {
+    dom.attr(el, "inert").is_some() && is_dialog_el(dom, el)
 }
 
 /// The ancestors of `el`, below the body, whose overflow can clip it, by
@@ -2743,6 +2765,77 @@ mod tests {
 
     fn text(d: &FakeDom, el: ElId) -> Option<Unpainted> {
         unpainted_for(d, el, PaintGate::Text)
+    }
+
+    /// ktk.de (observations-1006 row 1): mmenu.js leaves its closed drawer,
+    /// `nav#menumobile` (`role=dialog`, `aria-modal=true`, `inert`), laid out
+    /// on screen under the page. Nothing in it is painted for the text
+    /// rules. `inert` alone is not: the page behind an open modal is inert
+    /// and shown, and so is the open modal, which carries no `inert`.
+    #[test]
+    fn a_dialog_switched_off_with_inert_is_not_painted() {
+        let (mut d, body) = page();
+        let nav = d.add(Some(body), "nav");
+        d.set_attr(nav, "role", "dialog");
+        d.set_attr(nav, "aria-modal", "true");
+        d.set_attr(nav, "inert", "true");
+        d.set_style(nav, "position", "fixed");
+        resolved(&mut d, nav);
+        d.set_rect(nav, 840.0, 60.0, 440.0, 740.0);
+        let panel = d.add(Some(nav), "div");
+        d.set_attr(panel, "inert", "true");
+        d.set_rect(panel, 840.0, 60.0, 440.0, 689.0);
+        let link = d.add(Some(panel), "a");
+        d.set_rect(link, 860.0, 100.0, 200.0, 20.0);
+        d.add_text(link, "Tarife");
+        assert_eq!(text(&d, link), Some(Unpainted::NotRendered));
+        assert_eq!(why(&d, nav), Some(Unpainted::NotRendered));
+
+        // The same drawer open: no `inert`, and its text is painted.
+        d.el_mut(nav).attrs.retain(|(n, _)| n != "inert");
+        d.el_mut(panel).attrs.retain(|(n, _)| n != "inert");
+        assert_eq!(text(&d, link), None);
+
+        // A `<dialog>` or `role=alertdialog` switched off the same way.
+        let modal = d.add(Some(body), "dialog");
+        d.set_attr(modal, "inert", "");
+        d.set_rect(modal, 400.0, 200.0, 480.0, 300.0);
+        let copy = d.add(Some(modal), "p");
+        d.set_rect(copy, 420.0, 220.0, 400.0, 20.0);
+        d.add_text(copy, "We use cookies.");
+        assert_eq!(text(&d, copy), Some(Unpainted::NotRendered));
+        let alert = d.add(Some(body), "div");
+        d.set_attr(alert, "role", "alertdialog");
+        d.set_attr(alert, "inert", "");
+        d.set_rect(alert, 400.0, 600.0, 480.0, 100.0);
+        assert_eq!(why(&d, alert), Some(Unpainted::NotRendered));
+
+        // Should-flag twins. The page behind an open modal is `inert` and
+        // shown; so is a lone inert panel holding text.
+        let main = d.add(Some(body), "main");
+        d.set_attr(main, "inert", "");
+        d.set_rect(main, 0.0, 0.0, 1280.0, 2000.0);
+        let para = d.add(Some(main), "p");
+        d.set_rect(para, 40.0, 900.0, 600.0, 20.0);
+        d.add_text(para, "Page copy behind the modal.");
+        assert_eq!(text(&d, para), None);
+        let open = d.add(Some(body), "div");
+        d.set_attr(open, "role", "dialog");
+        d.set_attr(open, "aria-modal", "true");
+        d.set_rect(open, 400.0, 200.0, 480.0, 300.0);
+        let body_copy = d.add(Some(open), "p");
+        d.set_rect(body_copy, 420.0, 240.0, 400.0, 20.0);
+        d.add_text(body_copy, "Accept all cookies?");
+        assert_eq!(text(&d, body_copy), None);
+        // `aria-modal="false"` with `inert` is not a dialog.
+        let side = d.add(Some(body), "aside");
+        d.set_attr(side, "aria-modal", "false");
+        d.set_attr(side, "inert", "");
+        d.set_rect(side, 0.0, 2100.0, 300.0, 200.0);
+        let note = d.add(Some(side), "p");
+        d.set_rect(note, 10.0, 2110.0, 280.0, 20.0);
+        d.add_text(note, "Related reading");
+        assert_eq!(text(&d, note), None);
     }
 
     /// jyes.com.tw's Slick dots: the label of each dot is `font-size: 0`.

@@ -935,7 +935,7 @@ fn is_media_player(dom: &dyn Dom, el: ElId, rect: &Rect) -> bool {
 
 /// Whether `el` is a dialog: a `<dialog>`, `role="dialog"` or
 /// `role="alertdialog"`, or `aria-modal="true"`.
-fn is_dialog_el(dom: &dyn Dom, el: ElId) -> bool {
+pub(crate) fn is_dialog_el(dom: &dyn Dom, el: ElId) -> bool {
     tag_lower(dom, el) == "dialog"
         || dom.attr(el, "role").is_some_and(|role| {
             role.split_ascii_whitespace()
