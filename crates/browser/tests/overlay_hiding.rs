@@ -375,6 +375,22 @@ fn a_long_named_intro_that_says_enter_is_still_hidden() {
     assert_eq!(report.hidden, vec![hidden("intro", "div.cine-intro")]);
 }
 
+/// A long named layer that says enter and states an age is an age gate:
+/// it stays.
+#[test]
+fn a_long_named_age_gate_stays() {
+    let Some(engine) = engine() else { return };
+    let port = serve();
+    let url = format!("http://127.0.0.1:{port}/intro-age-gate.html");
+    let mut browser = engine.launch().expect("launch");
+    let (_, evidence) =
+        detect_url_evidence(&mut browser, &url, &ScanOptions::default(), "load", 100, &EvidenceRequest::default())
+            .expect("scan");
+    browser.close();
+    let report = evidence.overlays.as_ref().expect("overlay report");
+    assert!(report.hidden.is_empty(), "{report:?}");
+}
+
 /// The review's probes: a one-screen site, a curtain hero with an Enter
 /// link, and a fixed hero named intro are the page, not a layer in front of
 /// it. Nothing is hidden and nothing is waited for.

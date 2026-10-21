@@ -293,6 +293,9 @@ pub fn preloader_js() -> String {
       // A layer that asks to be entered is a splash gate: it never goes on
       // its own, so it is not waited for (`splashes`).
       if (enterText(shown) && shown.length <= {splash_max_text}) continue;
+      // A long enter-worded layer is still an intro, unless it is an answer
+      // (an age gate or a consent choice), which stays.
+      if (!loader && enterText(shown) && /\b(18|21)\b|\+18|\bage\b|\bâge\b|\balter\b|\bedad\b|\bidade\b|cookie|accept|agree/i.test(shown)) continue;
       // An intro fronts a page that is already there; a fixed hero is the page.
       if (!loader && !frontsPage(el, points)) continue;
       // The outermost match stands for the ones inside it.
