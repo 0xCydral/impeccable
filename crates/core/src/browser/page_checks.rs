@@ -676,7 +676,17 @@ fn is_field_box(dom: &dyn Dom, el: ElId) -> bool {
         ),
         _ => false,
     };
-    let is_button = |c: ElId| tag_of(c) == "button" || dom.attr(c, "role").is_some_and(|r| r == "button");
+    // A submit input is a button as much as a `<button>` is.
+    let is_button = |c: ElId| {
+        tag_of(c) == "button"
+            || dom.attr(c, "role").is_some_and(|r| r == "button")
+            || (tag_of(c) == "input"
+                && matches!(input_type(c).as_str(), "submit" | "button" | "image" | "reset"))
+    };
+    // Copy written straight into the box is the box's own content.
+    if !js::trim(&direct_text(dom, el)).is_empty() {
+        return false;
+    }
     let short_label = |c: ElId| {
         utf16_len(js::trim(&collapse_ws(&dom.text_content(c)))) <= FIELD_BUTTON_ROW_MAX_CHARS
             && dom
@@ -8146,6 +8156,36 @@ mod tests {
             }),
             1,
             "a button row holding copy"
+        );
+        // A submit input is a button, whether it sits alone or in a row.
+        let add_submit = |d: &mut FakeDom, parent: ElId| {
+            let submit = d.add(Some(parent), "input");
+            d.set_attr(submit, "type", "submit");
+            d.set_rect(submit, 1000.0, 688.0, 26.0, 26.0);
+        };
+        assert_eq!(
+            composer(&|d, form| {
+                let b = d.children(form)[2];
+                d.set_rect(b, 790.0, 688.0, 220.0, 26.0);
+                add_submit(d, form);
+            }),
+            1,
+            "two button rows, one a submit input"
+        );
+        assert_eq!(
+            composer(&|d, form| {
+                let row = d.children(form)[2];
+                add_submit(d, row);
+            }),
+            0,
+            "a row of a button and a submit input"
+        );
+        assert_eq!(
+            composer(&|d, form| {
+                d.add_text(form, "Answers can be wrong");
+            }),
+            1,
+            "a composer with copy written into the box"
         );
 
         // Review of round 12: a plan card carried by a hidden input and one
