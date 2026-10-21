@@ -490,6 +490,13 @@ fn direct_text_insets(dom: &dyn Dom, el: ElId, rect: &Rect, border: &[f64; 4]) -
         }
         _ => t,
     };
+    // Above and below, the glyphs are measured, not the font's content area:
+    // a Range rect runs the face's ascent plus descent, which leaves room
+    // over the capitals and under the descenders that a reader sees as air
+    // (ktk.de's 37px cookie title bar holds 19.2px text 4px off by its
+    // content area and about 8px off by its glyphs). The chip path measures
+    // the same band.
+    let t = glyph_band(dom, el, &t);
     // Text that overruns its own box still reads as cramped: the clamped rect
     // lands on the border, an inset of zero.
     let t = clamp_to(&t, rect)?;
@@ -3354,13 +3361,14 @@ mod tests {
                 ("paddingRight", "12px"),
             ],
         );
-        // The glyphs sit 2px under the top edge, as the padding says.
+        // The content area sits 2px under the top edge, as the padding says;
+        // the glyphs are measured, about 2.4px further in.
         d.set_text_rect(p, 52.0, 102.0, 200.0, 40.0);
         let hits = check_element_quality_dom(&d, p, &BrowserConfig::default());
         assert_eq!(hits.len(), 1, "{hits:?}");
         assert_eq!(
             hits[0].snippet,
-            "2px of space above and below the text (need ≥4.8px for 16px text)"
+            "4.4px of space above and below the text (need ≥4.8px for 16px text)"
         );
     }
 
@@ -3476,7 +3484,7 @@ mod tests {
         assert_eq!(hits.len(), 1, "{hits:?}");
         assert_eq!(
             hits[0].snippet,
-            "0.5px of space above and below the text (need ≥4.5px for 15px text)"
+            "2px of space above and below the text (need ≥4.5px for 15px text)"
         );
     }
 
@@ -3509,11 +3517,55 @@ mod tests {
         d.set_text_rect(btn, 32.0, 12.0, 160.0, 16.0);
         assert!(check_element_quality_dom(&d, btn, &BrowserConfig::default()).is_empty());
 
-        // Same declared padding, but the label fills the box.
-        d.set_text_rect(btn, 32.0, 1.0, 160.0, 38.0);
+        // Same declared padding, but two lines of the label fill the box:
+        // their content area starts 1px under the top edge, the capitals
+        // about 1.4px under that.
+        d.set_text_rect(btn, 32.0, 1.0, 160.0, 33.6);
         let hits = check_element_quality_dom(&d, btn, &BrowserConfig::default());
         assert_eq!(hits.len(), 1, "{hits:?}");
-        assert_eq!(hits[0].snippet, "1px of space above and below the text (need ≥4.2px for 14px text)");
+        assert_eq!(hits[0].snippet, "2.4px of space above and below the text (need ≥4.2px for 14px text)");
+    }
+
+    /// observations-1006 row 12, ktk.de's cookie title: 4px of padding holds
+    /// a 27px content area (Open Sans at 19.2px) in a 37px bar. The capitals
+    /// sit about 7.9px off the edges, which is air; the same bar with its
+    /// glyphs at the edge stays cramped.
+    #[test]
+    fn cramped_padding_measures_the_glyphs_not_the_content_area() {
+        let mut d = FakeDom::new();
+        let (_h, body) = d.with_page();
+        d.set_style(body, "backgroundColor", "rgb(255, 255, 255)");
+        let bar = text_el(&mut d, body, "div", "Wir verwenden Cookies", "19.2px");
+        d.set_styles(
+            bar,
+            &[
+                ("lineHeight", "28.8px"),
+                ("backgroundColor", "rgb(253, 202, 47)"),
+                ("borderTopWidth", "0px"),
+                ("borderRightWidth", "0px"),
+                ("borderBottomWidth", "0px"),
+                ("borderLeftWidth", "0px"),
+                ("paddingTop", "4px"),
+                ("paddingBottom", "4px"),
+                ("paddingLeft", "4px"),
+                ("paddingRight", "4px"),
+            ],
+        );
+        d.set_rect(bar, 333.0, 43.0, 614.0, 36.8);
+        d.set_text_rect(bar, 484.4, 47.0, 311.3, 27.0);
+        let cramped = |d: &FakeDom| -> Vec<String> {
+            check_element_quality_dom(d, bar, &BrowserConfig::default())
+                .into_iter()
+                .filter(|h| h.id == "cramped-padding")
+                .map(|h| h.snippet)
+                .collect()
+        };
+        assert!(cramped(&d).is_empty(), "{:?}", cramped(&d));
+        // A face whose content area is no taller than its em: the glyphs
+        // are 4px off, and that is cramped.
+        d.set_text_rect(bar, 484.4, 47.0, 311.3, 19.2);
+        d.set_rect(bar, 333.0, 43.0, 614.0, 31.2);
+        assert_eq!(cramped(&d), vec!["4px of space above and below the text (need ≥5.8px for 19.2px text)"]);
     }
 
     /// `border: 1px solid transparent` (a focus-ring placeholder) draws no
@@ -4147,7 +4199,7 @@ mod tests {
         d.set_text_rect(mark, 40.0, 100.0, 600.0, 194.0);
         assert!(cramped(&d, mark).is_empty(), "{:?}", cramped(&d, mark));
         d.set_style(mark, "display", "inline-block");
-        assert_eq!(cramped(&d, mark), vec!["0px of space above and below the text (need ≥6.6px for 22px text)"]);
+        assert_eq!(cramped(&d, mark), vec!["5.3px of space above and below the text (need ≥6.6px for 22px text)"]);
     }
 
     /// A wrapper with a grey fill and the text at its right edge, inside a
@@ -5561,7 +5613,7 @@ mod tests {
         d.set_style(hl, "display", "inline-block");
         assert_eq!(
             snippets(&d, hl, "cramped-padding"),
-            vec!["0px of space above and below the text (need ≥4.2px for 14px text)"]
+            vec!["1.5px of space above and below the text (need ≥4.2px for 14px text)"]
         );
     }
 
