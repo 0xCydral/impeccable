@@ -38,6 +38,11 @@ re!(
     format!(r"<{defs}{B}[^>]*>{ANY}*?</{defs}>", defs = ci("defs"))
 );
 re!(SVG_USE_RE, format!(r"<{}{B}", ci("use")));
+re!(SVG_ID_RE, r#"(?i)\sid\s*=\s*["']([^"']+)["']"#.to_string());
+re!(
+    SVG_USE_HREF_RE,
+    r#"(?i)<use\b[^>]*?\bhref\s*=\s*["']#([^"']+)["']"#.to_string()
+);
 re!(SVG_OPEN_RE, format!(r"^<{svg}{B}[^>]*>", svg = ci("svg")));
 re!(
     SVG_TEXT_RE,
@@ -161,18 +166,38 @@ pub fn scan_html_for_shape_assembled_illustration(html: &str) -> Vec<RuleHit> {
         if SVG_PATTERN_RE.is_match(block) {
             continue;
         }
-        // Unless something references them: shapes drawn through `<use>`
-        // are drawn.
-        let painted = if SVG_USE_RE.is_match(block) {
-            std::borrow::Cow::Borrowed(block)
-        } else {
-            SVG_DEFS_RE.replace_all(block, "")
-        };
-        let primitives = SVG_PRIMITIVE_RE.find_iter(&painted).count();
+        // Without a `<use>` to repeat a shape, defs only lower the count, so
+        // a block short of eight primitives needs no further work.
+        let has_use = SVG_USE_RE.is_match(block);
+        if !has_use && SVG_PRIMITIVE_RE.find_iter(block).count() < 8 {
+            continue;
+        }
+        // Shapes in `<defs>` are assets: they are drawn only through a
+        // `<use>` that names them, once per use.
+        let painted = SVG_DEFS_RE.replace_all(block, "");
+        let mut primitives = SVG_PRIMITIVE_RE.find_iter(&painted).count();
+        let mut drawn = SVG_DRAWN_SHAPE_RE.find_iter(&painted).count();
+        if has_use {
+            let mut assets: Vec<(String, bool)> = Vec::new();
+            for d in SVG_DEFS_RE.find_iter(block) {
+                for shape in SVG_DRAWN_SHAPE_RE.find_iter(d.as_str()) {
+                    let rest = &d.as_str()[shape.start()..];
+                    let tag = &rest[..rest.find('>').unwrap_or(rest.len())];
+                    if let Some(id) = SVG_ID_RE.captures(tag) {
+                        assets.push((id[1].to_string(), SVG_PRIMITIVE_RE.is_match(tag)));
+                    }
+                }
+            }
+            for u in SVG_USE_HREF_RE.captures_iter(block) {
+                if let Some((_, primitive)) = assets.iter().find(|(id, _)| *id == u[1]) {
+                    drawn += 1;
+                    primitives += usize::from(*primitive);
+                }
+            }
+        }
         if primitives < 8 {
             continue;
         }
-        let drawn = SVG_DRAWN_SHAPE_RE.find_iter(&painted).count();
         if (primitives as f64) < drawn as f64 * SVG_PRIMITIVE_SHARE_MIN {
             continue;
         }
@@ -1095,10 +1120,21 @@ mod tests {
         // Unused assets in `<defs>` change neither count.
         let unused = format!("<defs>{}</defs>", paths.repeat(2));
         assert_eq!(svg("<svg viewBox=\"0 0 400 300\">", &unused).len(), 1, "defs paths are not drawn");
-        // Shapes in `<defs>` that `<use>` draws are drawn.
-        let used = format!("<defs>{scene}</defs><use href=\"#a\"/>");
-        let only_used = scan_html_for_shape_assembled_illustration(&format!("<svg viewBox=\"0 0 400 300\">{used}</svg>"));
-        assert_eq!(only_used.len(), 1, "defs shapes drawn through use");
+        // Shapes in `<defs>` are drawn through the `<use>` that names them,
+        // once per use, and not otherwise.
+        let defs = |shapes: &str, uses: &str| {
+            scan_html_for_shape_assembled_illustration(&format!(
+                "<svg viewBox=\"0 0 400 300\"><defs>{shapes}</defs>{uses}</svg>"
+            ))
+            .len()
+        };
+        let icon = "<rect id=\"a\" fill=\"red\"/><circle id=\"b\" fill=\"blue\"/><ellipse id=\"c\" fill=\"#0f0\"/>";
+        let eight = "<use href=\"#a\"/>".repeat(4) + &"<use xlink:href=\"#b\"/>".repeat(2) + &"<use href=\"#c\"/>".repeat(2);
+        assert_eq!(defs(icon, &eight), 1, "eight referenced primitives");
+        assert_eq!(defs(icon, "<use href=\"#a\"/>"), 0, "one use of one icon");
+        assert_eq!(defs(icon, "<use href=\"#nope\"/>"), 0, "a use that names no asset");
+        let unused_eight = "<rect id=\"x1\" fill=\"red\"/><rect id=\"x2\" fill=\"blue\"/><rect id=\"x3\" fill=\"#0f0\"/><circle id=\"x4\"/><circle id=\"x5\"/><circle id=\"x6\"/><ellipse id=\"x7\"/><polygon id=\"x8\"/>";
+        assert_eq!(defs(unused_eight, "<use href=\"#x1\"/>"), 0, "one use among eight unused assets");
     }
 
     #[test]
