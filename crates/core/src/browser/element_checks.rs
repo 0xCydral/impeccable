@@ -3176,7 +3176,8 @@ fn is_fade_strip_on_own_fill(dom: &dyn Dom, el: ElId, rect: &Rect, stops: &[Rgba
 /// beside at least one other inline run, or the parent's own text, in a
 /// different colour. The
 /// colours come from the language, not a palette. A one-colour terminal line
-/// on a neon hero is not a highlighted sample and is still read.
+/// on a neon hero is not a highlighted sample and is still read, and so is
+/// one whose other run paints nothing (hidden, transparent or at opacity 0).
 fn is_highlighted_code_token(dom: &dyn Dom, el: ElId) -> bool {
     if !crate::checks::text_rules::is_monospace_family(&dom.style(el, "fontFamily")) {
         return false;
@@ -3201,8 +3202,17 @@ fn is_highlighted_code_token(dom: &dyn Dom, el: ElId) -> bool {
     if !js::trim(&direct_text(dom, parent)).is_empty() && differs(parent) {
         return true;
     }
+    let paints = |node: ElId| {
+        !matches!(dom.style(node, "visibility").as_str(), "hidden" | "collapse")
+            && own_opacity(dom, node) > 0.0
+            && parse_rgb_or_any(&dom.style(node, "color")).is_some_and(|c| c.alpha_or_one() > 0.0)
+    };
     dom.children(parent).into_iter().any(|sib| {
-        sib != el && inline(sib) && !js::trim(&dom.text_content(sib)).is_empty() && differs(sib)
+        sib != el
+            && inline(sib)
+            && !js::trim(&dom.text_content(sib)).is_empty()
+            && paints(sib)
+            && differs(sib)
     })
 }
 
@@ -7705,6 +7715,17 @@ mod tests {
         assert!(check_element_ai_palette_dom(&d, token, None).ink.is_some(), "a block in another colour");
         d.set_style(rest, "display", "inline");
         assert!(check_element_ai_palette_dom(&d, token, None).ink.is_none(), "a code token");
+        // The other run paints nothing: still one visible colour, still read.
+        d.set_style(rest, "visibility", "hidden");
+        assert!(check_element_ai_palette_dom(&d, token, None).ink.is_some(), "beside a hidden run");
+        d.set_style(rest, "visibility", "visible");
+        d.set_style(rest, "opacity", "0");
+        assert!(check_element_ai_palette_dom(&d, token, None).ink.is_some(), "beside a run at opacity 0");
+        d.set_style(rest, "opacity", "1");
+        d.set_style(rest, "color", "rgba(229, 231, 235, 0)");
+        assert!(check_element_ai_palette_dom(&d, token, None).ink.is_some(), "beside a transparent run");
+        d.set_style(rest, "color", "rgb(229, 231, 235)");
+        assert!(check_element_ai_palette_dom(&d, token, None).ink.is_none(), "a code token again");
         d.set_style(token, "whiteSpace", "pre-line");
         assert!(check_element_ai_palette_dom(&d, token, None).ink.is_some(), "pre-line collapses spaces");
         d.set_style(token, "whiteSpace", "normal");
