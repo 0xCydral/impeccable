@@ -420,6 +420,59 @@ fn moves_surface(paint: &[Rgba], resolved: Option<Rgba>) -> Option<bool> {
     )
 }
 
+/// The first layer in `above` (the stack above the text at `(x, y)`,
+/// topmost first) that is not the text's ancestor and [`covers`] it there.
+fn cover_above(dom: &dyn Dom, el: ElId, above: &[ElId], x: f64, y: f64) -> Option<ElId> {
+    above
+        .iter()
+        .copied()
+        .find(|&node| !dom.contains(node, el) && covers(dom, node, x, y))
+}
+
+/// The share of a run's text a single covering layer has to hold for a
+/// split grid to count as covered: bordeaux-metropole.fr's consent modal
+/// holds 87% of a link whose top grid row lies just above it, and
+/// searchvoro.com's card holds all of a paragraph whose box runs past it.
+const COVERED_TEXT_MIN_SHARE: f64 = 0.85;
+
+/// Whether one layer that covers the text at a deciding point holds at
+/// least [`COVERED_TEXT_MIN_SHARE`] of the run's direct text box. A run with
+/// no direct text box (a field's placeholder), or a layer the capture did
+/// not measure, holds nothing.
+fn covering_layer_holds_text(dom: &dyn Dom, el: ElId, points: &[(f64, f64)], answers: &[AtPoint]) -> bool {
+    let Some(text) = dom.direct_text_rect(el).filter(|r| r.all_finite() && r.width > 0.0 && r.height > 0.0) else {
+        return false;
+    };
+    let area = text.width * text.height;
+    let mut seen: Vec<ElId> = Vec::new();
+    for (&(x, y), answer) in points.iter().zip(answers) {
+        if *answer != AtPoint::Covered {
+            continue;
+        }
+        let stack = dom.elements_from_point(x, y);
+        let Some(first) = stack.iter().position(|&n| dom.contains(el, n)) else {
+            continue;
+        };
+        let Some(layer) = cover_above(dom, el, &stack[..first], x, y) else {
+            continue;
+        };
+        if seen.contains(&layer) {
+            continue;
+        }
+        seen.push(layer);
+        let r = dom.rect(layer);
+        if !r.all_finite() {
+            continue;
+        }
+        let w = js::math_min(r.right, text.right) - js::math_max(r.left, text.left);
+        let h = js::math_min(r.bottom, text.bottom) - js::math_max(r.top, text.top);
+        if w > 0.0 && h > 0.0 && w * h >= COVERED_TEXT_MIN_SHARE * area {
+            return true;
+        }
+    }
+    false
+}
+
 fn at_point(
     dom: &dyn Dom,
     el: ElId,
@@ -436,13 +489,8 @@ fn at_point(
     let Some(first) = stack.iter().position(|&n| in_text(n)) else {
         return AtPoint::Silent;
     };
-    for &node in &stack[..first] {
-        if dom.contains(node, el) {
-            continue;
-        }
-        if covers(dom, node, x, y) {
-            return AtPoint::Covered;
-        }
+    if cover_above(dom, el, &stack[..first], x, y).is_some() {
+        return AtPoint::Covered;
     }
     // The element paints its own surface: nothing under it is read.
     if host == Some(el) {
@@ -546,11 +594,17 @@ pub fn layers_at_text(
     if answers.contains(&AtPoint::Unanswered) {
         return TextLayers::Undecided;
     }
-    let deciding: Vec<AtPoint> = answers.into_iter().filter(|a| *a != AtPoint::Silent).collect();
+    let deciding: Vec<AtPoint> = answers.iter().copied().filter(|a| *a != AtPoint::Silent).collect();
     if deciding.is_empty() || deciding.len() * 2 < points.len() {
         return TextLayers::Undecided;
     }
-    if deciding.iter().all(|a| *a == AtPoint::Covered) {
+    // The grid probes the element's box, which can run past its text (a
+    // paragraph wider than the card it sits in) or straddle a cover's edge
+    // by a row: a layer that covers the text at one deciding point and
+    // holds most of the text's own box covers it.
+    if deciding.iter().all(|a| *a == AtPoint::Covered)
+        || (deciding.contains(&AtPoint::Covered) && covering_layer_holds_text(dom, el, &points, &answers))
+    {
         TextLayers::Covered
     } else if deciding.iter().all(|a| matches!(a, AtPoint::Covered | AtPoint::Unread)) {
         TextLayers::UnreadSurface

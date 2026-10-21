@@ -10352,6 +10352,35 @@ mod tests {
         assert!(run("rgba(251, 250, 249, 0.7)", "1", ""), "an unrecorded backdrop");
     }
 
+    /// searchvoro.com and bordeaux-metropole.fr (observations-1006 row 8):
+    /// an opaque card or modal covers a run's text, but the grid probes the
+    /// run's box, which runs past the card or straddles its edge by a row.
+    /// One covering layer that holds 85% or more of the text's own box
+    /// covers it; less, or no text box at all, keeps the verdict.
+    #[test]
+    fn a_layer_holding_most_of_the_text_covers_it_where_the_box_runs_past() {
+        let run = |card: (f64, f64, f64, f64), text_rect: Option<(f64, f64, f64, f64)>| {
+            let (mut d, body) = page();
+            let hero = bare_box(&mut d, body, "section", (0.0, 0.0, 1280.0, 1400.0));
+            let p = faint_copy(&mut d, hero, "rgb(170, 170, 170)", (72.0, 700.0, 1136.0, 28.0));
+            if let Some(t) = text_rect {
+                d.set_text_rect(p, t.0, t.1, t.2, t.3);
+            }
+            let modal = bare_box(&mut d, body, "div", card);
+            d.set_styles(modal, &[("position", "fixed"), ("backgroundColor", "rgb(255, 255, 255)")]);
+            reports_contrast(&colors(&d, p))
+        };
+        let text = Some((448.0, 704.0, 384.0, 20.0));
+        // The card holds the whole text; the box's ends lie outside it.
+        assert!(!run((192.0, 605.0, 896.0, 179.0), text));
+        // The card's top edge cuts 3 of the text's 20px: 85% under it.
+        assert!(!run((192.0, 707.0, 896.0, 179.0), text));
+        // Should-flag twins: the card holds 75% of the text, or the capture
+        // has no text box to measure.
+        assert!(run((192.0, 709.0, 896.0, 179.0), text), "a quarter of the text shows");
+        assert!(run((192.0, 605.0, 896.0, 179.0), None), "no text box");
+    }
+
     #[test]
     fn a_photo_over_an_svg_initial_leaves_it_unscored() {
         let (mut d, body) = page();
