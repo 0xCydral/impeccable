@@ -737,9 +737,13 @@ pub fn fixed_box_clippable_by(dom: &dyn Dom, el: ElId, container: ElId) -> bool 
 
 /// A box at most 1px on each axis whose `clip: rect()` (on an absolutely
 /// positioned box, the only kind `clip` applies to) or `clip-path: inset()`
-/// removes it: the screen-reader-only utility. Its content is laid out, and
-/// can overlap the pixel the box keeps, but none of it is seen. The rect is
-/// read first, so the common case costs one read.
+/// removes it, or that clips its own overflow on both axes: the
+/// screen-reader-only utility. Its content is laid out, and can overlap the
+/// pixel the box keeps, but none of it is seen. korea.kr's play icons carry
+/// a 1x1 `<i>` at `overflow: hidden` and no clip, holding "영상" at 20px
+/// (observations-1006 row 16). A box with no area that cuts its overflow is
+/// left to the clip and area tests, as before. The rect is read first, so
+/// the common case costs one read.
 pub(crate) fn is_visually_hidden_box(dom: &dyn Dom, el: ElId) -> bool {
     let r = dom.rect(el);
     if !r.all_finite() || r.width > 1.0 || r.height > 1.0 {
@@ -749,6 +753,16 @@ pub(crate) fn is_visually_hidden_box(dom: &dyn Dom, el: ElId) -> bool {
     (clip_applies && clipped_by_rect(Some(&dom.style(el, "clip"))))
         || clipped_by_inset(Some(&dom.style(el, "clipPath")))
         || clipped_by_inset(Some(&dom.style(el, "webkitClipPath")))
+        || (r.width > 0.0
+            && r.height > 0.0
+            && hides_overflow(&dom.style(el, "overflowX"))
+            && hides_overflow(&dom.style(el, "overflowY")))
+}
+
+/// An `overflow` value that cuts content at the box's edge without letting
+/// it scroll into view: `hidden` or `clip`. An unrecorded value is not one.
+fn hides_overflow(value: &str) -> bool {
+    matches!(js::to_lower_case(js::trim(value)).as_str(), "hidden" | "clip")
 }
 
 /// The elements a text rule scores that paint a value or a placeholder
@@ -4500,9 +4514,32 @@ mod tests {
         d.set_styles(sr, &[("clipPath", "none"), ("webkitClipPath", "inset(50%)")]);
         assert_eq!(why(&d, label), Some(Unpainted::VisuallyHidden));
 
-        // Without a clip, the pixel the box keeps overlaps the label, and the
-        // overflow test keeps it.
+        // So does its own overflow clip on both axes: a 1px window shows
+        // none of the label (korea.kr's 1x1 `<i>` at `overflow: hidden`,
+        // observations-1006 row 16), whether the text is a child's or its
+        // own.
         d.set_style(sr, "webkitClipPath", "none");
+        assert_eq!(why(&d, label), Some(Unpainted::VisuallyHidden));
+        let own = d.add(Some(bar), "i");
+        d.set_styles(own, &[("position", "absolute"), ("overflowX", "hidden"), ("overflowY", "hidden"), ("fontSize", "20px")]);
+        d.set_rect(own, 720.0, 8080.0, 1.0, 1.0);
+        d.add_text(own, "영상");
+        assert_eq!(unpainted_for(&d, own, PaintGate::Text), Some(Unpainted::VisuallyHidden));
+        // Should-flag twins: overflow cut on one axis only, overflow that
+        // scrolls or is not recorded, or a box larger than 1px.
+        d.set_style(own, "overflowY", "visible");
+        assert_eq!(unpainted_for(&d, own, PaintGate::Text), None);
+        d.set_style(own, "overflowY", "auto");
+        assert!(!is_visually_hidden_box(&d, own));
+        d.set_style(own, "overflowY", "");
+        assert!(!is_visually_hidden_box(&d, own));
+        d.set_style(own, "overflowY", "clip");
+        assert!(is_visually_hidden_box(&d, own));
+        d.set_rect(own, 720.0, 8080.0, 2.0, 1.0);
+        assert!(!is_visually_hidden_box(&d, own));
+
+        // Without a clip or an overflow cut, the label shows past the pixel.
+        d.set_styles(sr, &[("overflowX", "visible"), ("overflowY", "visible")]);
         assert_eq!(why(&d, label), None);
 
         // `clip` applies only to an absolutely positioned box.
