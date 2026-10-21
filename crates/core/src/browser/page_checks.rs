@@ -7666,7 +7666,7 @@ mod tests {
     /// where its border runs.
     #[test]
     fn text_occlusion_reads_a_ring_by_its_border_band() {
-        let run = |transform: &str, ring_left: f64| {
+        let run_tag = |tag: &str, transform: &str, ring_left: f64| {
             let mut d = FakeDom::new();
             let (_h, body) = d.with_page();
             let pill = d.add(Some(body), "span");
@@ -7674,7 +7674,7 @@ mod tests {
             d.set_styles(pill, OCCLUSION_BASE);
             d.set_style(pill, "position", "absolute");
             d.set_rect(pill, 100.0, 300.0, 200.0, 32.0);
-            let ring = d.add(Some(body), "div");
+            let ring = d.add(Some(body), tag);
             d.set_styles(ring, OCCLUSION_BASE);
             d.set_styles(ring, &[("position", "absolute"), ("backgroundColor", "rgba(0, 0, 0, 0)"), ("transform", transform)]);
             for side in ["Top", "Right", "Bottom", "Left"] {
@@ -7691,6 +7691,9 @@ mod tests {
             }
             check_text_occlusion_dom(&d).len()
         };
+        let run = |transform: &str, ring_left: f64| run_tag("div", transform, ring_left);
+        // A transparent input over the words draws its value there.
+        assert_eq!(run_tag("input", "none", 0.0), 1, "a control covers its rect");
         let turned = "matrix(0.848048, -0.529919, 0.529919, 0.848048, 0, 0)";
         assert_eq!(run(turned, 0.0), 0, "a turned ring");
         assert_eq!(run("none", 0.0), 0, "a frame around the pill");
