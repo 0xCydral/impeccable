@@ -3671,9 +3671,27 @@ pub fn occlusion_probe_points(rect: &Rect, vw: f64, vh: f64) -> Vec<(f64, f64)> 
 /// translation turns or scales it, since its rect is then the bounds of a
 /// ring it does not fill (v0-morbiawebsite.vercel.app's rotated 1px ellipse
 /// over a pill).
-fn border_box_covers_point(dom: &dyn Dom, el: ElId, x: f64, y: f64) -> bool {
-    if paints_opaque_fill(dom, el) {
+///
+/// A form control covers its rect whatever it paints: its interior is where
+/// it draws a value and a caret (a transparent input laid over a label). And
+/// where a box above the victim that holds the bordered one paints an opaque
+/// fill at the point (a card's bordered row on the card's white face), that
+/// fill covers it.
+fn border_box_covers_point(dom: &dyn Dom, el: ElId, victim: ElId, x: f64, y: f64) -> bool {
+    if paints_opaque_fill(dom, el)
+        || matches!(tag_lower(dom, el).as_str(), "input" | "textarea" | "select" | "button")
+    {
         return true;
+    }
+    let mut cur = dom.parent(el);
+    while let Some(a) = cur {
+        if dom.contains(a, victim) {
+            break;
+        }
+        if paints_opaque_fill(dom, a) && rect_holds_point(&dom.rect(a), x, y) {
+            return true;
+        }
+        cur = dom.parent(a);
     }
     let transform = dom.style(el, "transform");
     let transform = js::trim(&transform);
@@ -4539,7 +4557,7 @@ pub fn check_text_occlusion_dom(dom: &dyn Dom) -> Vec<ElFinding> {
             if box_here
                 && !passes_through
                 && is_opaque_decorated_box(Some(&top_style))
-                && border_box_covers_point(dom, top, x, y)
+                && border_box_covers_point(dom, top, el, x, y)
             {
                 occluded += 1;
                 if occluder_el.is_none() {
