@@ -15,9 +15,12 @@
     2. A translucent texture tile over a section's own dark fill: the tile is
        laid over that fill, not over the page under the section.
     3. Gradient text through transparent glyphs on a solid ground: scored by
-       its best stop, reported only where even that one fails.
-    4. A navy drop shadow on a teal gradient band darkens it: no glow. A cyan
-       glow on the same band lifts it.
+       its best stop, reported only where even that one fails. The same pale
+       tagline over a dark backdrop laid beneath it (an absolute sibling) is
+       read on that backdrop, not on the white page.
+    4. A navy drop shadow on a teal gradient band darkens it in the band's
+       own hue: no glow. A cyan glow on the same band lifts it, and a maroon
+       shadow, dark but in a hue of its own, reads as a coloured shadow.
 
     Ratios are far from their bars so the reading does not depend on fonts.
   -->
@@ -39,9 +42,13 @@
     .tagline { margin: 0 0 8px; font: 400 16px/24px system-ui; -webkit-background-clip: text; background-clip: text; color: transparent; -webkit-text-fill-color: transparent; }
     .tagline.pale { background-image: linear-gradient(to right, #67e8f9, #60a5fa, #a78bfa); }
     .tagline.deep { background-image: linear-gradient(to right, #67e8f9, #4c1d95); }
+    .night { position: relative; width: 360px; padding: 16px; }
+    .night .backdrop { position: absolute; inset: 0; background: #0b1020; }
+    .night .tagline { position: relative; z-index: 1; }
     .band { background-image: linear-gradient(90deg, #042f2e, #0f766e); padding: 40px; display: flex; gap: 40px; }
     .tile { display: block; width: 160px; height: 72px; background: #f1f5f9; color: #0f172a; text-decoration: none; font: 600 16px/72px system-ui; text-align: center; }
     #pass-navy-drop-shadow-on-band { box-shadow: rgba(0, 29, 56, 0.2) 0px 12px 28px 0px; }
+    #flag-maroon-shadow-on-band { box-shadow: rgba(76, 5, 25, 0.9) 0px 12px 40px 0px; }
     #flag-cyan-glow-on-band { box-shadow: rgba(34, 211, 238, 0.6) 0px 0px 28px 0px; }
   </style>
 </head>
@@ -59,7 +66,7 @@
         <div class="panel"><p class="tagline pale" id="flag-pale-gradient-tagline">What if every idea had a launch pad?</p></div>
       </div>
       <div class="case">
-        <div class="band"><a class="tile" href="#" id="flag-cyan-glow-on-band">Partner</a></div>
+        <div class="band"><a class="tile" href="#" id="flag-cyan-glow-on-band">Partner</a><a class="tile" href="#" id="flag-maroon-shadow-on-band">Partner</a></div>
       </div>
     </div>
     <div class="col">
@@ -72,6 +79,9 @@
       </div>
       <div class="case">
         <div class="panel"><p class="tagline deep" id="pass-gradient-tagline-with-a-deep-stop">What if every idea had a launch pad?</p></div>
+      </div>
+      <div class="case">
+        <div class="night"><div class="backdrop"></div><p class="tagline pale" id="pass-pale-gradient-tagline-on-a-dark-backdrop">What if every idea had a launch pad?</p></div>
       </div>
       <div class="case">
         <div class="band"><a class="tile" href="#" id="pass-navy-drop-shadow-on-band">Partner</a></div>

@@ -2014,6 +2014,17 @@ pub const GLOW_MIN_LIFT: f64 = 20.0;
 /// marker halo, an `#ff6a28` focus glow, both 0.58 or more) read as light.
 const GLOW_SHADE_MAX_LIGHTNESS: f64 = 0.25;
 
+/// How far, in degrees of hue, a dark shadow may sit from its surface and
+/// still read as that surface's shade: navy `#001d38` (209deg) on teal
+/// (175deg) is 34deg away; rose-950 (343deg) and purple-950 (274deg) on the
+/// same teal read as coloured shadows.
+const GLOW_SHADE_MAX_HUE_DISTANCE: f64 = 50.0;
+
+fn hue_distance(a: f64, b: f64) -> f64 {
+    let d = (a - b).abs() % 360.0;
+    d.min(360.0 - d)
+}
+
 /// The share of the shadow colour's alpha a blurred shadow carries at the
 /// edge of its box.
 const GLOW_EDGE_DENSITY: f64 = 0.5;
@@ -2059,7 +2070,8 @@ pub(crate) fn glow_is_perceptible(
 
 /// How far the chromatic layers of one shadow value lift `surface` at the
 /// edge of the box (see [`GLOW_MIN_LIFT`]). A dark layer
-/// ([`GLOW_SHADE_MAX_LIGHTNESS`]) darker than the surface lifts nothing. Neutral layers are elevation, not
+/// ([`GLOW_SHADE_MAX_LIGHTNESS`]) cast darker than the surface, in about its
+/// hue ([`GLOW_SHADE_MAX_HUE_DISTANCE`]), lifts nothing. Neutral layers are elevation, not
 /// glow light, and do not count, and neither does a layer carrying under half
 /// the light a glow needs ([`GLOW_MIN_STRENGTH_PX`]): Tailwind's `shadow-lg`
 /// in a 0.2 purple adds a 6px layer at 1.2px of light to its 15px one, and
@@ -2074,18 +2086,25 @@ fn glow_surface_lift(value: &str, surface: &Rgba, element_opacity: Option<f64>) 
             let color = info.color?;
             let vals = extract_shadow_lengths(layer, Some((info.start, info.end)));
             let blur = vals.get(2).copied().unwrap_or(0.0);
-            (blur * color.alpha_or_one() * opacity >= GLOW_MIN_STRENGTH_PX / 2.0).then_some(color)
+            let offset = vals.first().copied().unwrap_or(0.0) != 0.0 || vals.get(1).copied().unwrap_or(0.0) != 0.0;
+            (blur * color.alpha_or_one() * opacity >= GLOW_MIN_STRENGTH_PX / 2.0).then_some((color, offset))
         })
-        .filter(|color| has_chroma(Some(color), Some(30.0)))
-        .map(|color| {
-            // A dark shadow darker than its surface is shade, not light: a
-            // navy drop shadow at 20% under the logo tiles on a teal band
+        .filter(|(color, _)| has_chroma(Some(color), Some(30.0)))
+        .map(|(color, offset)| {
+            // A dark shadow cast darker than its surface, in about the
+            // surface's own hue, is shade, not light: a navy drop shadow at
+            // 20% under the logo tiles on a teal band
             // (v0-morbiawebsite.vercel.app) lifted it like a teal glow when
             // scored as a distance. A colour bright enough to read as light
-            // keeps the distance either way, so a blue halo on a white map
-            // still tints it.
-            let shade = lightness_saturation(&color).0 < GLOW_SHADE_MAX_LIGHTNESS
-                && relative_luminance(&color) < relative_luminance(surface);
+            // keeps the distance (a blue halo on a white map still tints
+            // it), and so does a dark shadow in a hue of its own (a maroon
+            // smear on teal reads as coloured) and a zero-offset halo, which
+            // is not cast.
+            let shade = offset
+                && lightness_saturation(&color).0 < GLOW_SHADE_MAX_LIGHTNESS
+                && relative_luminance(&color) < relative_luminance(surface)
+                && has_chroma(Some(surface), Some(30.0))
+                && hue_distance(get_hue(Some(&color)), get_hue(Some(surface))) <= GLOW_SHADE_MAX_HUE_DISTANCE;
             if shade {
                 return 0.0;
             }
@@ -3154,8 +3173,15 @@ mod tests {
         // light, so it keeps the distance (run 1004's map markers).
         let white = Rgba::new(255.0, 255.0, 255.0, 1.0);
         assert_eq!(glow("rgba(59, 130, 246, 0.6) 0px 0px 24px 0px", white).len(), 1);
-        // A deep navy halo on the same white card is shade.
-        assert!(glow("rgba(0, 29, 56, 0.6) 0px 0px 24px 0px", white).is_empty());
+        // A dark shadow in a hue of its own is a coloured shadow: rose-950
+        // and purple-950 on the teal band.
+        assert_eq!(glow("rgba(76, 5, 25, 0.9) 0px 12px 40px 0px", teal).len(), 1);
+        assert_eq!(glow("rgba(59, 7, 100, 0.9) 0px 12px 40px 0px", teal).len(), 1);
+        // A zero-offset navy halo is not cast: not shade, whatever its hue.
+        assert_eq!(glow("rgba(0, 29, 56, 0.4) 0px 0px 28px 0px", teal).len(), 1);
+        // On a neutral surface no hue says shade: the distance decides, as
+        // before.
+        assert_eq!(glow("rgba(0, 29, 56, 0.6) 0px 8px 24px 0px", white).len(), 1);
     }
 
     #[test]

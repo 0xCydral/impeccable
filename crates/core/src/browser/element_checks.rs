@@ -2404,10 +2404,17 @@ pub fn check_element_colors_dom(
         });
         if let (false, Some(ground)) = (edged, ground) {
             if let Some(mut hit) = crate::checks::rules::clipped_gradient_text_contrast(color_opts.bg_image.as_deref().unwrap_or(""), &ground, threshold) {
-                let clear = matches!(
-                    under().0,
-                    crate::browser::visual::LayerUnder::Ancestor | crate::browser::visual::LayerUnder::Undecided
-                ) && layers_at() != crate::browser::text_layers::TextLayers::Covered;
+                // The climb starts at the parent: from the element itself its
+                // own clipped gradient answers first, and a dark backdrop
+                // laid under the headline (an absolute sibling, a hero photo)
+                // is never seen. Only the parent's own fill as the first
+                // paint under the text is the ground scored here.
+                let text_rect = dom.direct_text_rect(el).unwrap_or(rect);
+                let ground_is_ancestor = dom.flat_parent(el).is_some_and(|p| {
+                    crate::browser::visual::layer_under_rect(dom, p, &text_rect).0
+                        == crate::browser::visual::LayerUnder::Ancestor
+                });
+                let clear = ground_is_ancestor && layers_at() != crate::browser::text_layers::TextLayers::Covered;
                 if clear && at_rest(&hit) {
                     if is_decorative() {
                         hit.severity = Some(crate::checks::rules::ADVISORY_SEVERITY.to_string());
@@ -5488,6 +5495,14 @@ mod tests {
         d.set_style(photo, "display", "none");
         d.set_rect(photo, 0.0, 0.0, 0.0, 0.0);
         assert_eq!(low(&colors(&d, pale)).len(), 1);
+        // A dark backdrop laid under the headline as an absolute sibling is
+        // its ground, not the panel's fill: nothing is scored.
+        let backdrop = d.add(Some(panel), "div");
+        visible(&mut d, backdrop);
+        d.set_styles(backdrop, &[("position", "absolute"), ("backgroundColor", "rgb(11, 16, 32)")]);
+        d.set_rect(backdrop, 0.0, 0.0, 200.0, 800.0);
+        d.set_styles(pale, &[("position", "relative"), ("zIndex", "1")]);
+        assert!(low(&colors(&d, pale)).is_empty());
         // A glyph fill in a colour of its own paints over the gradient.
         d.set_styles(pale, &[("webkitTextFillColor", "rgb(30, 41, 59)"), ("color", "rgb(30, 41, 59)")]);
         assert!(!colors(&d, pale).iter().any(|h| h.snippet.contains("gradient text")));

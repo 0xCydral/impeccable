@@ -83,7 +83,7 @@ fn contrast_surfaces_report_only_the_should_flag_twins() {
         ],
         "{findings:#?}"
     );
-    assert_eq!(of("dark-glow"), ["#flag-cyan-glow-on-band"], "{findings:#?}");
+    assert_eq!(of("dark-glow"), ["#flag-cyan-glow-on-band", "#flag-maroon-shadow-on-band"], "{findings:#?}");
     let tagline = findings
         .iter()
         .find(|f| f.extras.get("selector").and_then(|v| v.as_str()) == Some("#flag-pale-gradient-tagline") && f.antipattern == "low-contrast")
