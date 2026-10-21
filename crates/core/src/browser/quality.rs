@@ -1370,7 +1370,8 @@ const NORMAL_LINE_HEIGHT_EM: f64 = 1.2;
 /// How much of its content box a block's widest line fills before
 /// `body-text-viewport-edge` takes the box's edges as the text's. A wrapped
 /// paragraph's ragged right is under a word short of its column, and the box
-/// is what an author sets.
+/// is what an author sets, unless the glyphs of a block that is not
+/// justified keep the gutter on both sides.
 const TEXT_FILLS_MEASURE: f64 = 0.9;
 
 /// The controls whose labels wide tracking may set: links and buttons.
@@ -1637,8 +1638,21 @@ fn body_text_edge_span(dom: &dyn Dom, q: &QualityInput) -> Option<(f64, f64)> {
                 .line_height_px
                 .filter(|lh| *lh > 0.0)
                 .unwrap_or(q.font_size * NORMAL_LINE_HEIGHT_EM);
+            // A ragged or centred block whose glyphs keep a full gutter on
+            // both sides keeps it, wherever its box runs: its longest line is
+            // where the words stop (mblondel.org's navigation links end 17
+            // to 27px from the edge of a box that reaches it, charter.com's
+            // centred footer line 17px). The full gutter is the desktop
+            // floor, also on a phone: a ragged line a few pixels inside the
+            // phone floor is one word away from the box. Justified lines run
+            // to the box.
+            let floor = js::math_max(body_text_gutter_floor(viewport_width), BODY_TEXT_GUTTER_PX);
+            let glyphs_keep_gutter = st("textAlign") != "justify"
+                && t.left >= floor
+                && t.right <= viewport_width - floor;
             if text_line_count(t.height, pitch, q.font_size) >= 2.0
                 && t.width >= (content_right - content_left) * TEXT_FILLS_MEASURE
+                && !glyphs_keep_gutter
             {
                 // Wrapped lines that fill the column reach its edges; how
                 // ragged the longest line happens to be is not the gutter.
@@ -5996,6 +6010,71 @@ mod tests {
     /// 215445, paseo.sh 217250): a line its own box truncates ends at that
     /// box, and text on a running marquee track stands where the capture
     /// caught it.
+    /// observations-1006 row 11. A ragged or centred block whose box runs
+    /// to the edge while its glyphs keep 16px or more is measured on its
+    /// glyphs; justified lines run to the box. Text a component's
+    /// shadow-tree scroller cuts is not measured against the page's gutter.
+    #[test]
+    fn viewport_edge_reads_ragged_glyphs_and_shadow_scrollers() {
+        let copy = "Research interests: differentiable programming, optimal transport, structured prediction.";
+        let len = utf16_len(copy);
+        let mut d = FakeDom::new();
+        let (_h, body) = d.with_page();
+        d.inner_width = 390.0;
+        let p = text_el(&mut d, body, "p", copy, "16px");
+        d.set_style(p, "lineHeight", "24px");
+        d.set_rect(p, 20.0, 100.0, 370.0, 72.0);
+        // Three ragged lines filling 92% of the box, ending 27px short of
+        // the window.
+        d.set_text_rect(p, 20.0, 102.0, 343.0, 68.0);
+        assert!(snippets(&d, p, "body-text-viewport-edge").is_empty(), "ragged, 27px in");
+        // Justified lines run to the box.
+        d.set_style(p, "textAlign", "justify");
+        assert_eq!(
+            snippets(&d, p, "body-text-viewport-edge"),
+            vec![format!("<p> with {len}-char body bleeds to viewport edge (right 0px)")]
+        );
+        // Ragged glyphs 13px in keep the phone floor but not a full gutter:
+        // the box stands for them, as before.
+        d.set_style(p, "textAlign", "start");
+        d.set_text_rect(p, 20.0, 102.0, 357.0, 68.0);
+        assert_eq!(
+            snippets(&d, p, "body-text-viewport-edge"),
+            vec![format!("<p> with {len}-char body bleeds to viewport edge (right 0px)")]
+        );
+
+        // ibm.com: cards slotted into a shadow-tree scroller; the third runs
+        // past the window and is cut off on the page-level form unless the
+        // flat tree is walked.
+        let mut d = FakeDom::new();
+        let (_h, body) = d.with_page();
+        d.inner_width = 390.0;
+        let host = d.add(Some(body), "c4d-row");
+        d.set_styles(host, &[("display", "grid")]);
+        d.set_rect(host, 0.0, 2221.0, 390.0, 451.0);
+        let scroller = d.add_shadow_child(host, "div");
+        d.set_styles(scroller, &[("display", "flex"), ("overflowX", "scroll"), ("overflow", "scroll hidden")]);
+        d.set_rect(scroller, 0.0, 2221.0, 390.0, 451.0);
+        d.el_mut(scroller).client_width = 390.0;
+        d.el_mut(scroller).scroll_width = 842.0;
+        let slot = d.add(Some(scroller), "slot");
+        d.set_style(slot, "display", "contents");
+        let mut last = None;
+        for x in [16.0, 286.0, 555.0] {
+            let card = d.add(Some(host), "div");
+            d.set_rect(card, x, 2225.0, 254.0, 431.0);
+            d.set_assigned_slot(card, slot);
+            let t = text_el(&mut d, card, "p", copy, "16px");
+            d.set_style(t, "lineHeight", "24px");
+            d.set_rect(t, x, 2400.0, 254.0, 96.0);
+            d.set_text_rect(t, x, 2402.0, 250.0, 92.0);
+            last = Some(t);
+        }
+        let last = last.unwrap();
+        assert!(snippets(&d, last, "body-text-viewport-edge").is_empty());
+        assert!(check_page_overflow_dom(&d).is_empty(), "{:?}", check_page_overflow_dom(&d));
+    }
+
     #[test]
     fn viewport_edge_reads_a_truncated_line_at_its_box_and_skips_running_tracks() {
         let copy = "A long single line that the box truncates with an ellipsis well before the edge";
