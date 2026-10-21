@@ -2381,8 +2381,18 @@ pub fn check_element_colors_dom(
         && !icon_text
         && !is_emoji_only_text(&direct)
         && crate::checks::rules::background_clips_to_text(color_opts.bg_clip.as_deref().unwrap_or(""))
-        && (text_color.map_or(false, |c| c.alpha_or_one() <= crate::checks::rules::TRANSPARENT_INK_FLOOR)
-            || text_fill_is_transparent(&dom.style(ink_el, "webkitTextFillColor")))
+        && {
+            // The glyph fill decides whether the gradient shows. A declared
+            // `-webkit-text-fill-color` is the fill (an opaque one paints
+            // over the gradient whatever `color` says); unset, the fill is
+            // `color`.
+            let fill = dom.style(ink_el, "webkitTextFillColor");
+            if fill.trim().is_empty() {
+                text_color.map_or(false, |c| c.alpha_or_one() <= crate::checks::rules::TRANSPARENT_INK_FLOOR)
+            } else {
+                text_fill_is_transparent(&fill)
+            }
+        }
         && !findings.iter().any(|h| h.id == "low-contrast")
     {
         let shadow = dom.style(ink_el, "textShadow");
@@ -5505,6 +5515,11 @@ mod tests {
         assert!(low(&colors(&d, pale)).is_empty());
         // A glyph fill in a colour of its own paints over the gradient.
         d.set_styles(pale, &[("webkitTextFillColor", "rgb(30, 41, 59)"), ("color", "rgb(30, 41, 59)")]);
+        assert!(!colors(&d, pale).iter().any(|h| h.snippet.contains("gradient text")));
+        // Only the fill changes: a transparent `color` under an opaque
+        // fill still shows the fill, and a transparent fill under an opaque
+        // `color` still shows the gradient.
+        d.set_styles(pale, &[("webkitTextFillColor", "rgb(30, 41, 59)"), ("color", "rgba(0, 0, 0, 0)")]);
         assert!(!colors(&d, pale).iter().any(|h| h.snippet.contains("gradient text")));
     }
 
