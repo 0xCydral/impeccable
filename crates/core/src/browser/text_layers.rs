@@ -434,7 +434,7 @@ fn cover_above(dom: &dyn Dom, el: ElId, above: &[ElId], x: f64, y: f64, stays: b
     above
         .iter()
         .copied()
-        .find(|&node| !dom.contains(node, el) && covers(dom, node, x, y, font_px) && (!stays || stays_over_the_text(dom, node)))
+        .find(|&node| !dom.contains(node, el) && covers(dom, node, x, y, font_px) && (!stays || stays_over_the_text(dom, node, el)))
 }
 
 /// Whether a covering layer stays over the text when the visitor scrolls:
@@ -447,7 +447,24 @@ fn cover_above(dom: &dyn Dom, el: ElId, above: &[ElId], x: f64, y: f64, stays: b
 /// brings that text out (ytbulktranscript.app's paragraph, tau.ac.il's 9px
 /// price); so does one placed at the bottom of a full-window fixed wrapper,
 /// whose own top is 0.
-fn stays_over_the_text(dom: &dyn Dom, node: ElId) -> bool {
+///
+/// A cover that scrolls with the page does not stay over text that is itself
+/// `fixed` or `sticky`: scrolling carries the cover away and leaves the text
+/// in the window.
+fn stays_over_the_text(dom: &dyn Dom, node: ElId, text: ElId) -> bool {
+    let pinned = |start: ElId| {
+        let mut cur = Some(start);
+        while let Some(n) = cur {
+            if Some(n) == dom.body() || Some(n) == dom.document_element() {
+                return false;
+            }
+            if matches!(dom.style(n, "position").as_str(), "fixed" | "sticky") {
+                return true;
+            }
+            cur = dom.parent(n);
+        }
+        false
+    };
     let at_top = |n: ElId| {
         let r = dom.rect(n);
         r.all_finite() && r.top <= 1.0
@@ -455,7 +472,7 @@ fn stays_over_the_text(dom: &dyn Dom, node: ElId) -> bool {
     let mut cur = Some(node);
     while let Some(n) = cur {
         if Some(n) == dom.body() || Some(n) == dom.document_element() {
-            return true;
+            return !pinned(text);
         }
         if matches!(dom.style(n, "position").as_str(), "fixed" | "sticky") {
             let scroll = dom.scroll_y();
@@ -463,7 +480,7 @@ fn stays_over_the_text(dom: &dyn Dom, node: ElId) -> bool {
         }
         cur = dom.parent(n);
     }
-    true
+    !pinned(text)
 }
 
 /// The share of a run's text a single covering layer has to hold for a

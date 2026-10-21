@@ -696,6 +696,10 @@ fn buried_by_an_opaque_sibling(dom: &dyn Dom, dialog: ElId) -> bool {
             if !(z > own || (z == own && after)) {
                 continue;
             }
+            // A hidden panel keeps its fill and its bounds but paints nothing.
+            if hides_by_visibility(dom, sib) || dom.style(sib, "display") == "none" {
+                continue;
+            }
             let r = dom.rect(sib);
             let opaque = super::element_checks::parse_rgb_or_any(&dom.style(sib, "backgroundColor"))
                 .is_some_and(|c| c.alpha_or_one() >= 0.95)
@@ -1009,7 +1013,7 @@ fn individual_rotate_z(value: &str) -> Option<f64> {
 /// `rotate(90deg) scale(16)` draws 16px letters. A transform that does not
 /// read as a matrix, an individual `rotate` about another axis than z, or a
 /// chain deeper than the walk reads counts as no enlargement.
-fn drawn_enlargement(dom: &dyn Dom, el: ElId) -> f64 {
+pub(super) fn drawn_enlargement(dom: &dyn Dom, el: ElId) -> f64 {
     const MAX_ANCESTORS: usize = 64;
     let mut total = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
     let mut cur = Some(el);
@@ -2996,6 +3000,13 @@ mod tests {
         d.set_style(sheet, "zIndex", "1");
         assert_eq!(text(&d, link), None, "static sheet paints under");
         // At the same z-index, the sheet has to come later in tree order.
+        // A hidden sheet keeps its fill and bounds and buries nothing.
+        let (mut d, _, link, sheet) = build("nav", Some("dialog"));
+        d.set_style(sheet, "visibility", "hidden");
+        assert_eq!(text(&d, link), None, "hidden sheet");
+        d.set_style(sheet, "visibility", "visible");
+        d.set_style(sheet, "display", "none");
+        assert_eq!(text(&d, link), None, "display none sheet");
         let (mut d, _, link, sheet) = build("nav", Some("dialog"));
         d.set_style(sheet, "zIndex", "0");
         assert_eq!(text(&d, link), Some(Unpainted::NotRendered), "same z, later sheet");
@@ -3198,6 +3209,17 @@ mod tests {
         d.set_rect(wrap, 0.0, 1000.0, 390.0, 100.0);
         d.set_rect(bar, 0.0, 1000.0, 390.0, 100.0);
         d.set_rect(crumb, 16.0, 1040.0, 120.0, 14.0);
+        assert_eq!(ids(&d).len(), 5);
+        // A label that is itself fixed under a card that scrolls away: the
+        // scroll reveals the label, so the cover does not stay.
+        d.set_rect(wrap, 0.0, 3000.0, 390.0, 100.0);
+        d.set_rect(bar, 0.0, 3000.0, 390.0, 100.0);
+        d.set_rect(layer, 0.0, 3000.0, 390.0, 100.0);
+        d.set_rect(low_bar, 0.0, 3000.0, 390.0, 120.0);
+        d.set_style(crumb, "position", "fixed");
+        d.set_rect(crumb, 16.0, 20.0, 120.0, 14.0);
+        d.set_styles(nav, &[("position", "absolute"), ("backgroundColor", "rgb(255, 255, 255)"), ("opacity", "1")]);
+        d.set_rect(nav, 0.0, 10.0, 390.0, 40.0);
         assert_eq!(ids(&d).len(), 5);
     }
 

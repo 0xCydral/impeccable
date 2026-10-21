@@ -329,11 +329,16 @@ fn runs_endless_animation(dom: &dyn Dom, el: ElId) -> bool {
     if counts.is_empty() {
         return false;
     }
+    // A paused animation (`animation-play-state: paused`, a pause control or
+    // a reduced-motion rule) moves nothing before the capture.
+    let states_raw = dom.style(el, "animationPlayState");
+    let states: Vec<&str> = states_raw.split(',').map(js::trim).collect();
     dom.style(el, "animationName").split(',').enumerate().any(|(i, name)| {
         let name = js::trim(name);
         !name.is_empty()
             && name != "none"
             && counts[i % counts.len()] == "infinite"
+            && states[i % states.len()] != "paused"
             && dom.keyframes(name).is_none_or(|frames| {
                 frames.iter().any(|f| {
                     f.decls.iter().any(|(p, v)| match p.strip_prefix("-webkit-").unwrap_or(p) {
@@ -475,6 +480,10 @@ mod tests {
         assert!(runs_endless_animation(&d, track), "the translate property");
         d.keyframes.remove("beat");
         assert!(runs_endless_animation(&d, track), "unread keyframes");
+        d.set_style(track, "animationPlayState", "paused");
+        assert!(!runs_endless_animation(&d, track), "a paused track");
+        d.set_style(track, "animationPlayState", "running");
+        assert!(runs_endless_animation(&d, track), "a running track");
     }
 
     #[test]

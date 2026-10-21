@@ -941,8 +941,13 @@ fn is_media_player(dom: &dyn Dom, el: ElId, rect: &Rect) -> bool {
 /// `aria-hidden` layer at `font-size: 0` and transparent ink that a canvas
 /// draws for it. Any of the ink properties unrecorded keeps the victim.
 fn occlusion_victim_without_ink(dom: &dyn Dom, el: ElId) -> bool {
+    // Set at 1px, but drawn larger by a transform: `scale(16)` paints
+    // readable letters.
     if super::painted::at_most_1px(&dom.style(el, "fontSize")) {
-        return true;
+        let drawn = js::parse_float(&dom.style(el, "fontSize")) * super::painted::drawn_enlargement(dom, el);
+        if drawn <= 1.0 {
+            return true;
+        }
     }
     let fill = dom.style(el, "webkitTextFillColor");
     let fill = if js::trim(&fill).is_empty() { dom.style(el, "color") } else { fill };
@@ -6431,6 +6436,11 @@ mod tests {
         shadowed.push(("textShadow", "rgb(0, 0, 0) 0px 0px 2px"));
         assert_eq!(run(&shadowed, "border-box"), 1);
         assert_eq!(run(&clear("16px"), "text"), 1);
+        // Set at 1px and drawn at 16px by a transform: readable letters.
+        assert_eq!(
+            run(&[("fontSize", "1px"), ("color", "rgb(10, 10, 10)"), ("transform", "matrix(16, 0, 0, 16, 0, 0)"), ink[0], ink[1]], "border-box"),
+            1
+        );
         // A glitch heading that clears its ink and draws the words with
         // `::before` keeps reporting (review issue 6).
         let glitch = |content: &'static str| {
