@@ -5,15 +5,24 @@
 //! or scored against the banner, and the crops show the banner instead of the
 //! page. Before the reveal sweep the URL engine hides the banners and
 //! backdrops of the consent managers listed here with an injected style
-//! (`display: none`), and undoes the scroll lock the manager applied. It never
-//! clicks, sets a cookie, or records a consent choice: the page's own state is
-//! unchanged, only painted without the manager's layer.
+//! (`display: none`), and a site's own cookie notice with an inline one, and
+//! undoes the scroll lock or blur they applied. It never clicks, sets a
+//! cookie, or records a consent choice: the page's own state is unchanged,
+//! only painted without the notice's layer.
 //!
 //! The list holds selectors specific to one vendor (its ids, or class names
-//! carrying its name), never a generic word such as "cookie" or "banner", so
-//! a notice a site wrote for itself stays on the page and is scanned like the
-//! rest of it. The validity gate ([`crate::validity`]) reads the same list to
-//! recognize a page that is nothing but a consent wall.
+//! carrying its name), never a generic word such as "cookie" or "banner".
+//! The validity gate ([`crate::validity`]) reads the same list to recognize
+//! a page that is nothing but a consent wall.
+//!
+//! A cookie notice a site wrote for itself is recognized by what it does
+//! rather than by its names ([`cookie_notice_js`]): a fixed or page-covering
+//! layer whose own text names cookies and which offers a consent choice, with
+//! no field to fill in. Corpus run 1006 found three (blueeyes.com.tw,
+//! searchvoro.com, ktk.de) covering about 40 findings and blurring one whole
+//! site. This reverses the decision recorded below for moe.gov.sa's
+//! `div.cookie-consent` (runs 42 and 43), which stayed because nothing in its
+//! markup told it apart from any other dialog: its text and its choice do.
 //!
 //! Corpus evidence (runs 20 and 25, 848 captures of 126 sites, desktop and
 //! 390px): OneTrust on 7 sites (adm.com, cisco.com, cvs.com, exxonmobil.com,
@@ -52,6 +61,11 @@
 //! screen). A site's own banner with generic classes (moe.gov.sa's
 //! `div.cookie-consent`, an Alpine.js dialog) stays: nothing in its markup
 //! tells it apart from any other dialog the site wrote.
+//!
+//! Run 1006 added Tarteaucitron on bordeaux-metropole.fr:
+//! `#tarteaucitronAlertBig` (fixed, `role=dialog`, `aria-modal`, `z-index`
+//! 2147483645, a yellow card in the middle of the first screen) inside the
+//! zero-height `#tarteaucitronRoot`.
 //!
 //! Run 1004 added Enzuzo on smartbi.ca: `div#ez-cookie-notification`
 //! (`enzuzo-cookiebanner-container`, `z-index` 2147483647) over the hero on
@@ -264,6 +278,25 @@ pub const CONSENT_MANAGERS: &[ConsentManager] = &[
         backdrops: &[],
         html_lock_classes: &[],
         body_lock_classes: &["ez-body-lock"],
+        aria_hidden_marks: &[],
+    },
+    ConsentManager {
+        name: "Tarteaucitron",
+        // `#tarteaucitronRoot` is a zero-height host; inside it the fixed
+        // banner (`#tarteaucitronAlertBig`, `role=dialog`, `aria-modal`), its
+        // small variant, the 5px progress bar, the preference panel and its
+        // backdrop, and the floating reopen icon.
+        roots: &[
+            "#tarteaucitronRoot",
+            "#tarteaucitronAlertBig",
+            "#tarteaucitronAlertSmall",
+            "#tarteaucitronPercentage",
+            "#tarteaucitron",
+            "#tarteaucitronIcon",
+        ],
+        backdrops: &["#tarteaucitronBack"],
+        html_lock_classes: &[],
+        body_lock_classes: &[],
         aria_hidden_marks: &[],
     },
     ConsentManager {
@@ -539,6 +572,170 @@ pub const OUTSIDE_CONTROLS: &str = "input:not([type='hidden']), select, textarea
 pub const OUTSIDE_MEDIA: &str = "img, svg, video, canvas, iframe, object, embed";
 pub const OUTSIDE_MEDIA_MIN_AREA: u32 = 10_000;
 
+/// The name a site's own cookie notice is reported under, in `hidden` and
+/// `consentHidden`, after the listed managers.
+pub const COOKIE_NOTICE: &str = "cookie notice";
+/// The attribute the hide step puts on a site's own cookie notice it hid
+/// (and on the empty full-screen layer beside it), naming the element, so a
+/// later pass reports it again without looking for it twice.
+pub const COOKIE_NOTICE_MARK: &str = "data-impeccable-cookie-notice";
+/// Most visible characters a cookie notice may carry, its preference text
+/// included.
+pub const COOKIE_NOTICE_MAX_TEXT: usize = 1500;
+/// Least visible text the page shows outside a cookie notice for the notice
+/// to be hidden: a page that is little more than its notice is a consent
+/// wall, and is read as before.
+pub const COOKIE_NOTICE_MIN_OUTSIDE_TEXT: usize = 200;
+/// Longest control label read as a consent choice.
+pub const COOKIE_NOTICE_MAX_LABEL: usize = 40;
+
+/// Page JS that defines `cookieNotices(out)`: a cookie notice a site wrote
+/// for itself, with none of a listed manager's markup, hidden the way a
+/// manager's banner is. Corpus run 1006: blueeyes.com.tw's `div#cookieBanner`
+/// (fixed, `z-index: 9999`, `rgba(0,0,0,0.8)`, no dialog role) over the first
+/// row of buttons; searchvoro.com's `role=dialog` card (`aria-modal=false`,
+/// `z-index: 95`); ktk.de's `role=dialog` box inside an absolutely positioned
+/// layer the height of the document, beside an empty transparent fixed layer
+/// that takes every hit test, with `filter: blur(4px)` set inline on the page
+/// wrapper. The `z-index` and dialog role a notice carries vary too much to
+/// read; what they share is below.
+///
+/// A notice is the outermost element, not `html` or `body`, that
+/// - is `position: fixed`, or `position: absolute` covering at least 90% of
+///   the viewport, and shows a box that meets the viewport;
+/// - names cookies (`cookie`, any case, in any language that borrows the
+///   word) in its own text outside links and controls, so a footer or a
+///   newsletter modal that links a cookie policy is not one;
+/// - offers a consent choice: a button, `[role=button]`, link or button
+///   input whose label (at most 40 characters) accepts, refuses, allows,
+///   agrees, closes or says OK, and is what the page hit-tests at the centre
+///   of at least one such control;
+/// - holds no text field, `select`, `textarea`, password or email input
+///   (checkboxes and radios are a preference pane's), no `h1` and no `main`,
+///   so a sign-in or newsletter modal is never one;
+/// - carries at most 1,500 visible characters, while the page shows at
+///   least 200 outside it (a page that is only its notice is a wall, and is
+///   read as before).
+///
+/// It is hidden with an inline `display: none !important` and marked with
+/// [`COOKIE_NOTICE_MARK`]; nothing is clicked. An empty full-viewport fixed
+/// layer beside it (same parent, no element children, no text) is the
+/// notice's lock layer and is hidden too. Once a notice is hidden, an inline
+/// `filter` that blurs (`blur(`) on `html`, `body` or an element up to two
+/// levels below `body` outside the notice is removed (`unlocked`:
+/// `filter <name>`), and so is an inline `overflow` / `overflow-y: hidden` on
+/// `html` or `body` when the notice covered at least half the viewport and
+/// no other dialog is showing.
+fn cookie_notice_js() -> String {
+    format!(
+        r#"const COOKIE_MARK = {mark};
+  const cookieNotices = out => {{
+    const name = {name};
+    const vw = window.innerWidth || 0, vh = window.innerHeight || 0;
+    const body = document.body;
+    if (!body || !vw || !vh) return;
+    const names = [];
+    const report = n => {{ if (!names.includes(n)) names.push(n); }};
+    for (const el of q('[' + COOKIE_MARK + ']')) {{ const n = el.getAttribute(COOKIE_MARK); if (n && !n.startsWith('lock ')) report(n); }}
+    const choice = /accept|akzept|zustimm|einverstanden|erlauben|zulassen|ablehn|accepter|j.accepte|refuser|autoriser|acepta|aceita|rechaz|rejeit|accett|rifiut|consent|agree|allow|reject|decline|refuse|deny|dismiss|got it|understood|^ok\b|^okay\b|close|schlie|fermer|cerrar|fechar|chiudi|necessary|essential|notwendig|n.cessaires|接受|同意|拒絕|拒绝|允許|允许|확인|동의|허용|거부|許可|拒否|принять|отклонить|kabul|reddet/i;
+    const label = c => (c.innerText || c.value || c.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+    const shownText = el => (el.innerText || '').replace(/\s+/g, ' ').trim();
+    const ownText = root => {{
+      let t = '';
+      const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let n = w.nextNode(), i = 0; n && i < 4000; n = w.nextNode(), i++) {{
+        const p = n.parentElement;
+        if (!p || p.closest('a, button, [role=button], script, style, noscript, template')) continue;
+        t += ' ' + n.data;
+      }}
+      return t;
+    }};
+    const covers = (r, share) => {{
+      const w = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0));
+      const h = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+      return (w * h) / (vw * vh) >= share;
+    }};
+    const meets = r => r.right > 0 && r.bottom > 0 && r.left < vw && r.top < vh;
+    const pageChars = shownText(body).length;
+    const found = [];
+    const all = body.querySelectorAll('*');
+    for (let i = 0; i < all.length && i < 20000; i++) {{
+      const el = all[i];
+      if (found.some(f => f.el.contains(el)) || el.hasAttribute(COOKIE_MARK)) continue;
+      let cs;
+      try {{ cs = getComputedStyle(el); }} catch (e) {{ continue; }}
+      if (cs.position !== 'fixed' && cs.position !== 'absolute') continue;
+      const r = el.getBoundingClientRect();
+      if (cs.position === 'absolute' && !covers(r, 0.9)) continue;
+      if (!showing(el)) continue;
+      const text = shownText(el);
+      if (!text || text.length > {max_text}) continue;
+      if (!/cookie/i.test(ownText(el))) continue;
+      if (el.querySelector('h1, main, textarea, select, input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit]):not([type=reset])')) continue;
+      if (pageChars - text.length < {min_outside}) continue;
+      const controls = Array.from(el.querySelectorAll('button, [role=button], a, input[type=button], input[type=submit]'))
+        .filter(c => {{ const l = label(c); return l.length > 0 && l.length <= {max_label} && choice.test(l) && boxShows(c); }});
+      if (!controls.length) continue;
+      const onTop = controls.some(c => {{
+        const cr = c.getBoundingClientRect();
+        const x = Math.min(vw - 1, Math.max(0, cr.left + cr.width / 2)), y = Math.min(vh - 1, Math.max(0, cr.top + cr.height / 2));
+        if (!meets(cr)) return false;
+        const hit = document.elementFromPoint(x, y);
+        return !!hit && el.contains(hit);
+      }});
+      if (!onTop) continue;
+      if (!meets(r) && !controls.some(c => meets(c.getBoundingClientRect()))) continue;
+      const cls = Array.from(el.classList || []).find(c => /^[A-Za-z_][\w-]*$/.test(c));
+      const n = el.tagName.toLowerCase() + (el.id ? '#' + el.id : el.getAttribute('role') ? '[role=' + el.getAttribute('role') + ']' : cls ? '.' + cls : '');
+      found.push({{ el, name: n, wide: covers(r, 0.5) }});
+    }}
+    let wide = false;
+    for (const f of found) {{
+      f.el.setAttribute(COOKIE_MARK, f.name);
+      f.el.style.setProperty('display', 'none', 'important');
+      report(f.name);
+      wide = wide || f.wide;
+      out.changed = true;
+      // The empty layer a notice lays over the page beside itself.
+      const parent = f.el.parentElement;
+      if (parent && parent !== document.documentElement) for (const sib of Array.from(parent.children)) {{
+        if (sib === f.el || sib.children.length || shownText(sib) || sib.hasAttribute(COOKIE_MARK)) continue;
+        let scs;
+        try {{ scs = getComputedStyle(sib); }} catch (e) {{ continue; }}
+        if (scs.position !== 'fixed' || scs.display === 'none' || !covers(sib.getBoundingClientRect(), 0.9)) continue;
+        sib.setAttribute(COOKIE_MARK, 'lock ' + f.name);
+        sib.style.setProperty('display', 'none', 'important');
+      }}
+    }}
+    if (!names.length) return;
+    if (found.length) {{
+      const notice = el => !!el.closest('[' + COOKIE_MARK + ']');
+      const describe = el => el.tagName.toLowerCase() + (el.id ? '#' + el.id : '');
+      const near = [document.documentElement, body];
+      for (const c of Array.from(body.children)) {{ near.push(c); for (const g of Array.from(c.children)) near.push(g); }}
+      for (const el of near) {{
+        if (notice(el)) continue;
+        const f = el.style.getPropertyValue('filter');
+        if (f && /blur\(/.test(f)) {{ el.style.removeProperty('filter'); out.unlocked.push('filter ' + describe(el)); out.changed = true; }}
+      }}
+      const otherDialog = q('dialog[open], [aria-modal="true"], [role="dialog"], [role="alertdialog"]').some(el => !notice(el) && showing(el));
+      if (wide && !otherDialog) for (const [el, tag] of [[document.documentElement, 'html'], [body, 'body']]) {{
+        for (const p of ['overflow', 'overflow-y']) {{
+          if (el.style.getPropertyValue(p) === 'hidden') {{ el.style.removeProperty(p); out.unlocked.push(tag + ' style ' + p); out.changed = true; }}
+        }}
+      }}
+    }}
+    if (!out.hidden.includes(name)) out.hidden.push(name);
+    out.matched[name] = (out.matched[name] || []).concat(names.filter(n => !(out.matched[name] || []).includes(n)));
+  }};"#,
+        mark = json!(COOKIE_NOTICE_MARK),
+        name = json!(COOKIE_NOTICE),
+        max_text = COOKIE_NOTICE_MAX_TEXT,
+        min_outside = COOKIE_NOTICE_MIN_OUTSIDE_TEXT,
+        max_label = COOKIE_NOTICE_MAX_LABEL,
+    )
+}
+
 /// The hide step. Idempotent: run it once before the reveal sweep and again
 /// right before the capture, to catch a manager that injects its banner late.
 /// Returns `{ hidden: [name], matched: { name: [selector] }, unlocked: [what],
@@ -557,7 +754,8 @@ pub fn hide_js() -> String {
     const sels = m.roots.concat(m.backdrops).filter(s => q(s).length > 0);
     if (sels.length) present.push({{ m, sels }});
   }}
-  if (!present.length) return out;
+  {cookie_notices}
+  if (!present.length) {{ cookieNotices(out); return out; }}
   let style = document.getElementById(STYLE_ID);
   // Measure with the hide rule off, so a banner the rule already hides (one
   // injected after the first pass) is still reported. Nothing paints between
@@ -655,6 +853,7 @@ pub fn hide_js() -> String {
     }}
   }}
   if (out.unlocked.length) out.changed = true;
+  cookieNotices(out);
   return out;
 }})()"#,
         managers = managers_json(),
@@ -662,6 +861,7 @@ pub fn hide_js() -> String {
         inline_mark = json!(INLINE_HIDE_MARK),
         showing = SHOWING_JS,
         stamp_is_ours = STAMP_IS_OURS_JS,
+        cookie_notices = cookie_notice_js(),
     )
 }
 
@@ -744,7 +944,7 @@ mod tests {
         for name in [
             "OneTrust", "Cookiebot", "Usercentrics", "TrustArc", "Didomi", "Quantcast Choice", "Sourcepoint",
             "Osano", "CookieYes", "Complianz", "iubenda", "Termly", "Axeptio", "Borlabs Cookie", "Klaro",
-            "Cookie Notice", "Shopify", "consentmanager", "Tealium", "Transcend", "Enzuzo",
+            "Cookie Notice", "Shopify", "consentmanager", "Tealium", "Transcend", "Enzuzo", "Tarteaucitron",
         ] {
             assert!(CONSENT_MANAGERS.iter().any(|m| m.name == name), "{name}");
         }
