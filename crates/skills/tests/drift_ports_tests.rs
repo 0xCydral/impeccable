@@ -740,15 +740,31 @@ fn user_scope_update_writes_claude_user_settings() {
     std::fs::remove_dir_all(&root).ok();
 }
 
-/// The Impeccable entries of a Cursor manifest, by event.
+/// A path or command with every run of `/` and `\` collapsed to one `/`, so a
+/// Windows command (JSON-quoted, its backslashes doubled) compares with a
+/// test path that mixes separators.
+fn slash_norm(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        let ch = if ch == '\\' { '/' } else { ch };
+        if ch == '/' && out.ends_with('/') {
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// The Impeccable entries of a Cursor manifest, by event, separators
+/// normalized.
 fn cursor_impeccable_events(manifest: &str) -> Vec<(String, String)> {
     let value: Value = serde_json::from_str(&read(manifest)).unwrap();
     let mut out = Vec::new();
     for (event, entries) in value["hooks"].as_object().unwrap() {
         for entry in entries.as_array().unwrap() {
-            let command = entry["command"].as_str().unwrap_or_default();
+            let command = slash_norm(entry["command"].as_str().unwrap_or_default());
             if command.contains("skills/impeccable/scripts/") {
-                out.push((event.clone(), command.to_string()));
+                out.push((event.clone(), command));
             }
         }
     }
@@ -803,7 +819,7 @@ fn user_scope_update_migrates_the_project_cursor_gate() {
             assert!(!ours.is_empty(), "{manifest}: {}", read(manifest));
             for (event, command) in &ours {
                 assert_eq!(event, "postToolUse", "{manifest}: {}", read(manifest));
-                assert!(command.contains(&launcher) && command.ends_with(" hook"), "{manifest}: {command}");
+                assert!(command.contains(&slash_norm(&launcher)) && command.ends_with(" hook"), "{manifest}: {command}");
             }
         }
         let project_value: Value = serde_json::from_str(&read(&project_manifest)).unwrap();
@@ -836,9 +852,13 @@ fn user_scope_update_writes_the_cursor_hook_into_the_project() {
     assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
 
     let project_manifest = format!("{project}/.cursor/hooks.json");
-    assert!(manifest_names_launcher(&project_manifest, &home, ".cursor"), "{}", read(&project_manifest));
+    let launcher = slash_norm(&jsp::join(&[&home, ".cursor", "skills", "impeccable", "scripts", "impeccable"]));
     let ours = cursor_impeccable_events(&project_manifest);
-    assert!(!ours.is_empty() && ours.iter().all(|(event, _)| event == "postToolUse"), "{}", read(&project_manifest));
+    assert!(!ours.is_empty(), "{}", read(&project_manifest));
+    for (event, command) in &ours {
+        assert_eq!(event, "postToolUse", "{}", read(&project_manifest));
+        assert!(command.contains(&launcher), "{command}");
+    }
     assert!(!std::path::Path::new(&format!("{home}/.cursor/hooks.json")).exists());
     std::fs::remove_dir_all(&root).ok();
 }
