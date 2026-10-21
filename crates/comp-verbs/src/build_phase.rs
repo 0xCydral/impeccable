@@ -66,8 +66,9 @@ pub(crate) fn self_cmd(io: &Io) -> String {
         && !value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'_' | b'-' | b':') || (cfg!(windows) && b == b'\\'))
     {
         if cfg!(windows) {
-            // cmd.exe treats single quotes as literal filename characters.
-            return format!("\"{value}\"");
+            // cmd.exe treats single quotes as literal filename characters;
+            // a quoted .cmd launcher also needs PowerShell's call operator.
+            return impeccable_common::launcher::with_call_operator(&value, format!("\"{value}\""));
         }
         return format!("'{}'", value.replace('\'', "'\\''"));
     }
