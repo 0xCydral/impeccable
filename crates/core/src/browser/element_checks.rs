@@ -2369,6 +2369,54 @@ pub fn check_element_colors_dom(
             }
         }
     }
+    // Text that paints its gradient through transparent glyphs has no ink
+    // colour the passes above can score. On a solid ground it is scored by
+    // the stop that reads best, and reports only where even that one fails
+    // (`clipped_gradient_text_contrast`). The ground is what lies under the
+    // box, read from its parent, and only where the walk resolves one flat
+    // colour there and the climb finds no other paint under the text; a
+    // gradient or a picture beneath decides nothing here. Outlined or
+    // shadowed glyphs are read with their edge, which no stop describes.
+    if has_direct_text
+        && !icon_text
+        && !is_emoji_only_text(&direct)
+        && crate::checks::rules::background_clips_to_text(color_opts.bg_clip.as_deref().unwrap_or(""))
+        && (text_color.map_or(false, |c| c.alpha_or_one() <= crate::checks::rules::TRANSPARENT_INK_FLOOR)
+            || text_fill_is_transparent(&dom.style(ink_el, "webkitTextFillColor")))
+        && !findings.iter().any(|h| h.id == "low-contrast")
+    {
+        let shadow = dom.style(ink_el, "textShadow");
+        let edged = (!shadow.is_empty() && shadow != "none") || crate::browser::visual::text_outlined(dom, ink_el);
+        let ground = dom.flat_parent(el).and_then(|p| {
+            let under = resolve_text_surface(dom, p, &|_| false, text_box, font_size);
+            // A host whose own image paints over its fill is no flat
+            // ground, even where the walk fell back on the fill.
+            let host_paints_image = under.host.is_some_and(|h| {
+                let image = dom.style(h, "backgroundImage");
+                !image.is_empty() && image != "none"
+            });
+            (!under.info.unresolved
+                && under.samples.is_none()
+                && under.gradient_host.is_none()
+                && !host_paints_image)
+                .then_some(under.info.color)
+                .flatten()
+        });
+        if let (false, Some(ground)) = (edged, ground) {
+            if let Some(mut hit) = crate::checks::rules::clipped_gradient_text_contrast(color_opts.bg_image.as_deref().unwrap_or(""), &ground, threshold) {
+                let clear = matches!(
+                    under().0,
+                    crate::browser::visual::LayerUnder::Ancestor | crate::browser::visual::LayerUnder::Undecided
+                ) && layers_at() != crate::browser::text_layers::TextLayers::Covered;
+                if clear && at_rest(&hit) {
+                    if is_decorative() {
+                        hit.severity = Some(crate::checks::rules::ADVISORY_SEVERITY.to_string());
+                    }
+                    findings.push(hit);
+                }
+            }
+        }
+    }
     if findings.iter().any(|h| h.id == "gradient-text") && !gradient_text_paints_a_ramp(dom, el) {
         findings.retain(|h| h.id != "gradient-text");
     }
@@ -2780,6 +2828,25 @@ fn gradient_ancestor_average(dom: &dyn Dom, start: Option<ElId>) -> Option<Rgba>
     None
 }
 
+/// The channel-wise least of the stops of the gradient
+/// [`gradient_ancestor_average`] finds, when every stop is opaque.
+fn gradient_ancestor_floor(dom: &dyn Dom, start: Option<ElId>) -> Option<Rgba> {
+    let mut cur = start;
+    while let Some(c) = cur {
+        let bg_image = dom.style(c, "backgroundImage");
+        let stops = parse_gradient_colors(Some(&bg_image));
+        if !stops.is_empty() {
+            if bg_image.contains("url(") || stops.iter().any(|s| s.alpha_or_one() < 0.999) {
+                return None;
+            }
+            let least = |f: fn(&Rgba) -> f64| stops.iter().map(f).fold(f64::INFINITY, f64::min);
+            return Some(Rgba { r: least(|s| s.r), g: least(|s| s.g), b: least(|s| s.b), a: None });
+        }
+        cur = dom.parent(c);
+    }
+    None
+}
+
 /// JS: checks.mjs#checkElementGlowDOM(el)
 pub fn check_element_glow_dom(dom: &dyn Dom, el: ElId) -> Vec<RuleHit> {
     let box_shadow = {
@@ -2812,10 +2879,17 @@ pub fn check_element_glow_dom(dom: &dyn Dom, el: ElId) -> Vec<RuleHit> {
     let parent_bg_info = resolve_background_info(dom, parent.unwrap_or(el));
     // The lift test reads only a fill the walk resolved: the gradient average
     // below ignores the stops' alpha, so a 5% amber wash would read as amber.
-    let surface = parent_bg_info.color;
+    let mut surface = parent_bg_info.color;
     let mut parent_bg = parent_bg_info.color;
     if parent_bg.is_none() && !parent_bg_info.unresolved {
         parent_bg = gradient_ancestor_average(dom, parent);
+        // On a gradient whose stops are all opaque the lift is read against
+        // the channel-wise least of the stops: light lifts each channel only
+        // above the surface, so that is the most any stop is lifted, and the
+        // glow is passed over only where no stop is lifted enough. A
+        // translucent stop shows what is beneath it, and leaves the floor
+        // to decide alone, as before.
+        surface = gradient_ancestor_floor(dom, parent);
     }
     let rect = dom.rect(el);
     let mut opts = GlowOpts {
@@ -5348,6 +5422,66 @@ mod tests {
             );
         }
         (d, body)
+    }
+
+    /// interplanetaryfund.base44.app's tagline on a solid ground: a pale
+    /// cyan-to-violet gradient painted through transparent glyphs.
+    #[test]
+    fn gradient_text_is_scored_by_its_best_stop_on_a_solid_ground() {
+        let (mut d, body) = page();
+        let panel = d.add(Some(body), "aside");
+        visible(&mut d, panel);
+        d.set_style(panel, "backgroundColor", "rgb(244, 241, 255)");
+        d.set_rect(panel, 0.0, 0.0, 200.0, 800.0);
+        let line = |d: &mut FakeDom, gradient: &str, y: f64| {
+            let p = d.add(Some(panel), "p");
+            visible(d, p);
+            d.add_text(p, "What If?");
+            d.set_styles(
+                p,
+                &[
+                    ("color", "rgba(0, 0, 0, 0)"),
+                    ("webkitTextFillColor", "rgba(0, 0, 0, 0)"),
+                    ("backgroundImage", gradient),
+                    ("backgroundClip", "text"),
+                    ("webkitBackgroundClip", "text"),
+                    ("fontSize", "16px"),
+                    ("fontWeight", "400"),
+                ],
+            );
+            d.set_rect(p, 12.0, y, 162.0, 24.0);
+            d.set_text_rect(p, 12.0, y, 80.0, 24.0);
+            p
+        };
+        let low = |hits: &[RuleHit]| hits.iter().filter(|h| h.id == "low-contrast").cloned().collect::<Vec<_>>();
+        let pale = line(&mut d, "linear-gradient(to right, rgb(103, 232, 249), rgb(96, 165, 250), rgb(167, 139, 250))", 74.0);
+        let hits = low(&colors(&d, pale));
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].snippet, "2.4:1 (need 4.5:1) — gradient text, best stop #a78bfa on #f4f1ff");
+        // One stop that reads is enough: the glyphs may sit on it.
+        let deep = line(&mut d, "linear-gradient(to right, rgb(103, 232, 249), rgb(76, 29, 149))", 120.0);
+        assert!(low(&colors(&d, deep)).is_empty());
+        // A translucent stop shows what is beneath: not scored.
+        let washed = line(&mut d, "linear-gradient(to right, rgba(103, 232, 249, 0.5), rgb(167, 139, 250))", 160.0);
+        assert!(low(&colors(&d, washed)).is_empty());
+        // On a gradient ground nothing is scored yet.
+        d.set_style(panel, "backgroundImage", "linear-gradient(158deg, rgb(250, 251, 255), rgb(240, 245, 255))");
+        assert!(low(&colors(&d, pale)).is_empty());
+        d.set_style(panel, "backgroundColor", "rgba(0, 0, 0, 0)");
+        assert!(low(&colors(&d, pale)).is_empty());
+        d.set_styles(panel, &[("backgroundImage", "none"), ("backgroundColor", "rgb(244, 241, 255)")]);
+        // Over a photo the stops decide nothing.
+        let photo = d.add(Some(panel), "img");
+        visible(&mut d, photo);
+        d.set_styles(photo, &[("position", "absolute")]);
+        d.set_rect(photo, 0.0, 0.0, 200.0, 800.0);
+        assert!(low(&colors(&d, pale)).is_empty());
+        d.set_style(photo, "display", "none");
+        d.set_rect(photo, 0.0, 0.0, 0.0, 0.0);
+        assert_eq!(low(&colors(&d, pale)).len(), 1);
+        // A glyph fill in a colour of its own paints over the gradient.
+        d.set_styles(pale, &[("webkitTextFillColor", "rgb(30, 41, 59)"), ("color", "rgb(30, 41, 59)")]);
+        assert!(!colors(&d, pale).iter().any(|h| h.snippet.contains("gradient text")));
     }
 
     /// A block of text on the same line as a spill, `w` wide at `x`: the
@@ -8036,6 +8170,35 @@ mod tests {
         let hits = palette_hits(&d, typed);
         assert_eq!(hits.len(), 1, "{hits:?}");
         assert_eq!(hits[0].snippet, "Cyan neon text on dark background");
+    }
+
+    #[test]
+    fn a_glow_on_a_gradient_band_is_lifted_against_its_stops() {
+        let (mut d, body) = page();
+        d.set_style(body, "backgroundColor", "rgb(255, 255, 255)");
+        let band = d.add(Some(body), "section");
+        visible(&mut d, band);
+        d.set_rect(band, 0.0, 0.0, 1280.0, 400.0);
+        d.set_style(band, "backgroundImage", "linear-gradient(90deg, rgb(4, 47, 46), rgb(15, 118, 110))");
+        let tile = |d: &mut FakeDom, shadow: &str, x: f64| {
+            let t = d.add(Some(band), "a");
+            visible(d, t);
+            d.set_rect(t, x, 100.0, 160.0, 72.0);
+            d.set_style(t, "boxShadow", shadow);
+            d.set_style(t, "textShadow", "none");
+            t
+        };
+        // v0-morbiawebsite.vercel.app: a navy drop shadow under each tile,
+        // darker than every stop, reported as a glow on a dark background.
+        let navy = tile(&mut d, "rgba(0, 29, 56, 0.2) 0px 12px 28px 0px", 40.0);
+        assert!(check_element_glow_dom(&d, navy).is_empty());
+        // A cyan glow at the same blur lifts the band.
+        let cyan = tile(&mut d, "rgba(34, 211, 238, 0.6) 0px 0px 28px 0px", 240.0);
+        assert_eq!(check_element_glow_dom(&d, cyan).len(), 1);
+        // With a translucent stop the band shows what lies beneath, and the
+        // floor decides alone, as before.
+        d.set_style(band, "backgroundImage", "linear-gradient(90deg, rgba(4, 47, 46, 0.5), rgb(15, 118, 110))");
+        assert_eq!(check_element_glow_dom(&d, navy).len(), 1);
     }
 
     #[test]

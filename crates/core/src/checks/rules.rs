@@ -1406,6 +1406,46 @@ fn contrast_findings(opts: &ColorOpts, text_color: &Rgba) -> Vec<RuleHit> {
     findings
 }
 
+/// Contrast for text whose glyphs paint a gradient (`background-clip:
+/// text` under a transparent fill), against the solid `ground` the box sits
+/// on. Which stop shows under which glyph depends on the gradient's size
+/// and position, so the text is scored by the stop that reads best, and
+/// reports only where even that one fails: a pale cyan-to-violet tagline on
+/// a lavender panel (interplanetaryfund.base44.app, best stop 2.45:1). A
+/// gradient with a translucent stop, a picture layer, or no stop the parser
+/// reads is not scored, and neither is a translucent ground.
+pub fn clipped_gradient_text_contrast(bg_image: &str, ground: &Rgba, threshold: f64) -> Option<RuleHit> {
+    if ground.alpha_or_one() < 0.999 || bg_image.contains("url(") || !bg_image.contains("gradient") {
+        return None;
+    }
+    let stops = crate::color::parse_gradient_colors(Some(bg_image));
+    if stops.is_empty() || stops.iter().any(|s| s.alpha_or_one() < 0.999) {
+        return None;
+    }
+    let (best, ratio) = stops
+        .iter()
+        .map(|s| (*s, contrast_ratio(s, ground)))
+        .fold(None::<(Rgba, f64)>, |acc, cur| match acc {
+            Some(a) if a.1 >= cur.1 => Some(a),
+            _ => Some(cur),
+        })?;
+    if ratio >= threshold {
+        return None;
+    }
+    let mut hit = RuleHit::new(
+        "low-contrast",
+        format!(
+            "{}:1 (need {}:1) — gradient text, best stop {} on {}",
+            crate::color::ratio_label(ratio, threshold),
+            number_to_string(threshold),
+            color_to_hex(Some(&best)),
+            color_to_hex(Some(ground))
+        ),
+    );
+    hit.severity = contrast_severity(ratio, threshold);
+    Some(hit)
+}
+
 /// Placeholder text contrast, sibling of `check_hover_contrast`. Skips the
 /// SAFE_TAGS gate and the host heuristics in `check_colors` (class list,
 /// clip, gradient) because the host is an empty control; only the
@@ -2012,7 +2052,8 @@ pub(crate) fn glow_is_perceptible(
 }
 
 /// How far the chromatic layers of one shadow value lift `surface` at the
-/// edge of the box (see [`GLOW_MIN_LIFT`]). Neutral layers are elevation, not
+/// edge of the box (see [`GLOW_MIN_LIFT`]), counting only the channels the
+/// shadow is lighter in. Neutral layers are elevation, not
 /// glow light, and do not count, and neither does a layer carrying under half
 /// the light a glow needs ([`GLOW_MIN_STRENGTH_PX`]): Tailwind's `shadow-lg`
 /// in a 0.2 purple adds a 6px layer at 1.2px of light to its 15px one, and
@@ -2031,10 +2072,14 @@ fn glow_surface_lift(value: &str, surface: &Rgba, element_opacity: Option<f64>) 
         })
         .filter(|color| has_chroma(Some(color), Some(30.0)))
         .map(|color| {
+            // Light only adds: a channel the shadow paints darker than the
+            // surface is shade, not glow. Scored as a distance, a navy drop
+            // shadow at 20% on a teal band lifted it like a teal glow
+            // (v0-morbiawebsite.vercel.app's logo tiles).
             let difference = (color.r - surface.r)
-                .abs()
-                .max((color.g - surface.g).abs())
-                .max((color.b - surface.b).abs());
+                .max(color.g - surface.g)
+                .max(color.b - surface.b)
+                .max(0.0);
             GLOW_EDGE_DENSITY * color.alpha_or_one() * opacity * difference
         })
         .sum()
@@ -3067,6 +3112,33 @@ mod tests {
             hover(pale, white, 16.0)[0].snippet,
             ":hover state 2.6:1 (need 4.5:1) — text #a0a0a0 on #ffffff"
         );
+    }
+
+    #[test]
+    fn a_shadow_darker_than_its_surface_lifts_nothing() {
+        let glow = |shadow: &str, surface: Rgba| {
+            check_glow(&GlowOpts {
+                box_shadow: Some(shadow.to_string()),
+                text_shadow: None,
+                effective_bg: Some(Rgba::new(10.0, 40.0, 50.0, 1.0)),
+                element_opacity: Some(1.0),
+                element_size: Some((160.0, 72.0)),
+                surface: Some(surface),
+            })
+        };
+        let teal = Rgba::new(13.0, 148.0, 136.0, 1.0);
+        // v0-morbiawebsite.vercel.app's navy drop shadow under pale logo
+        // tiles on a teal band: darker than the band in every channel, so no
+        // light. Read as a distance it lifted the band by 12.
+        assert!(glow("rgba(0, 29, 56, 0.2) 0px 12px 28px 0px", teal).is_empty());
+        // The same blur and alpha in a light cyan lifts it.
+        assert_eq!(glow("rgba(103, 232, 249, 0.6) 0px 12px 28px 0px", teal).len(), 1);
+        // Neon on near-black is unchanged.
+        let ink = Rgba::new(10.0, 10.0, 10.0, 1.0);
+        assert_eq!(glow("rgba(0, 169, 255, 0.6) 0px 0px 24px 0px", ink).len(), 1);
+        // A violet glow on a white card darkens it: shade, not light.
+        let white = Rgba::new(255.0, 255.0, 255.0, 1.0);
+        assert!(glow("rgba(124, 58, 237, 0.5) 0px 0px 24px 0px", white).is_empty());
     }
 
     #[test]
