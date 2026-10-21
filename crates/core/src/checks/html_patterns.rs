@@ -37,6 +37,7 @@ re!(
     SVG_DEFS_RE,
     format!(r"<{defs}{B}[^>]*>{ANY}*?</{defs}>", defs = ci("defs"))
 );
+re!(SVG_USE_RE, format!(r"<{}{B}", ci("use")));
 re!(SVG_OPEN_RE, format!(r"^<{svg}{B}[^>]*>", svg = ci("svg")));
 re!(
     SVG_TEXT_RE,
@@ -160,7 +161,13 @@ pub fn scan_html_for_shape_assembled_illustration(html: &str) -> Vec<RuleHit> {
         if SVG_PATTERN_RE.is_match(block) {
             continue;
         }
-        let painted = SVG_DEFS_RE.replace_all(block, "");
+        // Unless something references them: shapes drawn through `<use>`
+        // are drawn.
+        let painted = if SVG_USE_RE.is_match(block) {
+            std::borrow::Cow::Borrowed(block)
+        } else {
+            SVG_DEFS_RE.replace_all(block, "")
+        };
         let primitives = SVG_PRIMITIVE_RE.find_iter(&painted).count();
         if primitives < 8 {
             continue;
@@ -1088,6 +1095,10 @@ mod tests {
         // Unused assets in `<defs>` change neither count.
         let unused = format!("<defs>{}</defs>", paths.repeat(2));
         assert_eq!(svg("<svg viewBox=\"0 0 400 300\">", &unused).len(), 1, "defs paths are not drawn");
+        // Shapes in `<defs>` that `<use>` draws are drawn.
+        let used = format!("<defs>{scene}</defs><use href=\"#a\"/>");
+        let only_used = scan_html_for_shape_assembled_illustration(&format!("<svg viewBox=\"0 0 400 300\">{used}</svg>"));
+        assert_eq!(only_used.len(), 1, "defs shapes drawn through use");
     }
 
     #[test]
