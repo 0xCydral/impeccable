@@ -215,14 +215,14 @@ pub fn page_form_painted(dom: &dyn Dom, rule_id: &str, matches: &[ElId]) -> bool
 }
 
 /// The text rules that also stand down when the hit-test stacks show an
-/// opaque layer drawn over the text ([`TextLayers::Covered`]): the size,
-/// leading and measure of text nobody sees at capture. metlife.com's mobile
-/// breadcrumbs under its opaque nav, and bordeaux-metropole.fr's standfirst
-/// under its consent modal (observations-1006 row 8). Contrast reads the
-/// same verdict on its own path. Where the stacks cannot answer (a point
-/// never asked, below the fold) the finding stays.
+/// opaque layer drawn over the text that stays there as the page scrolls
+/// ([`covered_for_good`]): the size, leading and measure of text nobody
+/// sees. metlife.com's mobile breadcrumbs under the nav pinned to the top
+/// (observations-1006 row 8). Contrast reads the plain covered verdict on
+/// its own path. A bar fixed lower in the window, which a scroll lifts the
+/// text out from under, and stacks that cannot answer keep the finding.
 ///
-/// [`TextLayers::Covered`]: super::text_layers::TextLayers::Covered
+/// [`covered_for_good`]: super::text_layers::covered_for_good
 pub const PAINT_GATED_COVERED_RULES: &[&str] = &["line-length", "tight-leading", "tiny-text", "undersized-ui-text"];
 
 /// Drop the findings on `el` whose rule needs a painted element when `el` is
@@ -239,9 +239,7 @@ pub fn retain_painted(dom: &dyn Dom, el: ElId, findings: &mut Vec<BrowserFinding
         };
         shown
             && !(PAINT_GATED_COVERED_RULES.contains(&f.type_.as_str())
-                && *covered.get_or_insert_with(|| {
-                    super::text_layers::layers_at_text(dom, el, None, None) == super::text_layers::TextLayers::Covered
-                }))
+                && *covered.get_or_insert_with(|| super::text_layers::covered_for_good(dom, el)))
     });
 }
 
@@ -2950,9 +2948,10 @@ mod tests {
     }
 
     /// metlife.com (observations-1006 row 8): mobile breadcrumbs under the
-    /// opaque nav. The size, leading and measure rules stand down where the
-    /// stacks show a layer over the text; contrast reads the verdict on its
-    /// own path, and the other rules are untouched.
+    /// opaque nav pinned to the top. The size, leading and measure rules
+    /// stand down where the stacks show a layer over the text that stays
+    /// there as the page scrolls; contrast reads the verdict on its own path,
+    /// and the other rules are untouched.
     #[test]
     fn size_and_leading_rules_stand_down_under_a_covering_layer() {
         let (mut d, body) = page();
@@ -2961,11 +2960,11 @@ mod tests {
         let crumb = d.add(Some(body), "span");
         d.set_styles(crumb, &[("fontSize", "10px"), ("color", "rgb(80, 80, 80)")]);
         resolved(&mut d, crumb);
-        d.set_rect(crumb, 16.0, 100.0, 120.0, 14.0);
+        d.set_rect(crumb, 16.0, 20.0, 120.0, 14.0);
         d.add_text(crumb, "Health/Accident");
         let nav = d.add(Some(body), "nav");
         d.set_styles(nav, &[("position", "fixed"), ("backgroundColor", "rgb(255, 255, 255)"), ("opacity", "1")]);
-        d.set_rect(nav, 0.0, 60.0, 390.0, 100.0);
+        d.set_rect(nav, 0.0, 0.0, 390.0, 50.0);
         let findings = || {
             vec![
                 BrowserFinding::new("undersized-ui-text", "10px functional text"),
@@ -2981,15 +2980,43 @@ mod tests {
             f.into_iter().map(|f| f.type_).collect::<Vec<_>>()
         };
         assert_eq!(ids(&d), vec!["wide-tracking"]);
-        // Should-flag twins: a translucent nav shows the crumb, and so does
-        // a nav that lies elsewhere.
+        // A card that scrolls with the page covers for good too.
+        d.set_style(nav, "position", "absolute");
+        d.set_rect(nav, 0.0, 10.0, 390.0, 40.0);
+        assert_eq!(ids(&d), vec!["wide-tracking"]);
+        // Should-flag twins: a translucent card shows the crumb, and so does
+        // a card that lies elsewhere.
         d.set_style(nav, "backgroundColor", "rgba(255, 255, 255, 0.5)");
         assert_eq!(ids(&d).len(), 5);
         d.set_style(nav, "backgroundColor", "rgb(255, 255, 255)");
         d.set_rect(nav, 0.0, 300.0, 390.0, 100.0);
         assert_eq!(ids(&d).len(), 5);
+        // A cookie bar fixed to the bottom of the window: a scroll lifts the
+        // text out from under it (ytbulktranscript.app, tau.ac.il).
+        d.set_style(nav, "position", "fixed");
+        d.set_rect(nav, 0.0, 760.0, 390.0, 84.0);
+        d.set_rect(crumb, 16.0, 790.0, 120.0, 14.0);
+        assert_eq!(ids(&d).len(), 5);
+        // A bar inside a sticky wrapper low in the window, and one pinned to
+        // the top once the page has scrolled, keep the findings too.
+        d.set_rect(nav, 0.0, 2000.0, 390.0, 84.0);
+        let wrap = d.add(Some(body), "div");
+        d.set_style(wrap, "position", "sticky");
+        d.set_rect(wrap, 0.0, 760.0, 390.0, 84.0);
+        let bar = d.add(Some(wrap), "div");
+        d.set_styles(bar, &[("backgroundColor", "rgb(255, 255, 255)"), ("opacity", "1")]);
+        d.set_rect(bar, 0.0, 760.0, 390.0, 84.0);
+        assert_eq!(ids(&d).len(), 5);
+        d.set_rect(wrap, 0.0, 0.0, 390.0, 50.0);
+        d.set_rect(bar, 0.0, 0.0, 390.0, 50.0);
+        d.set_rect(crumb, 16.0, 20.0, 120.0, 14.0);
+        d.scroll_y = 300.0;
+        assert_eq!(ids(&d).len(), 5);
+        d.scroll_y = 0.0;
+        assert_eq!(ids(&d), vec!["wide-tracking"]);
         // Below the fold no point is answered: the findings stay.
-        d.set_rect(nav, 0.0, 1000.0, 390.0, 100.0);
+        d.set_rect(wrap, 0.0, 1000.0, 390.0, 100.0);
+        d.set_rect(bar, 0.0, 1000.0, 390.0, 100.0);
         d.set_rect(crumb, 16.0, 1040.0, 120.0, 14.0);
         assert_eq!(ids(&d).len(), 5);
     }

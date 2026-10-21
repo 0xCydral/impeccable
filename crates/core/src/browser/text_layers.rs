@@ -418,11 +418,37 @@ fn moves_surface(paint: &[Rgba], resolved: Option<Rgba>) -> Option<bool> {
 
 /// The first layer in `above` (the stack above the text at `(x, y)`,
 /// topmost first) that is not the text's ancestor and [`covers`] it there.
-fn cover_above(dom: &dyn Dom, el: ElId, above: &[ElId], x: f64, y: f64) -> Option<ElId> {
+/// With `stays`, only a layer that stays over the text as the page scrolls
+/// counts ([`stays_over_the_text`]).
+fn cover_above(dom: &dyn Dom, el: ElId, above: &[ElId], x: f64, y: f64, stays: bool) -> Option<ElId> {
     above
         .iter()
         .copied()
-        .find(|&node| !dom.contains(node, el) && covers(dom, node, x, y))
+        .find(|&node| !dom.contains(node, el) && covers(dom, node, x, y) && (!stays || stays_over_the_text(dom, node)))
+}
+
+/// Whether a covering layer stays over the text when the visitor scrolls:
+/// neither it nor an ancestor is `fixed` or `sticky`, so it moves with the
+/// page, or the first such box is pinned to the viewport's top (its box
+/// starts within 1px of it) with the page at its top, so scrolling only
+/// carries the text further under it (metlife.com's mobile nav over its
+/// breadcrumbs). A cookie bar fixed to the bottom of the window lies over
+/// whatever text the capture left there, and a scroll brings that text out
+/// (ytbulktranscript.app's paragraph, tau.ac.il's 9px price).
+fn stays_over_the_text(dom: &dyn Dom, node: ElId) -> bool {
+    let mut cur = Some(node);
+    while let Some(n) = cur {
+        if Some(n) == dom.body() || Some(n) == dom.document_element() {
+            return true;
+        }
+        if matches!(dom.style(n, "position").as_str(), "fixed" | "sticky") {
+            let r = dom.rect(n);
+            let scroll = dom.scroll_y();
+            return r.all_finite() && r.top <= 1.0 && scroll.is_finite() && scroll <= 1.0;
+        }
+        cur = dom.parent(n);
+    }
+    true
 }
 
 /// The share of a run's text a single covering layer has to hold for a
@@ -435,7 +461,13 @@ const COVERED_TEXT_MIN_SHARE: f64 = 0.85;
 /// least [`COVERED_TEXT_MIN_SHARE`] of the run's direct text box. A run with
 /// no direct text box (a field's placeholder), or a layer the capture did
 /// not measure, holds nothing.
-fn covering_layer_holds_text(dom: &dyn Dom, el: ElId, points: &[(f64, f64)], answers: &[AtPoint]) -> bool {
+fn covering_layer_holds_text(
+    dom: &dyn Dom,
+    el: ElId,
+    points: &[(f64, f64)],
+    answers: &[AtPoint],
+    stays: bool,
+) -> bool {
     let Some(text) = dom.direct_text_rect(el).filter(|r| r.all_finite() && r.width > 0.0 && r.height > 0.0) else {
         return false;
     };
@@ -449,7 +481,7 @@ fn covering_layer_holds_text(dom: &dyn Dom, el: ElId, points: &[(f64, f64)], ans
         let Some(first) = stack.iter().position(|&n| dom.contains(el, n)) else {
             continue;
         };
-        let Some(layer) = cover_above(dom, el, &stack[..first], x, y) else {
+        let Some(layer) = cover_above(dom, el, &stack[..first], x, y, stays) else {
             continue;
         };
         if seen.contains(&layer) {
@@ -476,6 +508,7 @@ fn at_point(
     y: f64,
     host: Option<ElId>,
     resolved: Option<Rgba>,
+    stays: bool,
 ) -> AtPoint {
     let stack = dom.elements_from_point(x, y);
     if stack.is_empty() {
@@ -485,7 +518,7 @@ fn at_point(
     let Some(first) = stack.iter().position(|&n| in_text(n)) else {
         return AtPoint::Silent;
     };
-    if cover_above(dom, el, &stack[..first], x, y).is_some() {
+    if cover_above(dom, el, &stack[..first], x, y, stays).is_some() {
         return AtPoint::Covered;
     }
     // The element paints its own surface: nothing under it is read.
@@ -570,6 +603,19 @@ pub fn layers_at_text(
     host: Option<ElId>,
     resolved: Option<Rgba>,
 ) -> TextLayers {
+    layers(dom, el, host, resolved, false)
+}
+
+/// Whether the stacks show `el`'s text covered ([`TextLayers::Covered`] of
+/// [`layers_at_text`]) by layers that stay over it when the page scrolls
+/// ([`stays_over_the_text`]): the test the size, leading and measure rules
+/// read, which a visitor's scroll would otherwise answer. A run below the
+/// fold covered by a later card is read as [`layers_at_text`] reads it.
+pub fn covered_for_good(dom: &dyn Dom, el: ElId) -> bool {
+    layers(dom, el, None, None, true) == TextLayers::Covered
+}
+
+fn layers(dom: &dyn Dom, el: ElId, host: Option<ElId>, resolved: Option<Rgba>, stays: bool) -> TextLayers {
     let (vw, vh) = occlusion_viewport(dom);
     let Some(rect) = occlusion_probe_rect(dom, el, &dom.rect(el)) else {
         return TextLayers::Undecided;
@@ -585,7 +631,7 @@ pub fn layers_at_text(
     }
     let answers: Vec<AtPoint> = points
         .iter()
-        .map(|&(x, y)| at_point(dom, el, x, y, host, resolved))
+        .map(|&(x, y)| at_point(dom, el, x, y, host, resolved, stays))
         .collect();
     if answers.contains(&AtPoint::Unanswered) {
         return TextLayers::Undecided;
@@ -599,7 +645,7 @@ pub fn layers_at_text(
     // by a row: a layer that covers the text at one deciding point and
     // holds most of the text's own box covers it.
     if deciding.iter().all(|a| *a == AtPoint::Covered)
-        || (deciding.contains(&AtPoint::Covered) && covering_layer_holds_text(dom, el, &points, &answers))
+        || (deciding.contains(&AtPoint::Covered) && covering_layer_holds_text(dom, el, &points, &answers, stays))
     {
         TextLayers::Covered
     } else if deciding.iter().all(|a| matches!(a, AtPoint::Covered | AtPoint::Unread)) {
