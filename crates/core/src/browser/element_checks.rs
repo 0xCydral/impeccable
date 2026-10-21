@@ -10324,11 +10324,12 @@ mod tests {
 
     /// shinebythara.lovable.app (observations-1006 row 8): a fixed nav at
     /// `rgba(251, 250, 249, 0.8)` with `backdrop-filter: blur(12px)` over a
-    /// promo row. A fill at 0.75 or more hides the text under it, and so does
-    /// one at 0.6 or more over a backdrop blur of 4px or more. Fainter
-    /// glass, or the same fill without the blur, shows the text.
+    /// promo row. Frosted glass at 0.6 or more over a backdrop blur of 4px or
+    /// more hides the text under it. A translucent layer with no blur
+    /// (blueeyes.com.tw's cookie bar at 0.8, row 6), fainter glass, or a
+    /// light blur shows it.
     #[test]
-    fn text_under_a_strong_scrim_or_frosted_glass_is_not_scored() {
+    fn text_under_frosted_glass_is_not_scored() {
         let run = |fill: &str, opacity: &str, backdrop: &str| {
             let (mut d, body) = page();
             let hero = bare_box(&mut d, body, "section", (0.0, 0.0, 1280.0, 1400.0));
@@ -10341,15 +10342,14 @@ mod tests {
             reports_contrast(&colors(&d, p))
         };
         assert!(!run("rgba(251, 250, 249, 0.8)", "1", "blur(12px)"));
-        assert!(!run("rgba(251, 250, 249, 0.8)", "1", "none"));
-        assert!(!run("rgba(251, 250, 249, 0.65)", "1", "blur(12px)"));
-        assert!(!run("rgb(251, 250, 249)", "0.8", "none"));
+        assert!(!run("rgba(251, 250, 249, 0.65)", "1", "blur(4px)"));
+        assert!(!run("rgb(251, 250, 249)", "0.7", "blur(12px)"));
         // Should-flag twins.
-        assert!(run("rgba(251, 250, 249, 0.65)", "1", "none"), "glass without blur");
+        assert!(run("rgba(0, 0, 0, 0.8)", "1", "none"), "a dark bar with no blur");
+        assert!(run("rgba(251, 250, 249, 0.8)", "1", ""), "an unrecorded backdrop");
         assert!(run("rgba(251, 250, 249, 0.65)", "1", "blur(2px)"), "a light blur");
         assert!(run("rgba(251, 250, 249, 0.5)", "1", "blur(12px)"), "faint glass");
         assert!(run("rgba(251, 250, 249, 0.8)", "0.7", "blur(12px)"), "a faded layer");
-        assert!(run("rgba(251, 250, 249, 0.7)", "1", ""), "an unrecorded backdrop");
     }
 
     /// searchvoro.com and bordeaux-metropole.fr (observations-1006 row 8):
