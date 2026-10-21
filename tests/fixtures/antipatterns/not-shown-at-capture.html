@@ -27,6 +27,14 @@
          animation moves (low-contrast). Twin: the same strip held still by
          a static transform.
 
+       Should flag, from the first review's probes:
+       - an inert dialog on screen with nothing stacked over it;
+       - a 40px heading under 0.8 glass with a 12px blur, which large type
+         reads through;
+       - a headline wider than its running ticker's window;
+       - a 10px crumb under a bar placed at the bottom of a full-window
+         fixed wrapper, which a scroll lifts it out from under.
+
        Each contrast case wears a colour of its own, so the page's one report
        of a colour pair never hides another. Every cell sits in the first
        800px, since the hit tests ask only points inside the viewport.
@@ -70,6 +78,14 @@
     .running { animation: slide 100000s linear infinite; }
     .still { transform: translateX(-100px); }
     @keyframes slide { from { transform: translateX(-100px); } to { transform: translateX(-800px); } }
+
+    /* Review twins. */
+    .glass-big { position: absolute; top: 650px; left: 20px; width: 560px; height: 56px; z-index: 2; background: rgba(251, 250, 249, 0.8); backdrop-filter: blur(12px); }
+    .wide-ticker { position: absolute; top: 720px; left: 20px; width: 560px; height: 40px; overflow: hidden; background: #ffffff; }
+    .wide-track { display: flex; width: 3000px; animation: slide 100000s linear infinite; }
+    .wide-track span { flex: 0 0 1300px; font: 24px/40px system-ui; color: #111; white-space: nowrap; }
+    .toast-layer { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+    .toast-bar { position: absolute; bottom: 0; left: 640px; width: 300px; height: 70px; background: #222222; pointer-events: auto; }
   </style>
 </head>
 <body>
@@ -123,5 +139,17 @@
       <span>Mollie</span><span>Stripe</span><span>Adyen</span><span id="flag-ticker-chip" style="color: #a9a9a9;">Qonto Bank</span><span>Mollie</span><span>Stripe</span><span>Adyen</span><span>Qonto</span>
     </div>
   </div>
+
+  <!-- Review twins: all should flag. -->
+  <div class="shown" style="top: 650px; left: 640px;" role="dialog" aria-modal="true" aria-label="Chat" inert>
+    <a id="flag-inert-dialog" href="#chat" style="color: #b1b1b1;">How can we help today?</a>
+  </div>
+  <h2 class="cell" id="flag-glass-heading" style="top: 652px; left: 30px; font: 600 40px/48px system-ui; color: #b2b2b2;">Ship faster</h2>
+  <div class="glass-big"></div>
+  <div class="wide-ticker">
+    <div class="wide-track"><span id="flag-wide-headline" style="color: #b3b3b3;">Markets close higher as central banks hold rates steady for a third month</span><span>Markets close higher as central banks hold rates steady for a third month</span></div>
+  </div>
+  <a class="crumb" id="flag-bar-crumb" href="#guides" style="top: 760px; left: 660px;">Guides</a>
+  <div class="toast-layer"><div class="toast-bar"></div></div>
 </body>
 </html>

@@ -84,6 +84,11 @@ fn text_not_presented_at_capture_is_not_scored() {
         ("undersized-ui-text", "#flag-shown-crumb"),
         ("text-occlusion", "#flag-rain"),
         ("low-contrast", "#flag-ticker-chip"),
+        // The first review's probes.
+        ("low-contrast", "#flag-inert-dialog"),
+        ("low-contrast", "#flag-glass-heading"),
+        ("low-contrast", "#flag-wide-headline"),
+        ("undersized-ui-text", "#flag-bar-crumb"),
     ] {
         assert!(on(want.0, want.1), "missing {want:?} in {flagged:#?}");
     }
