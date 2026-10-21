@@ -655,12 +655,36 @@ fn is_media_frame(dom: &dyn Dom, el: ElId, rect: &Rect) -> bool {
 /// A box whose element children are all form controls: the filled, rounded
 /// field Framer and most form kits draw around an input or a select. Its text
 /// is the select's options, not content of its own.
+///
+/// A composer is a field too (observations-1006 row 19, resineda.com's
+/// `form.demo-composer`): beside its fields it may hold a screen-reader
+/// label in a clipped 1px box and one row of buttons (a button, or a box
+/// whose element children are all buttons). At least one field is needed.
 fn is_field_box(dom: &dyn Dom, el: ElId) -> bool {
-    let children = dom.children(el);
-    !children.is_empty()
-        && children
-            .iter()
-            .all(|&c| matches!(tag_lower(dom, c).as_str(), "input" | "select" | "textarea"))
+    let is_field = |c: ElId| matches!(tag_lower(dom, c).as_str(), "input" | "select" | "textarea");
+    let is_button = |c: ElId| {
+        tag_lower(dom, c) == "button" || dom.attr(c, "role").is_some_and(|r| r == "button")
+    };
+    let mut fields = 0;
+    let mut button_rows = 0;
+    for c in dom.children(el) {
+        if is_field(c) {
+            fields += 1;
+        } else if super::painted::is_visually_hidden_box(dom, c) {
+            continue;
+        } else if is_button(c) || {
+            let kids = dom.children(c);
+            !kids.is_empty() && kids.iter().all(|&k| is_button(k))
+        } {
+            button_rows += 1;
+            if button_rows > 1 {
+                return false;
+            }
+        } else {
+            return false;
+        }
+    }
+    fields > 0
 }
 
 /// Whether `inner` runs along at least three edges of `outer`'s padding box: a
@@ -8016,6 +8040,57 @@ mod tests {
         assert!(check_layout(&d).is_empty(), "a fill with no border or shadow (r4-p16)");
         outlined(&mut d, field, "10px");
         assert_eq!(check_layout(&d).len(), 1, "a framed box with content beside the control");
+
+        // resineda.com (observations-1006 row 19): a bordered composer
+        // around a textarea, with a screen-reader label in a clipped 1px box
+        // and one row of buttons. A row of text beside them, or a second
+        // button row, makes it a card again.
+        let composer = |extra: &dyn Fn(&mut FakeDom, ElId)| {
+            let mut d = FakeDom::new();
+            let (_h, body) = d.with_page();
+            let panel = d.add(Some(body), "aside");
+            outlined(&mut d, panel, "16px");
+            d.set_rect(panel, 772.0, 358.0, 281.0, 373.0);
+            d.add_text(panel, "Ask anything about resin");
+            let form = d.add(Some(panel), "form");
+            outlined(&mut d, form, "12px");
+            d.set_rect(form, 781.0, 644.0, 264.0, 79.0);
+            let label = d.add(Some(form), "label");
+            d.add_text(label, "Message Resin AI");
+            d.set_styles(
+                label,
+                &[("position", "absolute"), ("clip", "rect(0px, 0px, 0px, 0px)")],
+            );
+            d.set_rect(label, 789.0, 652.0, 1.0, 1.0);
+            let area = d.add(Some(form), "textarea");
+            d.set_rect(area, 790.0, 653.0, 246.0, 35.0);
+            let row = d.add(Some(form), "div");
+            d.set_rect(row, 790.0, 688.0, 246.0, 26.0);
+            let send = d.add(Some(row), "button");
+            d.set_rect(send, 1010.0, 688.0, 26.0, 26.0);
+            extra(&mut d, form);
+            check_layout(&d).len()
+        };
+        assert_eq!(composer(&|_, _| {}), 0, "a composer");
+        assert_eq!(
+            composer(&|d, form| {
+                let note = d.add(Some(form), "p");
+                d.add_text(note, "Answers can be wrong");
+                d.set_rect(note, 790.0, 714.0, 246.0, 16.0);
+            }),
+            1,
+            "a composer with copy of its own"
+        );
+        assert_eq!(
+            composer(&|d, form| {
+                let row = d.add(Some(form), "div");
+                let b = d.add(Some(row), "button");
+                d.add_text(b, "Attach");
+                d.set_rect(row, 790.0, 714.0, 246.0, 26.0);
+            }),
+            1,
+            "two button rows"
+        );
 
         // clipto.com: a tinted, rounded `<mark>` run; demotv.lol: a bordered
         // frame around a video thumbnail.
