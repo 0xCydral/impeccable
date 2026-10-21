@@ -955,6 +955,17 @@ fn occlusion_victim_without_ink(dom: &dyn Dom, el: ElId) -> bool {
     if !(stroke.is_finite() && stroke <= 0.0) || shadow != "none" {
         return false;
     }
+    // A glitch or duplicate-text effect clears the element's own ink and
+    // draws the words with a generated box (`content: attr(data-text)`).
+    let draws_text = |which: &str| {
+        dom.pseudo_style(el, which, "content").is_some_and(|c| {
+            let c = js::trim(&c);
+            !c.is_empty() && c != "none" && c != "normal" && c != "\"\"" && c != "''"
+        })
+    };
+    if draws_text("::before") || draws_text("::after") {
+        return false;
+    }
     !ancestors_inclusive(dom, el).into_iter().any(|a| {
         ["webkitBackgroundClip", "backgroundClip"]
             .iter()
@@ -6420,6 +6431,28 @@ mod tests {
         shadowed.push(("textShadow", "rgb(0, 0, 0) 0px 0px 2px"));
         assert_eq!(run(&shadowed, "border-box"), 1);
         assert_eq!(run(&clear("16px"), "text"), 1);
+        // A glitch heading that clears its ink and draws the words with
+        // `::before` keeps reporting (review issue 6).
+        let glitch = |content: &'static str| {
+            let mut d = FakeDom::new();
+            let (_h, body) = d.with_page();
+            let txt = d.add(Some(body), "h2");
+            d.add_text(txt, "Glitch heading");
+            d.set_styles(txt, base);
+            d.set_styles(txt, &[("overflow", "visible"), ("overflowX", "visible"), ("overflowY", "visible"), ("clip", "auto"), ("clipPath", "none")]);
+            d.set_styles(txt, &clear("16px"));
+            d.set_pseudo_style(txt, "::before", "content", content);
+            d.set_rect(txt, 100.0, 100.0, 240.0, 28.0);
+            let boxel = d.add(Some(body), "div");
+            d.set_styles(boxel, base);
+            d.set_styles(boxel, &[("position", "absolute"), ("backgroundColor", "rgb(20, 20, 20)")]);
+            d.set_rect(boxel, 100.0, 100.0, 240.0, 28.0);
+            mark_body_descendants(&mut d);
+            check_text_occlusion_dom(&d).len()
+        };
+        assert_eq!(glitch("attr(data-text)"), 1);
+        assert_eq!(glitch("\"Glitch heading\""), 1);
+        assert_eq!(glitch("none"), 0);
         // A fill the capture did not record leaves `color` to decide; ink
         // properties it did not record keep the victim.
         assert_eq!(run(&[("fontSize", "16px"), ("color", "rgba(0, 0, 0, 0)")], "border-box"), 1);

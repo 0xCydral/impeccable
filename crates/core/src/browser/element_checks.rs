@@ -10324,16 +10324,18 @@ mod tests {
 
     /// shinebythara.lovable.app (observations-1006 row 8): a fixed nav at
     /// `rgba(251, 250, 249, 0.8)` with `backdrop-filter: blur(12px)` over a
-    /// promo row. Frosted glass at 0.6 or more over a backdrop blur of 4px or
-    /// more hides the text under it. A translucent layer with no blur
-    /// (blueeyes.com.tw's cookie bar at 0.8, row 6), fainter glass, or a
-    /// light blur shows it.
+    /// 14px promo row. Frosted glass at 0.75 or more whose blur reaches 8px
+    /// and a third of the text's size hides the text under it. A translucent
+    /// layer with no blur (blueeyes.com.tw's cookie bar at 0.8, row 6),
+    /// fainter glass, a lighter blur, or large type the blur leaves readable
+    /// (glass2.html in the review: a 40px heading under 0.6 and 4px) shows it.
     #[test]
     fn text_under_frosted_glass_is_not_scored() {
-        let run = |fill: &str, opacity: &str, backdrop: &str| {
+        let run = |fill: &str, opacity: &str, backdrop: &str, size: &str| {
             let (mut d, body) = page();
             let hero = bare_box(&mut d, body, "section", (0.0, 0.0, 1280.0, 1400.0));
-            let p = faint_copy(&mut d, hero, "rgb(170, 170, 170)", (16.0, 20.0, 300.0, 28.0));
+            let p = faint_copy(&mut d, hero, "rgb(170, 170, 170)", (16.0, 10.0, 600.0, 48.0));
+            d.set_style(p, "fontSize", size);
             let nav = bare_box(&mut d, body, "nav", (0.0, 0.0, 1280.0, 64.0));
             d.set_styles(
                 nav,
@@ -10341,15 +10343,19 @@ mod tests {
             );
             reports_contrast(&colors(&d, p))
         };
-        assert!(!run("rgba(251, 250, 249, 0.8)", "1", "blur(12px)"));
-        assert!(!run("rgba(251, 250, 249, 0.65)", "1", "blur(4px)"));
-        assert!(!run("rgb(251, 250, 249)", "0.7", "blur(12px)"));
+        assert!(!run("rgba(251, 250, 249, 0.8)", "1", "blur(12px)", "14px"));
+        assert!(!run("rgba(251, 250, 249, 0.75)", "1", "blur(8px)", "14px"));
+        assert!(!run("rgb(251, 250, 249)", "0.8", "blur(12px)", "14px"));
+        assert!(!run("rgba(251, 250, 249, 0.8)", "1", "blur(16px)", "40px"));
         // Should-flag twins.
-        assert!(run("rgba(0, 0, 0, 0.8)", "1", "none"), "a dark bar with no blur");
-        assert!(run("rgba(251, 250, 249, 0.8)", "1", ""), "an unrecorded backdrop");
-        assert!(run("rgba(251, 250, 249, 0.65)", "1", "blur(2px)"), "a light blur");
-        assert!(run("rgba(251, 250, 249, 0.5)", "1", "blur(12px)"), "faint glass");
-        assert!(run("rgba(251, 250, 249, 0.8)", "0.7", "blur(12px)"), "a faded layer");
+        assert!(run("rgba(0, 0, 0, 0.8)", "1", "none", "14px"), "a dark bar with no blur");
+        assert!(run("rgba(251, 250, 249, 0.8)", "1", "", "14px"), "an unrecorded backdrop");
+        assert!(run("rgba(251, 250, 249, 0.8)", "1", "blur(4px)", "14px"), "a light blur");
+        assert!(run("rgba(251, 250, 249, 0.65)", "1", "blur(12px)", "14px"), "faint glass");
+        assert!(run("rgba(251, 250, 249, 0.8)", "0.9", "blur(12px)", "14px"), "a faded layer");
+        assert!(run("rgba(255, 255, 255, 0.6)", "1", "blur(4px)", "40px"), "glass2: a heading through light glass");
+        assert!(run("rgba(251, 250, 249, 0.8)", "1", "blur(12px)", "40px"), "a heading larger than the blur");
+        assert!(run("rgba(251, 250, 249, 0.8)", "1", "blur(12px)", ""), "an unrecorded size");
     }
 
     /// searchvoro.com and bordeaux-metropole.fr (observations-1006 row 8):
@@ -10359,7 +10365,7 @@ mod tests {
     /// covers it; less, or no text box at all, keeps the verdict.
     #[test]
     fn a_layer_holding_most_of_the_text_covers_it_where_the_box_runs_past() {
-        let run = |card: (f64, f64, f64, f64), text_rect: Option<(f64, f64, f64, f64)>| {
+        let run_styled = |card: (f64, f64, f64, f64), text_rect: Option<(f64, f64, f64, f64)>, extra: &[(&str, &str)]| {
             let (mut d, body) = page();
             let hero = bare_box(&mut d, body, "section", (0.0, 0.0, 1280.0, 1400.0));
             let p = faint_copy(&mut d, hero, "rgb(170, 170, 170)", (72.0, 700.0, 1136.0, 28.0));
@@ -10367,9 +10373,11 @@ mod tests {
                 d.set_text_rect(p, t.0, t.1, t.2, t.3);
             }
             let modal = bare_box(&mut d, body, "div", card);
-            d.set_styles(modal, &[("position", "fixed"), ("backgroundColor", "rgb(255, 255, 255)")]);
+            d.set_styles(modal, &[("position", "fixed"), ("backgroundColor", "rgb(255, 255, 255)"), ("transform", "none")]);
+            d.set_styles(modal, extra);
             reports_contrast(&colors(&d, p))
         };
+        let run = |card: (f64, f64, f64, f64), text_rect: Option<(f64, f64, f64, f64)>| run_styled(card, text_rect, &[]);
         let text = Some((448.0, 704.0, 384.0, 20.0));
         // The card holds the whole text; the box's ends lie outside it.
         assert!(!run((192.0, 605.0, 896.0, 179.0), text));
@@ -10379,6 +10387,12 @@ mod tests {
         // has no text box to measure.
         assert!(run((192.0, 709.0, 896.0, 179.0), text), "a quarter of the text shows");
         assert!(run((192.0, 605.0, 896.0, 179.0), None), "no text box");
+        // A card that paints less than its box says nothing about the share
+        // (review issue 5): a `clip-path`, a rotation.
+        let card = (192.0, 605.0, 896.0, 179.0);
+        assert!(run_styled(card, text, &[("clipPath", "circle(40%)")]), "clip-path");
+        assert!(run_styled(card, text, &[("transform", "matrix(0.7, 0.7, -0.7, 0.7, 0, 0)")]), "rotated");
+        assert!(!run_styled(card, text, &[("transform", "matrix(1, 0, 0, 1, 0, -4)")]), "translated");
     }
 
     #[test]

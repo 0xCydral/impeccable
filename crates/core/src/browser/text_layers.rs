@@ -127,25 +127,29 @@ fn distance(a: &Rgba, b: &Rgba) -> f64 {
 }
 
 /// The fill alpha, times the layer's effective opacity, at which a layer
-/// that also blurs what is under it (`backdrop-filter: blur()` of
-/// [`SCRIM_MIN_BLUR_PX`] or more) hides the text: frosted glass leaves it a
-/// smear. shinebythara.lovable.app's fixed nav, `bg-background/80
-/// backdrop-blur-md`, over its promo row (observations-1006 row 8). A
-/// translucent layer with no blur is not taken: blueeyes.com.tw's cookie bar
-/// at `rgba(0, 0, 0, 0.8)` dims the buttons under it, and the judges read
-/// them (observations-1006 row 6).
-const SCRIM_BLURRED_MIN_ALPHA: f64 = 0.6;
+/// that also blurs what is under it hides the text: frosted glass leaves it
+/// a smear. shinebythara.lovable.app's fixed nav, `bg-background/80
+/// backdrop-blur-md` (0.8 and 12px), over its 14px promo row
+/// (observations-1006 row 8). A translucent layer with no blur is not
+/// taken: blueeyes.com.tw's cookie bar at `rgba(0, 0, 0, 0.8)` dims the
+/// buttons under it, and the judges read them (row 6).
+const SCRIM_BLURRED_MIN_ALPHA: f64 = 0.75;
 
-/// The backdrop blur from which a layer's glass makes the text under it
-/// illegible, the blur text-occlusion takes as illegible.
-const SCRIM_MIN_BLUR_PX: f64 = 4.0;
+/// The least backdrop blur that counts as glass, whatever the text.
+const SCRIM_MIN_BLUR_PX: f64 = 8.0;
+
+/// How much of the text's font size the backdrop blur has to reach: a blur
+/// smears glyphs about its own size and leaves larger ones readable (a 40px
+/// heading under a 4px frosted header reads clearly).
+const SCRIM_BLUR_PER_FONT_PX: f64 = 1.0 / 3.0;
 
 /// Whether a layer above the text hides it at `(x, y)`: an image, a video, a
 /// canvas, or an opaque fill, at full opacity, or frosted glass
-/// ([`SCRIM_BLURRED_MIN_ALPHA`]), where the capture put it. Raster
-/// backgrounds are not counted, because a transparent texture drawn over a
-/// hero is one too.
-fn covers(dom: &dyn Dom, node: ElId, x: f64, y: f64) -> bool {
+/// ([`SCRIM_BLURRED_MIN_ALPHA`]) whose blur reaches [`SCRIM_MIN_BLUR_PX`] and
+/// a third of `font_px`, the text's font size (glass is not taken when the
+/// size is unknown), where the capture put it. Raster backgrounds are not
+/// counted, because a transparent texture drawn over a hero is one too.
+fn covers(dom: &dyn Dom, node: ElId, x: f64, y: f64, font_px: f64) -> bool {
     if is_document_surface(dom, node) || !rect_holds_point(&dom.rect(node), x, y) {
         return false;
     }
@@ -160,8 +164,13 @@ fn covers(dom: &dyn Dom, node: ElId, x: f64, y: f64) -> bool {
     {
         return true;
     }
+    if !(font_px.is_finite() && font_px > 0.0) {
+        return false;
+    }
+    let blur = blur_radius_px(&dom.style(node, "backdropFilter"));
     fill.is_some_and(|c| c.alpha_or_one() * opacity >= SCRIM_BLURRED_MIN_ALPHA)
-        && blur_radius_px(&dom.style(node, "backdropFilter")) >= SCRIM_MIN_BLUR_PX
+        && blur >= SCRIM_MIN_BLUR_PX
+        && blur >= font_px * SCRIM_BLUR_PER_FONT_PX
 }
 
 /// What a box that is nobody's ancestor paints under the text.
@@ -421,30 +430,36 @@ fn moves_surface(paint: &[Rgba], resolved: Option<Rgba>) -> Option<bool> {
 /// With `stays`, only a layer that stays over the text as the page scrolls
 /// counts ([`stays_over_the_text`]).
 fn cover_above(dom: &dyn Dom, el: ElId, above: &[ElId], x: f64, y: f64, stays: bool) -> Option<ElId> {
+    let font_px = js::parse_float(&dom.style(el, "fontSize"));
     above
         .iter()
         .copied()
-        .find(|&node| !dom.contains(node, el) && covers(dom, node, x, y) && (!stays || stays_over_the_text(dom, node)))
+        .find(|&node| !dom.contains(node, el) && covers(dom, node, x, y, font_px) && (!stays || stays_over_the_text(dom, node)))
 }
 
 /// Whether a covering layer stays over the text when the visitor scrolls:
 /// neither it nor an ancestor is `fixed` or `sticky`, so it moves with the
-/// page, or the first such box is pinned to the viewport's top (its box
-/// starts within 1px of it) with the page at its top, so scrolling only
-/// carries the text further under it (metlife.com's mobile nav over its
-/// breadcrumbs). A cookie bar fixed to the bottom of the window lies over
-/// whatever text the capture left there, and a scroll brings that text out
-/// (ytbulktranscript.app's paragraph, tau.ac.il's 9px price).
+/// page, or the first such box and the layer itself are pinned to the
+/// viewport's top (each box starts within 1px of it) with the page at its
+/// top, so scrolling only carries the text further under it (metlife.com's
+/// mobile nav over its breadcrumbs). A cookie bar fixed to the bottom of the
+/// window lies over whatever text the capture left there, and a scroll
+/// brings that text out (ytbulktranscript.app's paragraph, tau.ac.il's 9px
+/// price); so does one placed at the bottom of a full-window fixed wrapper,
+/// whose own top is 0.
 fn stays_over_the_text(dom: &dyn Dom, node: ElId) -> bool {
+    let at_top = |n: ElId| {
+        let r = dom.rect(n);
+        r.all_finite() && r.top <= 1.0
+    };
     let mut cur = Some(node);
     while let Some(n) = cur {
         if Some(n) == dom.body() || Some(n) == dom.document_element() {
             return true;
         }
         if matches!(dom.style(n, "position").as_str(), "fixed" | "sticky") {
-            let r = dom.rect(n);
             let scroll = dom.scroll_y();
-            return r.all_finite() && r.top <= 1.0 && scroll.is_finite() && scroll <= 1.0;
+            return at_top(n) && at_top(node) && scroll.is_finite() && scroll <= 1.0;
         }
         cur = dom.parent(n);
     }
@@ -488,6 +503,11 @@ fn covering_layer_holds_text(
             continue;
         }
         seen.push(layer);
+        // A clipped, masked or rotated layer paints less than its box, so
+        // its box says nothing about the share it hides.
+        if masked_or_clipped(dom, layer) || !moves_only(&dom.style(layer, "transform")) {
+            continue;
+        }
         let r = dom.rect(layer);
         if !r.all_finite() {
             continue;
@@ -499,6 +519,21 @@ fn covering_layer_holds_text(
         }
     }
     false
+}
+
+/// Whether a computed `transform` leaves the box's shape alone: `none`, or
+/// a matrix that only translates. Anything else, or an unrecorded value,
+/// may not.
+fn moves_only(transform: &str) -> bool {
+    let t = js::trim(transform);
+    if t == "none" {
+        return true;
+    }
+    let Some(inner) = t.strip_prefix("matrix(").and_then(|r| r.strip_suffix(')')) else {
+        return false;
+    };
+    let v: Vec<f64> = inner.split(',').map(|n| js::parse_float(js::trim(n))).collect();
+    v.len() == 6 && v[0] == 1.0 && v[1] == 0.0 && v[2] == 0.0 && v[3] == 1.0
 }
 
 fn at_point(

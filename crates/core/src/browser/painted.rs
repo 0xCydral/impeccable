@@ -386,6 +386,12 @@ impl Visible {
         self.under_floor()
     }
 
+    /// Whether the measured text is no wider than `width` (within a
+    /// pixel). An unmeasured text or width is not known to fit.
+    fn fits_within(&self, width: f64) -> bool {
+        self.measured && width.is_finite() && width > 0.0 && self.extent.1 - self.extent.0 <= width + 1.0
+    }
+
     /// Whether this walk applies a visible-share floor.
     fn has_floor(&self) -> bool {
         self.min_share > 0.0
@@ -608,16 +614,108 @@ fn unpainted_walk(
 }
 
 /// Whether `el` is a dialog (a `<dialog>`, `role="dialog"` or
-/// `"alertdialog"`, or `aria-modal="true"`) that itself carries `inert`: a
-/// closed off-canvas menu or modal its script switched off rather than
-/// hiding. ktk.de's mmenu.js drawer (`nav#menumobile`, observations-1006
-/// row 1) stays laid out on screen at `z-index: 0` under an opaque page
-/// layer, and `inert` keeps it out of every hit-test stack, so neither the
-/// paint walk nor the occlusion probe would see it as covered. A dialog a
-/// visitor is looking at is never inert: it could not be used. `inert`
-/// alone is not enough: the page behind an open modal is inert and shown.
+/// `"alertdialog"`, or `aria-modal="true"`) that carries `inert` itself and
+/// that an opaque layer stacked above it holds whole: a closed off-canvas
+/// menu its script switched off and left laid out under the page. ktk.de's
+/// mmenu.js drawer (`nav#menumobile`, observations-1006 row 1) is fixed at
+/// `z-index: 0` under its sibling `div.mm-page` (`relative`, `z-index: 1`,
+/// white, holding the drawer's whole box). `inert` keeps the drawer out of
+/// every hit-test stack, so neither the paint walk nor the occlusion probe
+/// sees it covered; the stacking and the boxes the capture records do.
+/// An inert dialog nothing buries (a parent dialog a library marks inert
+/// while a nested confirm is open, a panel inert during a transition) is on
+/// screen and keeps its text, and so does `inert` on anything that is not a
+/// dialog (the page behind an open modal).
 fn closed_inert_dialog(dom: &dyn Dom, el: ElId) -> bool {
-    dom.attr(el, "inert").is_some() && is_dialog_el(dom, el)
+    dom.attr(el, "inert").is_some() && is_dialog_el(dom, el) && buried_by_an_opaque_sibling(dom, el)
+}
+
+/// The z-index a box's branch stacks at among its siblings, read on the way
+/// from `el` up to `branch` (an ancestor-or-self of `el`): the outermost
+/// positioned box with a numeric `z-index` decides; a branch with a
+/// positioned box and no number stacks at 0. `None` for a branch with no
+/// positioned box, or a `z-index` the capture did not record, which no
+/// sibling is known to cover.
+fn branch_z(dom: &dyn Dom, el: ElId, branch: ElId) -> Option<f64> {
+    let mut level: Option<f64> = None;
+    let mut cur = Some(el);
+    while let Some(n) = cur {
+        if is_positioned(dom, n) {
+            let z = js::trim(&dom.style(n, "zIndex")).to_string();
+            if z.is_empty() {
+                return None;
+            }
+            if z == "auto" {
+                level = level.or(Some(0.0));
+            } else {
+                let v = js::parse_float(&z);
+                if !v.is_finite() {
+                    return None;
+                }
+                level = Some(v);
+            }
+        }
+        if n == branch {
+            break;
+        }
+        cur = dom.parent(n);
+    }
+    level
+}
+
+/// Whether a sibling of `dialog` or of one of its ancestors covers it for
+/// good: positioned, filled with an opaque `background-color` (alpha 0.95 or
+/// more) at an effective opacity of 0.95 or more, its box holding the
+/// dialog's box within 1px, and stacked above the dialog's branch (a higher
+/// z-index, or the same one later in tree order). Only the siblings
+/// themselves are read, not their descendants; anything unmeasured or
+/// unrecorded covers nothing.
+fn buried_by_an_opaque_sibling(dom: &dyn Dom, dialog: ElId) -> bool {
+    let d = dom.rect(dialog);
+    if !d.all_finite() || d.width <= 0.0 || d.height <= 0.0 {
+        return false;
+    }
+    let mut branch = dialog;
+    while let Some(parent) = dom.parent(branch) {
+        let Some(own) = branch_z(dom, dialog, branch) else {
+            branch = parent;
+            continue;
+        };
+        let mut after = false;
+        for sib in dom.children(parent) {
+            if sib == branch {
+                after = true;
+                continue;
+            }
+            if !is_positioned(dom, sib) {
+                continue;
+            }
+            let Some(z) = branch_z(dom, sib, sib) else {
+                continue;
+            };
+            if !(z > own || (z == own && after)) {
+                continue;
+            }
+            let r = dom.rect(sib);
+            let opaque = super::element_checks::parse_rgb_or_any(&dom.style(sib, "backgroundColor"))
+                .is_some_and(|c| c.alpha_or_one() >= 0.95)
+                && effective_opacity_dom(dom, sib) >= 0.95;
+            if opaque
+                && r.all_finite()
+                && r.left <= d.left + 1.0
+                && r.top <= d.top + 1.0
+                && r.right >= d.right - 1.0
+                && r.bottom >= d.bottom - 1.0
+            {
+                return true;
+            }
+        }
+        if Some(parent) == dom.body() || Some(parent) == dom.document_element() {
+            break;
+        }
+        branch = parent;
+    }
+    false
 }
 
 /// The ancestors of `el`, below the body, whose overflow can clip it, by
@@ -1217,10 +1315,13 @@ fn clip_outcome(
     // marquee) is where the capture caught it, and moves on: a chip 89%
     // inside reachmcp.com's ticker at the scan was off its edge by the
     // screenshot (observations-1006 row 18). Only a copy wholly inside the
-    // box is scored there; the copies inside it carry the strip.
+    // box is scored there; the copies inside it carry the strip. A copy
+    // wider than the box (a news ticker's long headline) can never be wholly
+    // inside, and keeps the share floor.
     if clip_x
         && dom.style(p, "textOverflow") != "ellipsis"
         && vis.has_floor()
+        && vis.fits_within(dom.client_width(p))
         && runs_a_track_inside(dom, el, p)
     {
         if vis.cut_to_whole(cr.left, cr.right) {
@@ -2829,50 +2930,112 @@ mod tests {
     }
 
     /// ktk.de (observations-1006 row 1): mmenu.js leaves its closed drawer,
-    /// `nav#menumobile` (`role=dialog`, `aria-modal=true`, `inert`), laid out
-    /// on screen under the page. Nothing in it is painted for the text
-    /// rules. `inert` alone is not: the page behind an open modal is inert
-    /// and shown, and so is the open modal, which carries no `inert`.
+    /// `nav#menumobile` (`role=dialog`, `aria-modal=true`, `inert`, fixed at
+    /// `z-index: 0`), laid out on screen under its sibling page sheet
+    /// (`relative`, `z-index: 1`, white). Nothing in it is painted for the
+    /// text rules. An inert dialog nothing buries is on screen, and `inert`
+    /// alone is not a dialog switched off.
     #[test]
     fn a_dialog_switched_off_with_inert_is_not_painted() {
-        let (mut d, body) = page();
-        let nav = d.add(Some(body), "nav");
-        d.set_attr(nav, "role", "dialog");
-        d.set_attr(nav, "aria-modal", "true");
-        d.set_attr(nav, "inert", "true");
-        d.set_style(nav, "position", "fixed");
-        resolved(&mut d, nav);
-        d.set_rect(nav, 840.0, 60.0, 440.0, 740.0);
-        let panel = d.add(Some(nav), "div");
-        d.set_attr(panel, "inert", "true");
-        d.set_rect(panel, 840.0, 60.0, 440.0, 689.0);
-        let link = d.add(Some(panel), "a");
-        d.set_rect(link, 860.0, 100.0, 200.0, 20.0);
-        d.add_text(link, "Tarife");
+        // (drawer, link, sheet)
+        let build = |dialog_tag: &str, role: Option<&str>| {
+            let (mut d, body) = page();
+            let nav = d.add(Some(body), dialog_tag);
+            if let Some(role) = role {
+                d.set_attr(nav, "role", role);
+                d.set_attr(nav, "aria-modal", "true");
+            }
+            d.set_attr(nav, "inert", "true");
+            resolved(&mut d, nav);
+            d.set_styles(nav, &[("position", "fixed"), ("zIndex", "0"), ("backgroundColor", "rgb(255, 255, 255)")]);
+            d.set_rect(nav, 840.0, 60.0, 440.0, 740.0);
+            let panel = d.add(Some(nav), "div");
+            d.set_attr(panel, "inert", "true");
+            d.set_rect(panel, 840.0, 60.0, 440.0, 689.0);
+            let link = d.add(Some(panel), "a");
+            d.set_rect(link, 860.0, 100.0, 200.0, 20.0);
+            d.add_text(link, "Tarife");
+            let sheet = d.add(Some(body), "div");
+            d.set_styles(sheet, &[("position", "relative"), ("zIndex", "1"), ("backgroundColor", "rgb(255, 255, 255)"), ("opacity", "1")]);
+            d.set_rect(sheet, 0.0, 0.0, 1280.0, 5056.0);
+            (d, nav, link, sheet)
+        };
+        let (mut d, nav, link, _) = build("nav", Some("dialog"));
         assert_eq!(text(&d, link), Some(Unpainted::NotRendered));
         assert_eq!(why(&d, nav), Some(Unpainted::NotRendered));
-
         // The same drawer open: no `inert`, and its text is painted.
         d.el_mut(nav).attrs.retain(|(n, _)| n != "inert");
-        d.el_mut(panel).attrs.retain(|(n, _)| n != "inert");
         assert_eq!(text(&d, link), None);
-
         // A `<dialog>` or `role=alertdialog` switched off the same way.
-        let modal = d.add(Some(body), "dialog");
-        d.set_attr(modal, "inert", "");
-        d.set_rect(modal, 400.0, 200.0, 480.0, 300.0);
-        let copy = d.add(Some(modal), "p");
-        d.set_rect(copy, 420.0, 220.0, 400.0, 20.0);
-        d.add_text(copy, "We use cookies.");
-        assert_eq!(text(&d, copy), Some(Unpainted::NotRendered));
-        let alert = d.add(Some(body), "div");
-        d.set_attr(alert, "role", "alertdialog");
-        d.set_attr(alert, "inert", "");
-        d.set_rect(alert, 400.0, 600.0, 480.0, 100.0);
-        assert_eq!(why(&d, alert), Some(Unpainted::NotRendered));
+        let (d2, _, link2, _) = build("dialog", None);
+        assert_eq!(text(&d2, link2), Some(Unpainted::NotRendered));
+        let (d3, _, link3, _) = build("div", Some("alertdialog"));
+        assert_eq!(text(&d3, link3), Some(Unpainted::NotRendered));
 
-        // Should-flag twins. The page behind an open modal is `inert` and
-        // shown; so is a lone inert panel holding text.
+        // Should-flag twins: an inert dialog on screen. Nothing over it, a
+        // translucent sheet, a sheet stacked lower, at the same z-index
+        // earlier in tree order, one that holds only part of the drawer, or
+        // a z-index the capture did not record.
+        let (mut d, nav, link, sheet) = build("nav", Some("dialog"));
+        d.set_style(sheet, "backgroundColor", "rgba(255, 255, 255, 0.5)");
+        assert_eq!(text(&d, link), None, "translucent sheet");
+        d.set_style(sheet, "backgroundColor", "rgb(255, 255, 255)");
+        d.set_style(sheet, "zIndex", "-1");
+        assert_eq!(text(&d, link), None, "sheet below");
+        d.set_style(sheet, "zIndex", "auto");
+        d.set_style(nav, "zIndex", "auto");
+        assert_eq!(text(&d, link), Some(Unpainted::NotRendered), "same level, sheet later");
+        d.set_style(sheet, "zIndex", "1");
+        d.set_style(nav, "zIndex", "0");
+        d.set_rect(sheet, 0.0, 0.0, 1280.0, 400.0);
+        assert_eq!(text(&d, link), None, "sheet holds part of it");
+        d.set_rect(sheet, 0.0, 0.0, 1280.0, 5056.0);
+        d.set_style(sheet, "zIndex", "");
+        assert_eq!(text(&d, link), None, "unrecorded z-index");
+        d.set_style(sheet, "position", "static");
+        d.set_style(sheet, "zIndex", "1");
+        assert_eq!(text(&d, link), None, "static sheet paints under");
+        // At the same z-index, the sheet has to come later in tree order.
+        let (mut d, _, link, sheet) = build("nav", Some("dialog"));
+        d.set_style(sheet, "zIndex", "0");
+        assert_eq!(text(&d, link), Some(Unpainted::NotRendered), "same z, later sheet");
+        let (mut d4, body4) = page();
+        let sheet4 = d4.add(Some(body4), "div");
+        d4.set_styles(sheet4, &[("position", "relative"), ("zIndex", "0"), ("backgroundColor", "rgb(255, 255, 255)"), ("opacity", "1")]);
+        d4.set_rect(sheet4, 0.0, 0.0, 1280.0, 5056.0);
+        let nav4 = d4.add(Some(body4), "nav");
+        d4.set_attr(nav4, "role", "dialog");
+        d4.set_attr(nav4, "inert", "");
+        resolved(&mut d4, nav4);
+        d4.set_styles(nav4, &[("position", "fixed"), ("zIndex", "0")]);
+        d4.set_rect(nav4, 840.0, 60.0, 440.0, 740.0);
+        let link4 = d4.add(Some(nav4), "a");
+        d4.set_rect(link4, 860.0, 100.0, 200.0, 20.0);
+        d4.add_text(link4, "Tarife");
+        assert_eq!(text(&d4, link4), None, "same z, sheet earlier");
+
+        // inert1.html, inert2.html (review): a visible chat panel a library
+        // marked inert, and an open parent dialog inert under a nested
+        // confirm. Nothing buries them.
+        let (mut d, body) = page();
+        let chat = d.add(Some(body), "div");
+        d.set_attr(chat, "role", "dialog");
+        d.set_attr(chat, "inert", "");
+        resolved(&mut d, chat);
+        d.set_styles(chat, &[("position", "fixed"), ("zIndex", "50"), ("backgroundColor", "rgb(255, 255, 255)")]);
+        d.set_rect(chat, 900.0, 300.0, 340.0, 460.0);
+        let copy = d.add(Some(chat), "p");
+        d.set_rect(copy, 920.0, 340.0, 300.0, 20.0);
+        d.add_text(copy, "How can we help?");
+        assert_eq!(text(&d, copy), None);
+        let confirm = d.add(Some(body), "div");
+        d.set_attr(confirm, "role", "alertdialog");
+        d.set_styles(confirm, &[("position", "fixed"), ("zIndex", "60"), ("backgroundColor", "rgb(255, 255, 255)"), ("opacity", "1")]);
+        d.set_rect(confirm, 950.0, 400.0, 200.0, 120.0);
+        assert_eq!(text(&d, copy), None, "a nested confirm over part of it");
+
+        // The page behind an open modal is `inert` and shown, and so is
+        // `inert` on anything that is not a dialog.
         let main = d.add(Some(body), "main");
         d.set_attr(main, "inert", "");
         d.set_rect(main, 0.0, 0.0, 1280.0, 2000.0);
@@ -2880,15 +3043,6 @@ mod tests {
         d.set_rect(para, 40.0, 900.0, 600.0, 20.0);
         d.add_text(para, "Page copy behind the modal.");
         assert_eq!(text(&d, para), None);
-        let open = d.add(Some(body), "div");
-        d.set_attr(open, "role", "dialog");
-        d.set_attr(open, "aria-modal", "true");
-        d.set_rect(open, 400.0, 200.0, 480.0, 300.0);
-        let body_copy = d.add(Some(open), "p");
-        d.set_rect(body_copy, 420.0, 240.0, 400.0, 20.0);
-        d.add_text(body_copy, "Accept all cookies?");
-        assert_eq!(text(&d, body_copy), None);
-        // `aria-modal="false"` with `inert` is not a dialog.
         let side = d.add(Some(body), "aside");
         d.set_attr(side, "aria-modal", "false");
         d.set_attr(side, "inert", "");
@@ -2945,6 +3099,21 @@ mod tests {
         assert_eq!(text(&d, chips[6]), None);
         // The tracking walk still sees the cut.
         assert!(!text_shown_across(&d, chips[6]));
+        // ticker.html (review): a headline wider than the clip can never be
+        // wholly inside it, and keeps the share floor.
+        d.keyframes.insert(
+            "marquee".into(),
+            vec![KeyframeFrame { decls: vec![("transform".into(), "translateX(-50%)".into())] }],
+        );
+        assert_eq!(text(&d, chips[6]), Some(Unpainted::ClippedOut));
+        let long = d.add(Some(track), "span");
+        d.set_rect(long, 200.0, 600.0, 1400.0, 40.0);
+        d.set_text_rect(long, 200.0, 610.0, 1400.0, 20.0);
+        d.add_text(long, "Markets close higher as rates hold steady");
+        assert_eq!(text(&d, long), None);
+        // An unmeasured clip width is not known to fit either.
+        d.el_mut(clip).client_width = f64::NAN;
+        assert_eq!(text(&d, chips[6]), None);
     }
 
     /// metlife.com (observations-1006 row 8): mobile breadcrumbs under the
@@ -2997,6 +3166,17 @@ mod tests {
         d.set_rect(nav, 0.0, 760.0, 390.0, 84.0);
         d.set_rect(crumb, 16.0, 790.0, 120.0, 14.0);
         assert_eq!(ids(&d).len(), 5);
+        // A bar at the bottom of a full-window fixed wrapper whose own top is
+        // 0 (bottombar.html, review): the bar is not pinned to the top.
+        d.set_rect(crumb, 16.0, 790.0, 120.0, 14.0);
+        let layer = d.add(Some(body), "div");
+        d.set_styles(layer, &[("position", "fixed"), ("pointerEvents", "none")]);
+        d.set_rect(layer, 0.0, 0.0, 390.0, 844.0);
+        let low_bar = d.add(Some(layer), "div");
+        d.set_styles(low_bar, &[("position", "absolute"), ("backgroundColor", "rgb(34, 34, 34)"), ("opacity", "1")]);
+        d.set_rect(low_bar, 0.0, 724.0, 390.0, 120.0);
+        assert_eq!(ids(&d).len(), 5);
+        d.set_rect(low_bar, 0.0, 3000.0, 390.0, 120.0);
         // A bar inside a sticky wrapper low in the window, and one pinned to
         // the top once the page has scrolled, keep the findings too.
         d.set_rect(nav, 0.0, 2000.0, 390.0, 84.0);
