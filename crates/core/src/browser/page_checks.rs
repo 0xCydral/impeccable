@@ -726,6 +726,88 @@ fn shares_card_edges(dom: &dyn Dom, inner: ElId, outer: ElId) -> bool {
         >= 3
 }
 
+/// Whether `inner` runs along two adjacent edges of `outer`'s padding box: a
+/// tile set into the card's corner (nic.sa's sidebar tab, drawn into the
+/// bottom corner of the panel that holds it).
+fn shares_card_corner(dom: &dyn Dom, inner: ElId, outer: ElId) -> bool {
+    let a = dom.rect(inner);
+    let b = dom.rect(outer);
+    if a.width <= 0.0 || b.width <= 0.0 {
+        return false;
+    }
+    let border = |side: &str| {
+        let v = parse_float(&dom.style(outer, &format!("border{side}Width")));
+        if v.is_finite() {
+            v
+        } else {
+            0.0
+        }
+    };
+    let near = |x: f64, y: f64| (x - y).abs() <= 1.5;
+    let top = near(a.top, b.top + border("Top"));
+    let right = near(a.right, b.right - border("Right"));
+    let bottom = near(a.bottom, b.bottom - border("Bottom"));
+    let left = near(a.left, b.left + border("Left"));
+    (top || bottom) && (left || right)
+}
+
+/// Whether `outer`, or a box between it and `inner`, clips its overflow and
+/// `inner` spans that box's full width or height: a row of a clipped sidebar
+/// column (nic.sa's tab, the column's full 320px), cut to the card's shape
+/// where it meets its corner. A panel set into the corner of a clipping card
+/// at its own size (a drawn product screen) is still a box in the card.
+fn clips_between(dom: &dyn Dom, inner: ElId, outer: ElId) -> bool {
+    let a = dom.rect(inner);
+    let mut cur = dom.parent(inner);
+    while let Some(c) = cur {
+        let clips = ["overflow", "overflowX", "overflowY"]
+            .iter()
+            .any(|k| matches!(dom.style(c, k).split_ascii_whitespace().next().unwrap_or(""), "hidden" | "clip" | "auto" | "scroll"));
+        let r = dom.rect(c);
+        if clips && ((a.width - r.width).abs() <= 1.5 || (a.height - r.height).abs() <= 1.5) {
+            return true;
+        }
+        if c == outer {
+            break;
+        }
+        cur = dom.parent(c);
+    }
+    false
+}
+
+/// Whether `el` is a strip of controls rather than a card: its element
+/// children are three or more links or buttons and nothing else, set side by
+/// side in one row (partner.co.il's `div.nav-panel`), or it is laid in a
+/// track that scrolls sideways. A row of links is one control, however it is
+/// drawn.
+fn is_control_strip(dom: &dyn Dom, el: ElId) -> bool {
+    if dom.parent(el).is_some_and(|p| super::text_geometry::scrolls_x(dom, p)) {
+        return true;
+    }
+    let kids = dom.children(el);
+    if kids.len() < 3 {
+        return false;
+    }
+    let is_control = |c: ElId| {
+        matches!(tag_lower(dom, c).as_str(), "a" | "button")
+            || dom
+                .attr(c, "role")
+                .is_some_and(|r| matches!(js::to_lower_case(js::trim(&r)).as_str(), "link" | "button" | "tab"))
+    };
+    if !kids.iter().all(|&c| is_control(c)) {
+        return false;
+    }
+    let rects: Vec<Rect> = kids.iter().map(|&c| dom.rect(c)).collect();
+    if rects.iter().any(|r| !r.all_finite() || r.width <= 0.0 || r.height <= 0.0) {
+        return false;
+    }
+    // One row: every control shares a horizontal band with the first.
+    let first = rects[0];
+    rects
+        .iter()
+        .all(|r| js::math_min(r.bottom, first.bottom) - js::math_max(r.top, first.top) > js::math_min(r.height, first.height) * 0.5)
+}
+
 /// Share of a box's area an embedded figure must cover to be its main child.
 const FIGURE_MIN_AREA_SHARE: f64 = 0.4;
 
@@ -1066,6 +1148,8 @@ pub fn check_layout(dom: &dyn Dom) -> Vec<ElFinding> {
                 // dialog's panels are the dialog's content (r4-p17).
                 if super::painted::painted_at_capture(dom, el)
                     && !shares_card_edges(dom, el, p)
+                    && !(shares_card_corner(dom, el, p) && clips_between(dom, el, p))
+                    && !is_control_strip(dom, el)
                     && !is_dialog_card(dom, p)
                     && !is_figure_box(dom, el, &rect)
                     && !is_media_player(dom, el, &rect)
@@ -5379,6 +5463,68 @@ mod tests {
         assert_eq!(nested(None, Some("tabpanel"), "visible"), 1);
         // A panel not painted at capture.
         assert_eq!(nested(None, None, "hidden"), 0);
+    }
+
+    /// observations-1006 row 19. partner.co.il's `div.nav-panel`, a bordered,
+    /// rounded row of links, is a strip of controls; so is a box in a track
+    /// that scrolls sideways. nic.sa's sidebar tab spans its clipped column
+    /// and sits in the panel's corner. Two links, links stacked in a column,
+    /// and a panel set into a clipping card's corner at its own size are
+    /// still cards.
+    #[test]
+    fn nested_cards_skip_control_strips_and_column_corner_tabs() {
+        let strip = |n: usize, stacked: bool, scroller: bool| {
+            let mut d = FakeDom::new();
+            let (_h, body) = d.with_page();
+            let outer = d.add(Some(body), "div");
+            card_styles(&mut d, outer, "rgb(255, 255, 255)");
+            d.set_rect(outer, 0.0, 0.0, 400.0, 300.0);
+            d.add_text(outer, "Outer text longer than ten");
+            let track = d.add(Some(outer), "div");
+            d.set_rect(track, 0.0, 100.0, 400.0, 60.0);
+            if scroller {
+                d.set_style(track, "overflowX", "scroll");
+                d.el_mut(track).client_width = 400.0;
+                d.el_mut(track).scroll_width = 900.0;
+            }
+            let inner = d.add(Some(track), "div");
+            card_styles(&mut d, inner, "rgb(250, 250, 250)");
+            d.set_rect(inner, 10.0, 100.0, 380.0, 60.0);
+            for i in 0..n {
+                let a = d.add(Some(inner), if scroller { "span" } else { "a" });
+                d.add_text(a, "A link label");
+                let i = i as f64;
+                if stacked {
+                    d.set_rect(a, 20.0, 104.0 + i * 18.0, 120.0, 16.0);
+                } else {
+                    d.set_rect(a, 20.0 + i * 120.0, 120.0, 110.0, 22.0);
+                }
+            }
+            check_layout(&d).len()
+        };
+        assert_eq!(strip(3, false, false), 0, "a row of three links");
+        assert_eq!(strip(2, false, false), 1, "two links");
+        assert_eq!(strip(3, true, false), 1, "links in a column");
+        assert_eq!(strip(2, false, true), 0, "in a track that scrolls sideways");
+
+        let corner = |inner_w: f64| {
+            let mut d = FakeDom::new();
+            let (_h, body) = d.with_page();
+            let outer = d.add(Some(body), "div");
+            card_styles(&mut d, outer, "rgb(255, 255, 255)");
+            d.set_rect(outer, 0.0, 0.0, 1280.0, 832.0);
+            d.add_text(outer, "Outer text longer than ten");
+            let column = d.add(Some(outer), "div");
+            d.set_styles(column, &[("overflow", "hidden auto"), ("overflowX", "hidden"), ("overflowY", "auto")]);
+            d.set_rect(column, 960.0, 0.0, 320.0, 832.0);
+            let tab = d.add(Some(column), "div");
+            card_styles(&mut d, tab, "rgb(243, 244, 246)");
+            d.set_rect(tab, 1280.0 - inner_w, 729.0, inner_w, 103.0);
+            d.add_text(tab, "Statistics and reports");
+            check_layout(&d).len()
+        };
+        assert_eq!(corner(320.0), 0, "a tab spanning its clipped column");
+        assert_eq!(corner(280.0), 1, "a panel at its own size");
     }
 
     #[test]
