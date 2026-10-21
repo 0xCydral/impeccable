@@ -3169,6 +3169,43 @@ fn is_fade_strip_on_own_fill(dom: &dyn Dom, el: ElId, rect: &Rect, stops: &[Rgba
     !samples.is_empty() && on_fill * 2 >= samples.len()
 }
 
+/// A syntax highlighter's token (observations-1006 row 4, nitrostack.ai's
+/// `text-purple-400` keywords in a `whitespace-pre` sample): text in a
+/// monospace face whose spaces are kept (`pre`, `pre-wrap` or
+/// `break-spaces`; `pre-line` collapses them, as prose does), set inline
+/// beside at least one other inline run, or the parent's own text, in a
+/// different colour. The
+/// colours come from the language, not a palette. A one-colour terminal line
+/// on a neon hero is not a highlighted sample and is still read.
+fn is_highlighted_code_token(dom: &dyn Dom, el: ElId) -> bool {
+    if !crate::checks::text_rules::is_monospace_family(&dom.style(el, "fontFamily")) {
+        return false;
+    }
+    if !matches!(dom.style(el, "whiteSpace").as_str(), "pre" | "pre-wrap" | "break-spaces") {
+        return false;
+    }
+    // Runs share a line: the token and the other run are inline boxes (a
+    // block paragraph beside it in another colour is not a highlighter).
+    let inline = |node: ElId| dom.style(node, "display").starts_with("inline");
+    if !inline(el) {
+        return false;
+    }
+    let Some(own) = parse_rgb_or_any(&dom.style(el, "color")) else { return false };
+    let Some(parent) = dom.parent(el) else { return false };
+    let differs = |node: ElId| {
+        parse_rgb_or_any(&dom.style(node, "color")).is_some_and(|c| {
+            (c.r - own.r).abs() + (c.g - own.g).abs() + (c.b - own.b).abs() > 24.0
+                || (c.alpha_or_one() - own.alpha_or_one()).abs() > 0.1
+        })
+    };
+    if !js::trim(&direct_text(dom, parent)).is_empty() && differs(parent) {
+        return true;
+    }
+    dom.children(parent).into_iter().any(|sib| {
+        sib != el && inline(sib) && !js::trim(&dom.text_content(sib)).is_empty() && differs(sib)
+    })
+}
+
 /// The neon-text half: a run of glyphs the element paints itself, in band,
 /// on a dark surface. SVG geometry, icon wrappers and spacer characters
 /// inherit `color` without painting text, and one glyph is a texture.
@@ -3187,13 +3224,7 @@ fn ai_palette_text_hit(
     if utf16_len(js::trim(&text)) < AI_PALETTE_MIN_TEXT_CHARS {
         return None;
     }
-    // Code: a run set in a monospace face with its whitespace kept is a
-    // syntax highlighter's token (nitrostack.ai's `text-purple-400` keywords
-    // in a `whitespace-pre` sample), coloured by the language, not by a
-    // palette. The same test tight-leading and tiny-text use.
-    if crate::checks::text_rules::is_monospace_family(&dom.style(el, "fontFamily"))
-        && dom.style(el, "whiteSpace").starts_with("pre")
-    {
+    if is_highlighted_code_token(dom, el) {
         return None;
     }
     let tc = parse_rgb_or_any(&dom.style(el, "color"))
@@ -7621,8 +7652,9 @@ mod tests {
     }
 
     /// nitrostack.ai: syntax tokens in a highlighted sample are code, set in
-    /// a monospace face at `white-space: pre`. A neon monospace line whose
-    /// whitespace collapses is still read.
+    /// a monospace face at `white-space: pre` beside runs in other colours. A
+    /// one-colour monospace line, a `pre-line` run and a line whose
+    /// whitespace collapses are still read (review of round 12).
     #[test]
     fn ai_palette_skips_highlighted_code_tokens() {
         let (mut d, body) = page();
@@ -7635,7 +7667,19 @@ mod tests {
         d.set_style(token, "color", "rgb(192, 132, 252)");
         d.set_style(token, "fontFamily", "ui-monospace, SFMono-Regular, monospace");
         d.set_style(token, "whiteSpace", "pre");
+        d.set_style(token, "display", "inline");
+        // Alone on its line, one colour: a terminal-styled line, still read.
+        assert!(check_element_ai_palette_dom(&d, token, None).ink.is_some(), "a one-colour mono line");
+        // Beside a run in the foreground colour: a highlighted sample.
+        let rest = d.add(Some(panel), "span");
+        d.add_text(rest, " { Agent } ");
+        d.set_style(rest, "color", "rgb(229, 231, 235)");
+        d.set_style(rest, "display", "block");
+        assert!(check_element_ai_palette_dom(&d, token, None).ink.is_some(), "a block in another colour");
+        d.set_style(rest, "display", "inline");
         assert!(check_element_ai_palette_dom(&d, token, None).ink.is_none(), "a code token");
+        d.set_style(token, "whiteSpace", "pre-line");
+        assert!(check_element_ai_palette_dom(&d, token, None).ink.is_some(), "pre-line collapses spaces");
         d.set_style(token, "whiteSpace", "normal");
         assert!(check_element_ai_palette_dom(&d, token, None).ink.is_some(), "a neon mono line");
         d.set_style(token, "whiteSpace", "pre");

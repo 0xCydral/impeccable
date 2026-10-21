@@ -82,6 +82,8 @@ fn code_tokens_supply_no_tell_hue() {
         .collect();
     assert!(palette.iter().any(|s| s.contains("flag-mono")), "{palette:?}");
     assert!(palette.iter().any(|s| s.contains("flag-cyan")), "{palette:?}");
+    assert!(palette.iter().any(|s| s.contains("flag-pre") && !s.contains("flag-preline")), "{palette:?}");
+    assert!(palette.iter().any(|s| s.contains("flag-preline")), "{palette:?}");
     assert!(!palette.iter().any(|s| s.contains("pass-code")), "{palette:?}");
 }
 
@@ -105,7 +107,9 @@ fn a_composer_is_a_field_not_a_card() {
         .filter(|f| f.antipattern == "nested-cards")
         .map(selector)
         .collect();
-    assert!(cards.iter().any(|s| s.contains("flag-composer")), "{cards:?}");
+    for flagged in ["flag-composer", "flag-plan", "flag-tile"] {
+        assert!(cards.iter().any(|s| s.contains(flagged)), "{flagged}: {cards:?}");
+    }
     assert!(!cards.iter().any(|s| s.contains("pass-composer")), "{cards:?}");
 }
 

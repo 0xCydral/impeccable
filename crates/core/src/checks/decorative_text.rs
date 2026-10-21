@@ -402,7 +402,10 @@ const FURNITURE_FALSE_FRIENDS: &[&str] = &["pillar", "pillars", "navy"];
 pub fn class_names_furniture(class: &str) -> bool {
     class.split_ascii_whitespace().any(|token| {
         token_parts(token).iter().any(|part| {
-            if FURNITURE_FALSE_FRIENDS.contains(&part.as_str()) {
+            // Tailwind arbitrary values keep their brackets in a part
+            // (`bg-[var(--navy)]` gives `navy)]`): read letters and digits.
+            let part: String = part.chars().filter(|c| c.is_alphanumeric()).collect();
+            if part.is_empty() || FURNITURE_FALSE_FRIENDS.contains(&part.as_str()) {
                 return false;
             }
             FURNITURE_WORDS.iter().any(|w| {
@@ -742,7 +745,8 @@ mod tests {
         for class in [
             "px-stage-compact", "owl-stage", "instagram", "icon-instagram",
             "footer__vantagens", "subscription-block__avantages", "icon-percentage",
-            "cmp-unavailable", "hotsite-patagonia", "pillars", "text-navy", "", "hero",
+            "cmp-unavailable", "hotsite-patagonia", "pillars", "text-navy", "bg-[var(--navy)]",
+            "", "hero",
         ] {
             assert!(!class_names_furniture(class), "{class}");
         }

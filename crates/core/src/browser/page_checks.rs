@@ -658,24 +658,46 @@ fn is_media_frame(dom: &dyn Dom, el: ElId, rect: &Rect) -> bool {
 ///
 /// A composer is a field too (observations-1006 row 19, resineda.com's
 /// `form.demo-composer`): beside its fields it may hold a screen-reader
-/// label in a clipped 1px box and one row of buttons (a button, or a box
-/// whose element children are all buttons). At least one field is needed.
+/// label in a clipped 1px box, hidden inputs, and one row of buttons (a
+/// button, or a box whose element children are all buttons) holding no
+/// heading and at most [`FIELD_BUTTON_ROW_MAX_CHARS`] of text. Only a field
+/// that draws a text box counts (`textarea`, `select`, or an `input` that is
+/// not a hidden input, a checkbox, a radio or a button), and at least one is
+/// needed: a selectable tile around a checkbox, or a plan card that a hidden
+/// input and one big button carry, is still a card.
 fn is_field_box(dom: &dyn Dom, el: ElId) -> bool {
-    let is_field = |c: ElId| matches!(tag_lower(dom, c).as_str(), "input" | "select" | "textarea");
-    let is_button = |c: ElId| {
-        tag_lower(dom, c) == "button" || dom.attr(c, "role").is_some_and(|r| r == "button")
+    let tag_of = |c: ElId| tag_lower(dom, c);
+    let input_type = |c: ElId| js::to_lower_case(js::trim(&dom.attr(c, "type").unwrap_or_default()));
+    let is_text_field = |c: ElId| match tag_of(c).as_str() {
+        "textarea" | "select" => true,
+        "input" => !matches!(
+            input_type(c).as_str(),
+            "hidden" | "checkbox" | "radio" | "submit" | "button" | "image" | "reset"
+        ),
+        _ => false,
+    };
+    let is_button = |c: ElId| tag_of(c) == "button" || dom.attr(c, "role").is_some_and(|r| r == "button");
+    let short_label = |c: ElId| {
+        utf16_len(js::trim(&collapse_ws(&dom.text_content(c)))) <= FIELD_BUTTON_ROW_MAX_CHARS
+            && dom
+                .query_all(Some(c), "h1, h2, h3, h4, h5, h6, [role=\"heading\"]")
+                .unwrap_or_default()
+                .is_empty()
     };
     let mut fields = 0;
     let mut button_rows = 0;
     for c in dom.children(el) {
-        if is_field(c) {
+        if is_text_field(c) {
             fields += 1;
-        } else if super::painted::is_visually_hidden_box(dom, c) {
+        } else if (tag_of(c) == "input" && input_type(c) == "hidden")
+            || super::painted::is_visually_hidden_box(dom, c)
+        {
             continue;
-        } else if is_button(c) || {
+        } else if (is_button(c) || {
             let kids = dom.children(c);
             !kids.is_empty() && kids.iter().all(|&k| is_button(k))
-        } {
+        }) && short_label(c)
+        {
             button_rows += 1;
             if button_rows > 1 {
                 return false;
@@ -686,6 +708,10 @@ fn is_field_box(dom: &dyn Dom, el: ElId) -> bool {
     }
     fields > 0
 }
+
+/// The most text a field box's button row may hold: a send arrow, "Search",
+/// "Subscribe".
+const FIELD_BUTTON_ROW_MAX_CHARS: usize = 20;
 
 /// Whether `inner` runs along at least three edges of `outer`'s padding box: a
 /// header band or a footer strip of the card itself, which reads as one card
@@ -1909,6 +1935,10 @@ fn rhythm_ends_in_prose(dom: &dyn Dom, block: ElId, heading: ElId, text_size: f6
 }
 
 /// JS: checks.mjs#checkHeadingRhythmDOM()
+/// The widest gap, in px, across which an eyebrow that opens its group still
+/// folds into the heading's cluster: a label further off is detached.
+const RHYTHM_EYEBROW_FOLD_MAX_PX: f64 = 64.0;
+
 /// The widest gap, in px, at which a line above a heading touches it.
 const RHYTHM_TOUCH_GAP_PX: f64 = 2.0;
 
@@ -1966,13 +1996,14 @@ pub fn check_heading_rhythm_dom(dom: &dyn Dom) -> Vec<ElFinding> {
     // the size of the body text it is set against.
     //
     // Two shapes fold whatever the 28px cap says (observations-1006 row 10).
-    // A short line on one line that touches the heading (a gap of 2px or
-    // less) at a size no larger than the heading's is the heading's own
-    // subtitle, however it is set (partner.co.il's 23px Hebrew line resting
-    // on its h2). And an eyebrow that opens its group sits with the heading
+    // A short line on one line that opens its group and touches the heading
+    // (a gap of 2px or less) at a size no larger than the heading's is the
+    // heading's own subtitle, however it is set (partner.co.il's 23px Hebrew
+    // line resting on its h2). The last line of a block in a flat flow has a
+    // box before it and is judged as before. And an eyebrow that opens its group sits with the heading
     // when it is closer to it than the heading is to what it introduces
     // (a0lang.vercel.app's "01 / Language and tools", 60px above an h2 with
-    // 100px below): `below` is that gap.
+    // 100px below), up to 64px: `below` is that gap.
     let cluster_top = |h: ElId, rect: &Rect, text_size: f64, below: f64| -> (ElId, f64) {
         let mut top_el = h;
         let mut top = rect.top;
@@ -2011,7 +2042,7 @@ pub fn check_heading_rhythm_dom(dom: &dyn Dom) -> Vec<ElFinding> {
             }
             let opens_group = previous_box(sib).is_none();
             let wide_eyebrow = gap >= 28.0;
-            if wide_eyebrow && !(opens_group && gap < below) {
+            if wide_eyebrow && !(opens_group && gap < below && gap <= RHYTHM_EYEBROW_FOLD_MAX_PX) {
                 break;
             }
             let text = js::trim(&dom.text_content(sib)).to_string();
@@ -2029,6 +2060,7 @@ pub fn check_heading_rhythm_dom(dom: &dyn Dom) -> Vec<ElFinding> {
                 break;
             }
             let subtitle = !wide_eyebrow
+                && opens_group
                 && gap <= RHYTHM_TOUCH_GAP_PX
                 && rhythm_font_size(dom, sib) <= rhythm_font_size(dom, h)
                 && rhythm_one_line(dom, sib);
@@ -5415,6 +5447,15 @@ mod tests {
         assert_eq!(page(&subtitle(0.0, 2), 40.0), 2, "a two-line subtitle");
         assert_eq!(page(&subtitle(3.0, 1), 40.0), 2, "a one-line subtitle 3px off");
         assert_eq!(page(&subtitle(0.0, 1), 40.0), 0, "a one-line subtitle touching the h2");
+        // Review of round 12: the same line after a paragraph of its own
+        // group is the tail of that block, not a subtitle.
+        let tail = |d: &mut FakeDom, group: ElId, top: f64| -> f64 {
+            flow(d, group, "p", (0.0, top, 800.0, 48.0), "A paragraph of prose that runs across two full lines of the column.");
+            let s = flow(d, group, "p", (0.0, top + 112.0, 300.0, 24.0), "Read the full report on our site.");
+            d.set_text_lines(s, &[(0.0, top + 112.0, 300.0, 24.0)]);
+            top + 136.0
+        };
+        assert_eq!(page(&tail, 40.0), 2, "a one-line tail after a paragraph");
         let eyebrow = |after_a_line: bool| {
             move |d: &mut FakeDom, group: ElId, top: f64| -> f64 {
                 let mut top = top;
@@ -5429,6 +5470,12 @@ mod tests {
         };
         assert_eq!(page(&eyebrow(false), 100.0), 0, "an eyebrow that opens its group");
         assert_eq!(page(&eyebrow(true), 100.0), 2, "an eyebrow after a line of its group");
+        let far = |d: &mut FakeDom, group: ElId, top: f64| -> f64 {
+            let e = flow(d, group, "p", (0.0, top, 300.0, 16.0), "01 / Language and tools");
+            d.set_styles(e, &[("fontSize", "12px"), ("textTransform", "uppercase")]);
+            top + 16.0 + 90.0
+        };
+        assert_eq!(page(&far, 140.0), 2, "an eyebrow 90px off is detached");
     }
 
     /// observations-35 row 12 (kinghost.com.br 218700, 218716): a bare `div`
@@ -8091,6 +8138,46 @@ mod tests {
             1,
             "two button rows"
         );
+        assert_eq!(
+            composer(&|d, form| {
+                let b = d.children(form)[2];
+                let send = d.children(b)[0];
+                d.add_text(send, "Send this message to the assistant now");
+            }),
+            1,
+            "a button row holding copy"
+        );
+
+        // Review of round 12: a plan card carried by a hidden input and one
+        // big button, and a selectable tile around a checkbox, are cards.
+        let tile = |control: &str, kind: &str| {
+            let mut d = FakeDom::new();
+            let (_h, body) = d.with_page();
+            let panel = d.add(Some(body), "section");
+            outlined(&mut d, panel, "16px");
+            d.set_rect(panel, 0.0, 0.0, 800.0, 400.0);
+            d.add_text(panel, "Choose the plan that fits");
+            let card = d.add(Some(panel), "form");
+            outlined(&mut d, card, "12px");
+            d.set_rect(card, 24.0, 80.0, 360.0, 200.0);
+            let input = d.add(Some(card), "input");
+            d.set_attr(input, "type", kind);
+            d.set_rect(input, 40.0, 96.0, 16.0, 16.0);
+            let button = d.add(Some(card), control);
+            if control == "div" {
+                d.set_attr(button, "role", "button");
+            }
+            d.set_rect(button, 40.0, 120.0, 320.0, 140.0);
+            let h = d.add(Some(button), "h3");
+            d.add_text(h, "Team");
+            d.set_rect(h, 40.0, 120.0, 320.0, 28.0);
+            let p = d.add(Some(button), "p");
+            d.add_text(p, "Everything in Starter, for up to ten seats.");
+            d.set_rect(p, 40.0, 160.0, 320.0, 40.0);
+            check_layout(&d).len()
+        };
+        assert_eq!(tile("button", "hidden"), 1, "a plan card with a hidden input");
+        assert_eq!(tile("div", "checkbox"), 1, "a selectable tile around a checkbox");
 
         // clipto.com: a tinted, rounded `<mark>` run; demotv.lol: a bordered
         // frame around a video thumbnail.
