@@ -2008,6 +2008,12 @@ fn glow_extent_px(blur: f64, spread: f64) -> f64 {
 /// 28) is still reported.
 pub const GLOW_MIN_LIFT: f64 = 20.0;
 
+/// The HSL lightness under which a shadow colour darker than its surface is
+/// shade rather than coloured light: navy `#001d38` (0.11) under a tile on a
+/// teal band. Run 1004's judged glows on light grounds (a `#3b82f6` map
+/// marker halo, an `#ff6a28` focus glow, both 0.58 or more) read as light.
+const GLOW_SHADE_MAX_LIGHTNESS: f64 = 0.25;
+
 /// The share of the shadow colour's alpha a blurred shadow carries at the
 /// edge of its box.
 const GLOW_EDGE_DENSITY: f64 = 0.5;
@@ -2052,8 +2058,8 @@ pub(crate) fn glow_is_perceptible(
 }
 
 /// How far the chromatic layers of one shadow value lift `surface` at the
-/// edge of the box (see [`GLOW_MIN_LIFT`]), counting only the channels the
-/// shadow is lighter in. Neutral layers are elevation, not
+/// edge of the box (see [`GLOW_MIN_LIFT`]). A dark layer
+/// ([`GLOW_SHADE_MAX_LIGHTNESS`]) darker than the surface lifts nothing. Neutral layers are elevation, not
 /// glow light, and do not count, and neither does a layer carrying under half
 /// the light a glow needs ([`GLOW_MIN_STRENGTH_PX`]): Tailwind's `shadow-lg`
 /// in a 0.2 purple adds a 6px layer at 1.2px of light to its 15px one, and
@@ -2072,14 +2078,21 @@ fn glow_surface_lift(value: &str, surface: &Rgba, element_opacity: Option<f64>) 
         })
         .filter(|color| has_chroma(Some(color), Some(30.0)))
         .map(|color| {
-            // Light only adds: a channel the shadow paints darker than the
-            // surface is shade, not glow. Scored as a distance, a navy drop
-            // shadow at 20% on a teal band lifted it like a teal glow
-            // (v0-morbiawebsite.vercel.app's logo tiles).
+            // A dark shadow darker than its surface is shade, not light: a
+            // navy drop shadow at 20% under the logo tiles on a teal band
+            // (v0-morbiawebsite.vercel.app) lifted it like a teal glow when
+            // scored as a distance. A colour bright enough to read as light
+            // keeps the distance either way, so a blue halo on a white map
+            // still tints it.
+            let shade = lightness_saturation(&color).0 < GLOW_SHADE_MAX_LIGHTNESS
+                && relative_luminance(&color) < relative_luminance(surface);
+            if shade {
+                return 0.0;
+            }
             let difference = (color.r - surface.r)
-                .max(color.g - surface.g)
-                .max(color.b - surface.b)
-                .max(0.0);
+                .abs()
+                .max((color.g - surface.g).abs())
+                .max((color.b - surface.b).abs());
             GLOW_EDGE_DENSITY * color.alpha_or_one() * opacity * difference
         })
         .sum()
@@ -3128,17 +3141,21 @@ mod tests {
         };
         let teal = Rgba::new(13.0, 148.0, 136.0, 1.0);
         // v0-morbiawebsite.vercel.app's navy drop shadow under pale logo
-        // tiles on a teal band: darker than the band in every channel, so no
-        // light. Read as a distance it lifted the band by 12.
-        assert!(glow("rgba(0, 29, 56, 0.2) 0px 12px 28px 0px", teal).is_empty());
+        // tiles on a teal band (at 0.4 here, where the distance it was read
+        // as clears the lift floor): dark and darker than the band, so no
+        // light.
+        assert!(glow("rgba(0, 29, 56, 0.4) 0px 12px 28px 0px", teal).is_empty());
         // The same blur and alpha in a light cyan lifts it.
         assert_eq!(glow("rgba(103, 232, 249, 0.6) 0px 12px 28px 0px", teal).len(), 1);
         // Neon on near-black is unchanged.
         let ink = Rgba::new(10.0, 10.0, 10.0, 1.0);
         assert_eq!(glow("rgba(0, 169, 255, 0.6) 0px 0px 24px 0px", ink).len(), 1);
-        // A violet glow on a white card darkens it: shade, not light.
+        // A blue halo on a white map tints it: bright enough to read as
+        // light, so it keeps the distance (run 1004's map markers).
         let white = Rgba::new(255.0, 255.0, 255.0, 1.0);
-        assert!(glow("rgba(124, 58, 237, 0.5) 0px 0px 24px 0px", white).is_empty());
+        assert_eq!(glow("rgba(59, 130, 246, 0.6) 0px 0px 24px 0px", white).len(), 1);
+        // A deep navy halo on the same white card is shade.
+        assert!(glow("rgba(0, 29, 56, 0.6) 0px 0px 24px 0px", white).is_empty());
     }
 
     #[test]

@@ -2828,23 +2828,22 @@ fn gradient_ancestor_average(dom: &dyn Dom, start: Option<ElId>) -> Option<Rgba>
     None
 }
 
-/// The channel-wise least of the stops of the gradient
-/// [`gradient_ancestor_average`] finds, when every stop is opaque.
-fn gradient_ancestor_floor(dom: &dyn Dom, start: Option<ElId>) -> Option<Rgba> {
+/// The stops of the gradient [`gradient_ancestor_average`] finds, when every
+/// stop is opaque and no picture is layered with it; empty otherwise.
+fn gradient_ancestor_stops(dom: &dyn Dom, start: Option<ElId>) -> Vec<Rgba> {
     let mut cur = start;
     while let Some(c) = cur {
         let bg_image = dom.style(c, "backgroundImage");
         let stops = parse_gradient_colors(Some(&bg_image));
         if !stops.is_empty() {
             if bg_image.contains("url(") || stops.iter().any(|s| s.alpha_or_one() < 0.999) {
-                return None;
+                return Vec::new();
             }
-            let least = |f: fn(&Rgba) -> f64| stops.iter().map(f).fold(f64::INFINITY, f64::min);
-            return Some(Rgba { r: least(|s| s.r), g: least(|s| s.g), b: least(|s| s.b), a: None });
+            return stops;
         }
         cur = dom.parent(c);
     }
-    None
+    Vec::new()
 }
 
 /// JS: checks.mjs#checkElementGlowDOM(el)
@@ -2879,18 +2878,20 @@ pub fn check_element_glow_dom(dom: &dyn Dom, el: ElId) -> Vec<RuleHit> {
     let parent_bg_info = resolve_background_info(dom, parent.unwrap_or(el));
     // The lift test reads only a fill the walk resolved: the gradient average
     // below ignores the stops' alpha, so a 5% amber wash would read as amber.
-    let mut surface = parent_bg_info.color;
+    let surface = parent_bg_info.color;
     let mut parent_bg = parent_bg_info.color;
     if parent_bg.is_none() && !parent_bg_info.unresolved {
         parent_bg = gradient_ancestor_average(dom, parent);
-        // On a gradient whose stops are all opaque the lift is read against
-        // the channel-wise least of the stops: light lifts each channel only
-        // above the surface, so that is the most any stop is lifted, and the
-        // glow is passed over only where no stop is lifted enough. A
-        // translucent stop shows what is beneath it, and leaves the floor
-        // to decide alone, as before.
-        surface = gradient_ancestor_floor(dom, parent);
     }
+    // On a gradient whose stops are all opaque the lift is read against each
+    // stop, and the glow is passed over only where it lifts none of them
+    // enough. A translucent stop shows what is beneath it, and leaves the
+    // floor to decide alone, as before.
+    let stops = if surface.is_none() && !parent_bg_info.unresolved {
+        gradient_ancestor_stops(dom, parent)
+    } else {
+        Vec::new()
+    };
     let rect = dom.rect(el);
     let mut opts = GlowOpts {
         box_shadow: Some(box_shadow),
@@ -2900,7 +2901,15 @@ pub fn check_element_glow_dom(dom: &dyn Dom, el: ElId) -> Vec<RuleHit> {
         element_size: Some((rect.width, rect.height)),
         surface,
     };
-    let hits = check_glow(&opts);
+    let hits = if stops.is_empty() {
+        check_glow(&opts)
+    } else {
+        stops
+            .iter()
+            .map(|stop| check_glow(&GlowOpts { surface: Some(*stop), ..opts.clone() }))
+            .find(|h| !h.is_empty())
+            .unwrap_or_default()
+    };
     // "On dark background" is a claim about the surface the glow is drawn on,
     // and the ancestor walk reads only ancestors' fills: a light panel or
     // gradient laid beside the content over a dark section is never read, and
