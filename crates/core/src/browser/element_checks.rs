@@ -3187,6 +3187,15 @@ fn ai_palette_text_hit(
     if utf16_len(js::trim(&text)) < AI_PALETTE_MIN_TEXT_CHARS {
         return None;
     }
+    // Code: a run set in a monospace face with its whitespace kept is a
+    // syntax highlighter's token (nitrostack.ai's `text-purple-400` keywords
+    // in a `whitespace-pre` sample), coloured by the language, not by a
+    // palette. The same test tight-leading and tiny-text use.
+    if crate::checks::text_rules::is_monospace_family(&dom.style(el, "fontFamily"))
+        && dom.style(el, "whiteSpace").starts_with("pre")
+    {
+        return None;
+    }
     let tc = parse_rgb_or_any(&dom.style(el, "color"))
         .filter(|c| !is_declared_design_color(design_system, c))?;
     if tc.alpha_or_one() * own_opacity(dom, el) < AI_PALETTE_MIN_STOP_ALPHA {
@@ -7609,6 +7618,29 @@ mod tests {
         // to consult, so the rule keeps its unconstrained behavior.
         let empty = DesignSystemConfig::default();
         assert!(check_element_ai_palette_dom(&d, label, Some(&empty)).ink.is_some());
+    }
+
+    /// nitrostack.ai: syntax tokens in a highlighted sample are code, set in
+    /// a monospace face at `white-space: pre`. A neon monospace line whose
+    /// whitespace collapses is still read.
+    #[test]
+    fn ai_palette_skips_highlighted_code_tokens() {
+        let (mut d, body) = page();
+        let panel = d.add(Some(body), "div");
+        d.set_style(panel, "backgroundColor", "rgb(10, 10, 14)");
+        d.set_rect(panel, 0.0, 0.0, 400.0, 80.0);
+        let token = d.add(Some(panel), "span");
+        d.add_text(token, "import");
+        d.set_rect(token, 24.0, 24.0, 50.0, 16.0);
+        d.set_style(token, "color", "rgb(192, 132, 252)");
+        d.set_style(token, "fontFamily", "ui-monospace, SFMono-Regular, monospace");
+        d.set_style(token, "whiteSpace", "pre");
+        assert!(check_element_ai_palette_dom(&d, token, None).ink.is_none(), "a code token");
+        d.set_style(token, "whiteSpace", "normal");
+        assert!(check_element_ai_palette_dom(&d, token, None).ink.is_some(), "a neon mono line");
+        d.set_style(token, "whiteSpace", "pre");
+        d.set_style(token, "fontFamily", "Inter, sans-serif");
+        assert!(check_element_ai_palette_dom(&d, token, None).ink.is_some(), "kept whitespace alone");
     }
 
     #[test]
