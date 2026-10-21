@@ -3726,17 +3726,25 @@ fn border_box_covers_point(dom: &dyn Dom, el: ElId, victim: ElId, x: f64, y: f64
         || y >= r.bottom - side("Bottom")
 }
 
-/// Whether a computed `transform` only translates: `matrix(1, 0, 0, 1, x, y)`.
+/// Whether a computed `transform` only translates: `matrix(1, 0, 0, 1, x, y)`,
+/// or the 3D form `matrix3d` carries for `translate3d` and `translateZ`.
 fn is_translation_matrix(transform: &str) -> bool {
-    let Some(inner) = transform.strip_prefix("matrix(").and_then(|t| t.strip_suffix(')')) else {
-        return false;
-    };
-    let v: Vec<f64> = inner.split(',').map(|t| parse_float(js::trim(t))).collect();
-    v.len() == 6
-        && (v[0] - 1.0).abs() < 1e-6
-        && v[1].abs() < 1e-6
-        && v[2].abs() < 1e-6
-        && (v[3] - 1.0).abs() < 1e-6
+    let parse = |inner: &str| -> Vec<f64> { inner.split(',').map(|t| parse_float(js::trim(t))).collect() };
+    let near = |v: f64, to: f64| (v - to).abs() < 1e-6;
+    if let Some(inner) = transform.strip_prefix("matrix(").and_then(|t| t.strip_suffix(')')) {
+        let v = parse(inner);
+        return v.len() == 6 && near(v[0], 1.0) && near(v[1], 0.0) && near(v[2], 0.0) && near(v[3], 1.0);
+    }
+    if let Some(inner) = transform.strip_prefix("matrix3d(").and_then(|t| t.strip_suffix(')')) {
+        let v = parse(inner);
+        // Column-major: the 3x3 block is the identity, nothing is
+        // perspective, and only the last column's translation is free.
+        let identity = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        return v.len() == 16
+            && identity.iter().enumerate().all(|(i, w)| near(v[i], *w))
+            && near(v[15], 1.0);
+    }
+    false
 }
 
 /// The share of the smaller font size by which two texts' em boxes may
@@ -7771,6 +7779,14 @@ mod tests {
         // A frame whose 80px left border runs over the pill's first half
         // covers the points under that border.
         assert_eq!(run("none", 100.0), 1, "the border crosses the words");
+        // A layer promoted with translateZ computes to `matrix3d`: still only
+        // a translation, so the border band covers as before.
+        let lifted = "matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 1, 1)";
+        assert_eq!(run(lifted, 100.0), 1, "a translated 3D frame crossing the words");
+        assert_eq!(run(lifted, 0.0), 0, "a translated 3D frame around the pill");
+        // A 3D rotation is not a translation.
+        let tilted = "matrix3d(1, 0, 0, 0, 0, 0.866, 0.5, 0, 0, -0.5, 0.866, 0, 0, 0, 0, 1)";
+        assert_eq!(run(tilted, 100.0), 0, "a tilted frame");
     }
 
     /// Covered text on an opaque box, a border-only field and an SVG shape;

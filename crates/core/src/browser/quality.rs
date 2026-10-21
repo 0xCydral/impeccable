@@ -2313,29 +2313,36 @@ pub fn check_quality(dom: &dyn Dom, q: &QualityInput) -> Vec<RuleHit> {
     // render on two lines or more, counted over the block's own text and its
     // inline children's. A text rect the capture did not record keeps the
     // text, as before.
-    let justify_measure = || -> Option<f64> {
-        if st("display") != "inline" {
-            return Some(rect.width);
-        }
+    // The block an inline run is measured by, as long as that block has no
+    // text of its own to report on.
+    let justify_block = || -> Option<ElId> {
         let mut cur = dom.parent(el);
         while let Some(p) = cur {
             let display = dom.style(p, "display");
             if display != "inline" && display != "contents" {
-                if has_direct_text_longer_than(dom, p, 10) {
-                    return None;
-                }
-                return Some(dom.rect(p).width);
+                return if has_direct_text_longer_than(dom, p, 10) { None } else { Some(p) };
             }
             cur = dom.parent(p);
         }
         None
     };
+    let justify_measure = || -> Option<f64> {
+        if st("display") != "inline" {
+            return Some(rect.width);
+        }
+        justify_block().map(|p| dom.rect(p).width)
+    };
     // A block's lines are counted over all the text it sets in them, its
     // inline children's included: a one-line lead-in followed by a long
-    // `<em>` is a block of several justified lines.
+    // `<em>` is a block of several justified lines. An inline run is
+    // counted over its block's, so a one-line `strong` among its siblings
+    // (or one short word per span) is a justified line like the rest.
     let line_extent = || {
         if st("display") == "inline" {
-            dom.direct_text_rect(el)
+            match justify_block() {
+                Some(p) => phrasing_text_extent(dom, p).or_else(|| dom.direct_text_rect(el)),
+                None => dom.direct_text_rect(el),
+            }
         } else {
             phrasing_text_extent(dom, el).or_else(|| dom.direct_text_rect(el))
         }
@@ -5902,6 +5909,31 @@ mod tests {
         };
         assert!(flags(&d, p), "the paragraph's six lines");
         assert!(!flags(&d, em), "reported once, on the paragraph");
+
+        // A narrow paragraph with no text of its own, split into short
+        // inline runs: each run sets one line on its own, the paragraph sets
+        // several, and the runs report as the paragraph's lines.
+        let mut d = FakeDom::new();
+        let (_h, body) = d.with_page();
+        let p = d.add(Some(body), "p");
+        d.set_styles(p, &[("display", "block"), ("fontSize", "16px"), ("lineHeight", "24px"), ("textAlign", "justify"), ("hyphens", "manual")]);
+        d.set_rect(p, 40.0, 100.0, 240.0, 72.0);
+        let mut spans = Vec::new();
+        for (i, word) in ["considerations", "approximately", "unfortunately"].iter().enumerate() {
+            let span = text_el(&mut d, p, "span", word, "16px");
+            d.set_styles(span, &[("display", "inline"), ("lineHeight", "24px"), ("textAlign", "justify"), ("hyphens", "manual")]);
+            let y = 100.0 + 24.0 * i as f64;
+            d.set_rect(span, 40.0, y, 120.0, 24.0);
+            d.set_text_rect(span, 40.0, y + 2.0, 120.0, 19.0);
+            spans.push(span);
+        }
+        assert!(flags(&d, spans[0]), "one short word per span still sits in a three-line paragraph");
+        // The same words on one line are one line of a justified block.
+        for span in &spans {
+            d.set_rect(*span, 40.0, 100.0, 120.0, 24.0);
+            d.set_text_rect(*span, 40.0, 102.0, 120.0, 19.0);
+        }
+        assert!(!flags(&d, spans[0]));
     }
 
     #[test]

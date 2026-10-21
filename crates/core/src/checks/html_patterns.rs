@@ -31,6 +31,12 @@ re!(
     SVG_BLOCK_RE,
     format!(r"<{svg}{B}[^>]*>{ANY}*?</{svg}>", svg = ci("svg"))
 );
+// Shapes inside `<defs>` are assets, drawn only where something references
+// them, so they count toward neither the primitives nor the drawn shapes.
+re!(
+    SVG_DEFS_RE,
+    format!(r"<{defs}{B}[^>]*>{ANY}*?</{defs}>", defs = ci("defs"))
+);
 re!(SVG_OPEN_RE, format!(r"^<{svg}{B}[^>]*>", svg = ci("svg")));
 re!(
     SVG_TEXT_RE,
@@ -154,11 +160,12 @@ pub fn scan_html_for_shape_assembled_illustration(html: &str) -> Vec<RuleHit> {
         if SVG_PATTERN_RE.is_match(block) {
             continue;
         }
-        let primitives = SVG_PRIMITIVE_RE.find_iter(block).count();
+        let painted = SVG_DEFS_RE.replace_all(block, "");
+        let primitives = SVG_PRIMITIVE_RE.find_iter(&painted).count();
         if primitives < 8 {
             continue;
         }
-        let drawn = SVG_DRAWN_SHAPE_RE.find_iter(block).count();
+        let drawn = SVG_DRAWN_SHAPE_RE.find_iter(&painted).count();
         if (primitives as f64) < drawn as f64 * SVG_PRIMITIVE_SHARE_MIN {
             continue;
         }
@@ -1078,6 +1085,9 @@ mod tests {
         assert!(svg("<svg viewBox=\"0 0 400 300\">", &paths).is_empty(), "8 of 33");
         let some_paths = "<path d=\"M0 0h1\"/>".repeat(24);
         assert_eq!(svg("<svg viewBox=\"0 0 400 300\">", &some_paths).len(), 1, "8 of 32");
+        // Unused assets in `<defs>` change neither count.
+        let unused = format!("<defs>{}</defs>", paths.repeat(2));
+        assert_eq!(svg("<svg viewBox=\"0 0 400 300\">", &unused).len(), 1, "defs paths are not drawn");
     }
 
     #[test]
