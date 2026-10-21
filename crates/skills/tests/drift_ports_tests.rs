@@ -740,6 +740,109 @@ fn user_scope_update_writes_claude_user_settings() {
     std::fs::remove_dir_all(&root).ok();
 }
 
+/// The Impeccable entries of a Cursor manifest, by event.
+fn cursor_impeccable_events(manifest: &str) -> Vec<(String, String)> {
+    let value: Value = serde_json::from_str(&read(manifest)).unwrap();
+    let mut out = Vec::new();
+    for (event, entries) in value["hooks"].as_object().unwrap() {
+        for entry in entries.as_array().unwrap() {
+            let command = entry["command"].as_str().unwrap_or_default();
+            if command.contains("skills/impeccable/scripts/") {
+                out.push((event.clone(), command.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// A user-scope Cursor install keeps the skill under home but its hook in the
+/// project's `.cursor/hooks.json` (#1069 review). `update --user` has to
+/// migrate that project manifest off the retired `preToolUse` gate, with or
+/// without hook consent, and write any fresh hook there rather than in home.
+#[test]
+fn user_scope_update_migrates_the_project_cursor_gate() {
+    for no_hooks in [true, false] {
+        let root = temp_root(if no_hooks { "cursor-user-gate-nohooks" } else { "cursor-user-gate-hooks" });
+        let project = format!("{root}/project");
+        let home = format!("{root}/home");
+        let tmpdir = format!("{root}/tmp");
+        for dir in [&project, &home, &tmpdir] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::create_dir_all(format!("{project}/.git")).unwrap();
+        write(
+            &format!("{home}/.cursor/skills/impeccable/SKILL.md"),
+            "---\nname: impeccable\nversion: 1.0.0\n---\n",
+        );
+        let launcher = jsp::join(&[&home, ".cursor", "skills", "impeccable", "scripts", "impeccable"]);
+        let gate = format!("[ ! -f '{launcher}' ] || '{launcher}' hook-before-edit");
+        let project_manifest = format!("{project}/.cursor/hooks.json");
+        write(
+            &project_manifest,
+            &json!({ "version": 1, "hooks": { "preToolUse": [
+                { "command": "./audit.sh", "matcher": "Shell" },
+                { "command": gate, "timeout": 5 },
+            ] } })
+            .to_string(),
+        );
+        // An older `update --user` wrote the gate into home as well.
+        let home_manifest = format!("{home}/.cursor/hooks.json");
+        write(&home_manifest, &json!({ "version": 1, "hooks": { "preToolUse": [{ "command": gate, "timeout": 5 }] } }).to_string());
+        let bundle = create_fake_universal_bundle(&project, &[".cursor"]);
+        let env = base_env(&home, &tmpdir, &bundle);
+
+        let mut args = vec!["update", "-y", "--user"];
+        if no_hooks {
+            args.push("--no-hooks");
+        }
+        let r = run_cli(&args, &project, &env);
+        assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
+
+        for manifest in [&project_manifest, &home_manifest] {
+            let ours = cursor_impeccable_events(manifest);
+            assert!(!ours.is_empty(), "{manifest}: {}", read(manifest));
+            for (event, command) in &ours {
+                assert_eq!(event, "postToolUse", "{manifest}: {}", read(manifest));
+                assert!(command.contains(&launcher) && command.ends_with(" hook"), "{manifest}: {command}");
+            }
+        }
+        let project_value: Value = serde_json::from_str(&read(&project_manifest)).unwrap();
+        assert_eq!(project_value["hooks"]["preToolUse"], json!([{ "command": "./audit.sh", "matcher": "Shell" }]));
+        assert_eq!(project_value["hooks"]["postToolUse"][0]["matcher"], "^Write$");
+        std::fs::remove_dir_all(&root).ok();
+    }
+}
+
+/// A fresh hook from `update --user` lands where `install --user` puts it: the
+/// project's `.cursor/hooks.json`, naming the home launcher, never home's.
+#[test]
+fn user_scope_update_writes_the_cursor_hook_into_the_project() {
+    let root = temp_root("cursor-user-update-hook");
+    let project = format!("{root}/project");
+    let home = format!("{root}/home");
+    let tmpdir = format!("{root}/tmp");
+    for dir in [&project, &home, &tmpdir] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    std::fs::create_dir_all(format!("{project}/.git")).unwrap();
+    write(
+        &format!("{home}/.cursor/skills/impeccable/SKILL.md"),
+        "---\nname: impeccable\nversion: 1.0.0\n---\n",
+    );
+    let bundle = create_fake_universal_bundle(&project, &[".cursor"]);
+    let env = base_env(&home, &tmpdir, &bundle);
+
+    let r = run_cli(&["update", "-y", "--user"], &project, &env);
+    assert_eq!(r.code, 0, "{}\n{}", r.stdout, r.stderr);
+
+    let project_manifest = format!("{project}/.cursor/hooks.json");
+    assert!(manifest_names_launcher(&project_manifest, &home, ".cursor"), "{}", read(&project_manifest));
+    let ours = cursor_impeccable_events(&project_manifest);
+    assert!(!ours.is_empty() && ours.iter().all(|(event, _)| event == "postToolUse"), "{}", read(&project_manifest));
+    assert!(!std::path::Path::new(&format!("{home}/.cursor/hooks.json")).exists());
+    std::fs::remove_dir_all(&root).ok();
+}
+
 #[test]
 fn existing_user_install_ignores_project_hook_when_user_hook_is_missing() {
     let root = temp_root("claude-user-hook-backfill");
