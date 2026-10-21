@@ -3729,8 +3729,9 @@ fn laid_out_apart(dom: &dyn Dom, a: ElId, b: ElId) -> bool {
         ancestors_inclusive(dom, el).into_iter().take_while(|n| *n != common).all(|n| {
             let position = dom.style(n, "position");
             let offset_free = ["top", "right", "bottom", "left"].iter().all(|k| {
+                // An offset the capture did not record may move the box.
                 let v = dom.style(n, k);
-                v.is_empty() || v == "auto" || parse_float(&v) == 0.0
+                v == "auto" || parse_float(&v) == 0.0
             });
             let placed = match position.as_str() {
                 "" | "static" => true,
@@ -7619,6 +7620,11 @@ mod tests {
             d.add_text(head, "Train with Pasta.");
             d.set_styles(head, OCCLUSION_BASE);
             d.set_styles(head, &[("fontSize", "76.8px"), ("lineHeight", head_lh), ("position", head_position)]);
+            let top = if head_position == "relative-up" { "-20px" } else { "auto" };
+            if head_position.starts_with("relative") {
+                d.set_style(head, "position", "relative");
+            }
+            d.set_styles(head, &[("top", top), ("right", "auto"), ("bottom", "auto"), ("left", "auto")]);
             d.set_rect(head, 51.2, head_top + 14.0, 477.7, 73.7);
             d.set_text_rect(head, 51.2, head_top, 471.5, 93.0);
             mark_body_descendants(&mut d);
@@ -7632,6 +7638,7 @@ mod tests {
         assert_eq!(run("30px", 532.0, "static").len(), 1, "glyphs meet");
         // Moved out of flow, the overlap is the page's doing.
         assert_eq!(run("66.048px", 542.6, "relative").len(), 0, "relative with no offset is in flow");
+        assert_eq!(run("66.048px", 542.6, "relative-up").len(), 1, "relative and moved");
         assert_eq!(run("66.048px", 542.6, "absolute").len(), 1, "out of flow");
     }
 

@@ -1646,7 +1646,7 @@ fn body_text_edge_span(dom: &dyn Dom, q: &QualityInput) -> Option<(f64, f64)> {
             // floor, also on a phone: a ragged line a few pixels inside the
             // phone floor is one word away from the box. Justified lines run
             // to the box.
-            let floor = js::math_max(body_text_gutter_floor(viewport_width), BODY_TEXT_GUTTER_PX);
+            let floor = BODY_TEXT_GUTTER_PX;
             let glyphs_keep_gutter = st("textAlign") != "justify"
                 && t.left >= floor
                 && t.right <= viewport_width - floor;
