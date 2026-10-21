@@ -687,8 +687,25 @@ fn is_field_box(dom: &dyn Dom, el: ElId) -> bool {
     if !js::trim(&direct_text(dom, el)).is_empty() {
         return false;
     }
+    // An input button shows its `value` (an image input its `alt`), not
+    // child text; a row holds the labels of the inputs inside it too.
+    let input_label = |c: ElId| {
+        let attr = if input_type(c) == "image" { "alt" } else { "value" };
+        dom.attr(c, attr).unwrap_or_default()
+    };
+    let label_text = |c: ElId| {
+        if tag_of(c) == "input" {
+            return input_label(c);
+        }
+        let mut text = dom.text_content(c);
+        for i in dom.query_all(Some(c), "input").unwrap_or_default() {
+            text.push(' ');
+            text.push_str(&input_label(i));
+        }
+        text
+    };
     let short_label = |c: ElId| {
-        utf16_len(js::trim(&collapse_ws(&dom.text_content(c)))) <= FIELD_BUTTON_ROW_MAX_CHARS
+        utf16_len(js::trim(&collapse_ws(&label_text(c)))) <= FIELD_BUTTON_ROW_MAX_CHARS
             && dom
                 .query_all(Some(c), "h1, h2, h3, h4, h5, h6, [role=\"heading\"]")
                 .unwrap_or_default()
@@ -8179,6 +8196,17 @@ mod tests {
             }),
             0,
             "a row of a button and a submit input"
+        );
+        assert_eq!(
+            composer(&|d, form| {
+                let row = d.children(form)[2];
+                let long = d.add(Some(row), "input");
+                d.set_attr(long, "type", "submit");
+                d.set_attr(long, "value", "Send this message to the assistant now");
+                d.set_rect(long, 1000.0, 688.0, 26.0, 26.0);
+            }),
+            1,
+            "a submit input whose value is long copy"
         );
         assert_eq!(
             composer(&|d, form| {
