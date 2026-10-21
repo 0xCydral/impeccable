@@ -2281,6 +2281,40 @@ pub fn check_quality(dom: &dyn Dom, q: &QualityInput) -> Vec<RuleHit> {
     // --- Justified text (without hyphens) ---
     // Only a narrow column stretches word spaces far enough to open rivers,
     // and only in a script that justifies on word spaces at all.
+    //
+    // Justification spreads the line boxes of a block, so the measure is
+    // the block's. An inline run (a link, `u` or `strong` inheriting
+    // `justify` from its paragraph) is measured by the block it sits in, and
+    // reports only when that block has no text of its own to report on: a
+    // 1,176px paragraph does not become a 200px column because one of its
+    // links is 200px wide. And a single line has no word spaces stretched
+    // (the last line of a justified block is set ragged), so the text must
+    // render on two lines or more. A text rect the capture did not record
+    // keeps the text, as before.
+    let justify_measure = || -> Option<f64> {
+        if st("display") != "inline" {
+            return Some(rect.width);
+        }
+        let mut cur = dom.parent(el);
+        while let Some(p) = cur {
+            let display = dom.style(p, "display");
+            if display != "inline" && display != "contents" {
+                if has_direct_text_longer_than(dom, p, 10) {
+                    return None;
+                }
+                return Some(dom.rect(p).width);
+            }
+            cur = dom.parent(p);
+        }
+        None
+    };
+    let renders_two_lines = || match dom.direct_text_rect(el) {
+        Some(t) => {
+            let own = q.line_height_px.unwrap_or(font_size * 1.2);
+            text_line_count(t.height, line_pitch_px(dom, el, own), font_size) >= 2.0
+        }
+        None => true,
+    };
     if has_direct_text && st("textAlign") == "justify" && rect.width > 0.0 && font_size > 0.0 {
         let hyphens = {
             let a = st("hyphens");
@@ -2291,7 +2325,9 @@ pub fn check_quality(dom: &dyn Dom, q: &QualityInput) -> Vec<RuleHit> {
             }
         };
         if hyphens != "auto"
-            && chars_per_line(rect.width, font_size) <= JUSTIFY_NARROW_CHARS_PER_LINE
+            && justify_measure()
+                .is_some_and(|w| w > 0.0 && chars_per_line(w, font_size) <= JUSTIFY_NARROW_CHARS_PER_LINE)
+            && renders_two_lines()
             && !justifies_without_word_spaces_text(&direct_text(dom, el))
         {
             findings.push(RuleHit::new(
@@ -5725,6 +5761,51 @@ mod tests {
         assert!(!justified(&thai, 300.0, "manual"));
         // A Latin paragraph carrying a few ideographs is still Latin.
         assert!(justified(&format!("{latin} 永慶房屋"), 300.0, "manual"));
+    }
+
+    #[test]
+    fn justified_text_measures_the_block_and_needs_two_lines() {
+        let latin = "word ".repeat(24);
+        // `block_text`: whether the block holds text of its own. `inline`:
+        // the run's display. `lines`: the run's rendered line count.
+        let run = |block_width: f64, block_text: bool, inline: bool, lines: f64| {
+            let mut d = FakeDom::new();
+            let (_h, body) = d.with_page();
+            let p = d.add(Some(body), "p");
+            if block_text {
+                d.add_text(p, "Block text long enough to count as its own. ");
+            }
+            d.set_styles(p, &[("display", "block"), ("fontSize", "16px"), ("lineHeight", "26px"), ("textAlign", "justify")]);
+            d.set_rect(p, 40.0, 100.0, block_width, 26.0 * lines);
+            let a = text_el(&mut d, p, "a", &latin, "16px");
+            d.set_styles(
+                a,
+                &[
+                    ("display", if inline { "inline" } else { "block" }),
+                    ("lineHeight", "26px"),
+                    ("textAlign", "justify"),
+                    ("hyphens", "manual"),
+                ],
+            );
+            d.set_rect(a, 40.0, 100.0, 200.0, 26.0 * lines);
+            d.set_text_rect(a, 40.0, 100.0, 200.0, 26.0 * (lines - 1.0) + 19.0);
+            let hits = check_element_quality_dom(&d, a, &BrowserConfig::default());
+            hits.iter().any(|h| h.id == "justified-text")
+        };
+        // A link 200px wide in a 1,176px paragraph: the paragraph's measure.
+        assert!(!run(1176.0, true, true, 2.0));
+        assert!(!run(1176.0, false, true, 2.0));
+        // In a narrow paragraph that has text of its own, the paragraph
+        // reports; the link does not report again.
+        assert!(!run(300.0, true, true, 3.0));
+        // A narrow paragraph whose text is all in the inline run: the run
+        // reports, measured by the paragraph.
+        assert!(run(300.0, false, true, 3.0));
+        // One rendered line stretches no word space.
+        assert!(!run(300.0, false, true, 1.0));
+        assert!(!run(300.0, false, false, 1.0));
+        // A block of its own, narrow and wrapping, reports as before.
+        assert!(run(1176.0, false, false, 3.0));
     }
 
     #[test]
