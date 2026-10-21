@@ -763,8 +763,12 @@ fn clips_between(dom: &dyn Dom, inner: ElId, outer: ElId) -> bool {
         let clips = ["overflow", "overflowX", "overflowY"]
             .iter()
             .any(|k| matches!(dom.style(c, k).split_ascii_whitespace().next().unwrap_or(""), "hidden" | "clip" | "auto" | "scroll"));
+        // Spanning one axis and short of the other: the box's own wrapper,
+        // clipped at the box's size, is not a column it is a row of.
         let r = dom.rect(c);
-        if clips && ((a.width - r.width).abs() <= 1.5 || (a.height - r.height).abs() <= 1.5) {
+        let spans_width = (a.width - r.width).abs() <= 1.5 && r.height - a.height > 1.5;
+        let spans_height = (a.height - r.height).abs() <= 1.5 && r.width - a.width > 1.5;
+        if clips && (spans_width || spans_height) {
             return true;
         }
         if c == outer {
@@ -774,6 +778,9 @@ fn clips_between(dom: &dyn Dom, inner: ElId, outer: ElId) -> bool {
     }
     false
 }
+
+/// The tallest a link or button in a [`is_control_strip`] row may be.
+const CONTROL_STRIP_MAX_HEIGHT_PX: f64 = 64.0;
 
 /// Whether `el` is a strip of controls rather than a card: its element
 /// children are three or more links or buttons and nothing else, set side by
@@ -788,11 +795,15 @@ fn is_control_strip(dom: &dyn Dom, el: ElId) -> bool {
     if kids.len() < 3 {
         return false;
     }
+    // A link drawn as a card (a tile with its own edge and fill) or taller
+    // than a control runs is a card that happens to be a link.
     let is_control = |c: ElId| {
-        matches!(tag_lower(dom, c).as_str(), "a" | "button")
+        (matches!(tag_lower(dom, c).as_str(), "a" | "button")
             || dom
                 .attr(c, "role")
-                .is_some_and(|r| matches!(js::to_lower_case(js::trim(&r)).as_str(), "link" | "button" | "tab"))
+                .is_some_and(|r| matches!(js::to_lower_case(js::trim(&r)).as_str(), "link" | "button" | "tab")))
+            && dom.rect(c).height <= CONTROL_STRIP_MAX_HEIGHT_PX
+            && !is_card_like_dom(dom, c)
     };
     if !kids.iter().all(|&c| is_control(c)) {
         return false;
@@ -3670,7 +3681,7 @@ pub fn occlusion_probe_points(rect: &Rect, vw: f64, vh: f64) -> Vec<(f64, f64)> 
 /// its border band of its rect, and not at all when a transform other than a
 /// translation turns or scales it, since its rect is then the bounds of a
 /// ring it does not fill (v0-morbiawebsite.vercel.app's rotated 1px ellipse
-/// over a pill).
+/// over a pill). A `background-image` or a `backdrop-filter` is a fill.
 ///
 /// A form control covers its rect whatever it paints: its interior is where
 /// it draws a value and a caret (a transparent input laid over a label). And
@@ -3678,7 +3689,16 @@ pub fn occlusion_probe_points(rect: &Rect, vw: f64, vh: f64) -> Vec<(f64, f64)> 
 /// fill at the point (a card's bordered row on the card's white face), that
 /// fill covers it.
 fn border_box_covers_point(dom: &dyn Dom, el: ElId, victim: ElId, x: f64, y: f64) -> bool {
+    let paints = |prop: &str| {
+        let v = dom.style(el, prop);
+        let v = js::trim(&v);
+        !v.is_empty() && v != "none"
+    };
+    // A gradient, a picture or a frosted backdrop fills the box as surely as
+    // a colour does.
     if paints_opaque_fill(dom, el)
+        || paints("backgroundImage")
+        || paints("backdropFilter")
         || matches!(tag_lower(dom, el).as_str(), "input" | "textarea" | "select" | "button")
     {
         return true;
@@ -5526,6 +5546,26 @@ mod tests {
         assert_eq!(strip(3, true, false), 1, "links in a column");
         assert_eq!(strip(2, false, true), 0, "in a track that scrolls sideways");
 
+        // Three link tiles, each drawn as a card, are cards in a box.
+        let mut d = FakeDom::new();
+        let (_h, body) = d.with_page();
+        let outer = d.add(Some(body), "div");
+        card_styles(&mut d, outer, "rgb(255, 255, 255)");
+        d.set_rect(outer, 0.0, 0.0, 700.0, 300.0);
+        d.add_text(outer, "Outer text longer than ten");
+        let inner = d.add(Some(outer), "div");
+        card_styles(&mut d, inner, "rgb(250, 250, 250)");
+        d.set_rect(inner, 10.0, 60.0, 600.0, 140.0);
+        for i in 0..3 {
+            let tile = d.add(Some(inner), "a");
+            card_styles(&mut d, tile, "rgb(240, 240, 240)");
+            d.set_rect(tile, 20.0 + i as f64 * 190.0, 70.0, 180.0, 120.0);
+            d.add_text(tile, "Plans");
+        }
+        let f = check_layout(&d);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert_eq!(f[0].el, Some(inner), "a box holding a row of card tiles");
+
         let corner = |inner_w: f64| {
             let mut d = FakeDom::new();
             let (_h, body) = d.with_page();
@@ -5544,6 +5584,23 @@ mod tests {
         };
         assert_eq!(corner(320.0), 0, "a tab spanning its clipped column");
         assert_eq!(corner(280.0), 1, "a panel at its own size");
+
+        // A caption card in a media card's corner, inside a clipping wrapper
+        // of its own size: the wrapper is no column.
+        let mut d = FakeDom::new();
+        let (_h, body) = d.with_page();
+        let outer = d.add(Some(body), "div");
+        card_styles(&mut d, outer, "rgb(255, 255, 255)");
+        d.set_rect(outer, 0.0, 0.0, 600.0, 400.0);
+        d.add_text(outer, "Outer text longer than ten");
+        let wrap = d.add(Some(outer), "div");
+        d.set_styles(wrap, &[("overflow", "hidden"), ("overflowX", "hidden"), ("overflowY", "hidden")]);
+        d.set_rect(wrap, 0.0, 300.0, 240.0, 100.0);
+        let caption = d.add(Some(wrap), "div");
+        card_styles(&mut d, caption, "rgb(243, 244, 246)");
+        d.set_rect(caption, 0.0, 300.0, 240.0, 100.0);
+        d.add_text(caption, "A caption set in a card");
+        assert_eq!(check_layout(&d).len(), 1, "a wrapper the caption's own size");
     }
 
     #[test]
@@ -7666,7 +7723,7 @@ mod tests {
     /// where its border runs.
     #[test]
     fn text_occlusion_reads_a_ring_by_its_border_band() {
-        let run_tag = |tag: &str, transform: &str, ring_left: f64| {
+        let run_full = |tag: &str, transform: &str, ring_left: f64, extra: (&str, &str)| {
             let mut d = FakeDom::new();
             let (_h, body) = d.with_page();
             let pill = d.add(Some(body), "span");
@@ -7677,6 +7734,9 @@ mod tests {
             let ring = d.add(Some(body), tag);
             d.set_styles(ring, OCCLUSION_BASE);
             d.set_styles(ring, &[("position", "absolute"), ("backgroundColor", "rgba(0, 0, 0, 0)"), ("transform", transform)]);
+            if !extra.0.is_empty() {
+                d.set_style(ring, extra.0, extra.1);
+            }
             for side in ["Top", "Right", "Bottom", "Left"] {
                 d.set_style(ring, &format!("border{side}Width"), "1px");
                 d.set_style(ring, &format!("border{side}Color"), "rgb(126, 251, 242)");
@@ -7691,9 +7751,20 @@ mod tests {
             }
             check_text_occlusion_dom(&d).len()
         };
+        let run_tag = |tag: &str, transform: &str, ring_left: f64| run_full(tag, transform, ring_left, ("", ""));
+        let run_styled = |tag: &str, prop: &str, value: &str| run_full(tag, "none", 0.0, (prop, value));
         let run = |transform: &str, ring_left: f64| run_tag("div", transform, ring_left);
         // A transparent input over the words draws its value there.
         assert_eq!(run_tag("input", "none", 0.0), 1, "a control covers its rect");
+        // A bordered card painted by a gradient, a picture or a frosted
+        // backdrop fills its box.
+        for (prop, value) in [
+            ("backgroundImage", "linear-gradient(rgb(255, 255, 255), rgb(238, 238, 238))"),
+            ("backgroundImage", "url(\"card.jpg\")"),
+            ("backdropFilter", "blur(8px)"),
+        ] {
+            assert_eq!(run_styled("div", prop, value), 1, "{prop}: {value}");
+        }
         let turned = "matrix(0.848048, -0.529919, 0.529919, 0.848048, 0, 0)";
         assert_eq!(run(turned, 0.0), 0, "a turned ring");
         assert_eq!(run("none", 0.0), 0, "a frame around the pill");

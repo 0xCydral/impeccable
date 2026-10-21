@@ -2310,8 +2310,9 @@ pub fn check_quality(dom: &dyn Dom, q: &QualityInput) -> Vec<RuleHit> {
     // 1,176px paragraph does not become a 200px column because one of its
     // links is 200px wide. And a single line has no word spaces stretched
     // (the last line of a justified block is set ragged), so the text must
-    // render on two lines or more. A text rect the capture did not record
-    // keeps the text, as before.
+    // render on two lines or more, counted over the block's own text and its
+    // inline children's. A text rect the capture did not record keeps the
+    // text, as before.
     let justify_measure = || -> Option<f64> {
         if st("display") != "inline" {
             return Some(rect.width);
@@ -2329,7 +2330,17 @@ pub fn check_quality(dom: &dyn Dom, q: &QualityInput) -> Vec<RuleHit> {
         }
         None
     };
-    let renders_two_lines = || match dom.direct_text_rect(el) {
+    // A block's lines are counted over all the text it sets in them, its
+    // inline children's included: a one-line lead-in followed by a long
+    // `<em>` is a block of several justified lines.
+    let line_extent = || {
+        if st("display") == "inline" {
+            dom.direct_text_rect(el)
+        } else {
+            phrasing_text_extent(dom, el).or_else(|| dom.direct_text_rect(el))
+        }
+    };
+    let renders_two_lines = || match line_extent() {
         Some(t) => {
             let own = q.line_height_px.unwrap_or(font_size * 1.2);
             text_line_count(t.height, line_pitch_px(dom, el, own), font_size) >= 2.0
@@ -5872,6 +5883,25 @@ mod tests {
         assert!(!run(300.0, false, false, 1.0));
         // A block of its own, narrow and wrapping, reports as before.
         assert!(run(1176.0, false, false, 3.0));
+
+        // A narrow paragraph whose own lead-in sets one line and whose
+        // `<em>` sets the rest: the paragraph's lines are counted over both.
+        let mut d = FakeDom::new();
+        let (_h, body) = d.with_page();
+        let p = d.add(Some(body), "p");
+        d.add_text(p, "See the note below here: ");
+        d.set_styles(p, &[("display", "block"), ("fontSize", "16px"), ("lineHeight", "24px"), ("textAlign", "justify"), ("hyphens", "manual")]);
+        d.set_rect(p, 40.0, 100.0, 240.0, 144.0);
+        d.set_text_rect(p, 40.0, 102.0, 180.0, 19.0);
+        let em = text_el(&mut d, p, "em", &latin, "16px");
+        d.set_styles(em, &[("display", "inline"), ("lineHeight", "24px"), ("textAlign", "justify"), ("hyphens", "manual")]);
+        d.set_rect(em, 40.0, 102.0, 240.0, 139.0);
+        d.set_text_rect(em, 40.0, 102.0, 240.0, 139.0);
+        let flags = |d: &FakeDom, el: ElId| {
+            check_element_quality_dom(d, el, &BrowserConfig::default()).iter().any(|h| h.id == "justified-text")
+        };
+        assert!(flags(&d, p), "the paragraph's six lines");
+        assert!(!flags(&d, em), "reported once, on the paragraph");
     }
 
     #[test]

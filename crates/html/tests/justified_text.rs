@@ -127,7 +127,7 @@ fn fixture_flag_and_pass_cases() {
         .filter(|f| f.antipattern == "justified-text")
         .count();
     assert_eq!(
-        hits, 4,
+        hits, 5,
         "expected one hit per should-flag case, got {findings:?}"
     );
 }

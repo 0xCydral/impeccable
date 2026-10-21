@@ -56,6 +56,13 @@
       line-height: 1.6;
     }
 
+    .narrow-justify-lead {
+      text-align: justify;
+      width: 240px;
+      font-size: 16px;
+      line-height: 1.6;
+    }
+
     /* ── PASS: the premise does not reach these ── */
 
     /* A short heading in a narrow column: one line, and the one line of a
@@ -129,6 +136,11 @@
       <div class="case">
         <span class="case-label">280px column, every word inside an inline span</span>
         <p class="narrow-justify-span"><span>Wrapping the whole paragraph in a span changes nothing about its lines: the paragraph still sets them at its narrow measure and stretches the few word spaces each one holds.</span></p>
+      </div>
+      <h3>Narrow paragraph with a one-line lead-in and a long emphasis</h3>
+      <div class="case">
+        <span class="case-label">240px column, the paragraph's own words on one line, the rest in an em</span>
+        <p class="narrow-justify-lead">See the note below here: <em>Justified lines in a narrow column stretch the spaces between words until rivers of white run down the page and break the reading rhythm.</em></p>
       </div>
     </div>
 
