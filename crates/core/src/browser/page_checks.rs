@@ -3580,6 +3580,117 @@ pub fn occlusion_probe_points(rect: &Rect, vw: f64, vh: f64) -> Vec<(f64, f64)> 
 /// names is not where the capture put it, the page moved in between (a
 /// carousel advancing, a marquee scrolling) and the answer describes a
 /// different layout.
+/// Whether a decorated box that answers a probe point covers the text there.
+/// A box with an opaque fill covers its rect. One that counts only through
+/// its borders draws nothing inside them: it covers the point only within
+/// its border band of its rect, and not at all when a transform other than a
+/// translation turns or scales it, since its rect is then the bounds of a
+/// ring it does not fill (v0-morbiawebsite.vercel.app's rotated 1px ellipse
+/// over a pill).
+fn border_box_covers_point(dom: &dyn Dom, el: ElId, x: f64, y: f64) -> bool {
+    if paints_opaque_fill(dom, el) {
+        return true;
+    }
+    let transform = dom.style(el, "transform");
+    let transform = js::trim(&transform);
+    if !transform.is_empty() && transform != "none" && !is_translation_matrix(transform) {
+        return false;
+    }
+    let r = dom.rect(el);
+    let side = |name: &str| js::math_max(style_px(dom, el, &format!("border{name}Width")), 0.0) + 1.0;
+    x <= r.left + side("Left")
+        || x >= r.right - side("Right")
+        || y <= r.top + side("Top")
+        || y >= r.bottom - side("Bottom")
+}
+
+/// Whether a computed `transform` only translates: `matrix(1, 0, 0, 1, x, y)`.
+fn is_translation_matrix(transform: &str) -> bool {
+    let Some(inner) = transform.strip_prefix("matrix(").and_then(|t| t.strip_suffix(')')) else {
+        return false;
+    };
+    let v: Vec<f64> = inner.split(',').map(|t| parse_float(js::trim(t))).collect();
+    v.len() == 6
+        && (v[0] - 1.0).abs() < 1e-6
+        && v[1].abs() < 1e-6
+        && v[2].abs() < 1e-6
+        && (v[3] - 1.0).abs() < 1e-6
+}
+
+/// The share of the smaller font size by which two texts' em boxes may
+/// overlap and still be [`laid_out_apart`]: a heading's content area
+/// overhangs the line above it by a few pixels without a glyph meeting one.
+const FLOW_EM_OVERLAP_MAX: f64 = 0.15;
+
+/// Whether two texts sit on lines normal flow lays out apart, so the overlap
+/// of their content areas is not a collision. Both are in flow under their
+/// nearest common ancestor: no box between either and it is positioned
+/// (other than `relative` with no offset), transformed, floated or pulled by
+/// a negative margin. Their line bands (each line's content area grown or
+/// shrunk to its line-height) do not overlap, and their em boxes overlap by
+/// at most [`FLOW_EM_OVERLAP_MAX`] of the smaller font size, so leading set
+/// tighter than the glyphs still collides. pppasta.com's 76.8px headline
+/// span reaches 12px up into the 24.6px line above it by its content area,
+/// about 1px by its em box, and not at all by its line box. A text rect,
+/// font size or line-height the capture did not record keeps the answer.
+fn laid_out_apart(dom: &dyn Dom, a: ElId, b: ElId) -> bool {
+    let a_chain: Vec<ElId> = ancestors_inclusive(dom, a);
+    let Some(common) = ancestors_inclusive(dom, b).into_iter().find(|n| a_chain.contains(n)) else {
+        return false;
+    };
+    if common == a || common == b {
+        return false;
+    }
+    let in_flow = |el: ElId| {
+        ancestors_inclusive(dom, el).into_iter().take_while(|n| *n != common).all(|n| {
+            let position = dom.style(n, "position");
+            let offset_free = ["top", "right", "bottom", "left"].iter().all(|k| {
+                let v = dom.style(n, k);
+                v.is_empty() || v == "auto" || parse_float(&v) == 0.0
+            });
+            let placed = match position.as_str() {
+                "" | "static" => true,
+                "relative" => offset_free,
+                _ => false,
+            };
+            let transform = dom.style(n, "transform");
+            let float = dom.style(n, "cssFloat");
+            placed
+                && (transform.is_empty() || transform == "none")
+                && (float.is_empty() || float == "none")
+                && ["marginTop", "marginRight", "marginBottom", "marginLeft"]
+                    .iter()
+                    .all(|k| !(parse_float(&dom.style(n, k)) < 0.0))
+        })
+    };
+    if !in_flow(a) || !in_flow(b) {
+        return false;
+    }
+    // (line band, em band, font size) of an element's own text.
+    let bands = |el: ElId| -> Option<(f64, f64, f64, f64, f64)> {
+        let t = dom.direct_text_rect(el).filter(|r| r.all_finite() && r.height > 0.0)?;
+        let font_size = parse_float(&dom.style(el, "fontSize"));
+        if !(font_size.is_finite() && font_size > 0.0) {
+            return None;
+        }
+        let own = resolve_length_px(Some(&dom.style(el, "lineHeight")), font_size)
+            .filter(|lh| lh.is_finite() && *lh > 0.0)
+            .unwrap_or(font_size * 1.2);
+        let pitch = super::text_geometry::line_pitch_px(dom, el, own);
+        let lines = super::text_geometry::text_line_count(t.height, pitch, font_size);
+        let content = t.height - (lines - 1.0) * pitch;
+        let line_inset = (content - pitch) / 2.0;
+        let em_inset = (content - font_size) / 2.0;
+        Some((t.top + line_inset, t.bottom - line_inset, t.top + em_inset, t.bottom - em_inset, font_size))
+    };
+    let (Some(x), Some(y)) = (bands(a), bands(b)) else {
+        return false;
+    };
+    let lines_apart = x.1 <= y.0 + 0.5 || y.1 <= x.0 + 0.5;
+    let em_overlap = js::math_min(x.3, y.3) - js::math_max(x.2, y.2);
+    lines_apart && em_overlap <= js::math_min(x.4, y.4) * FLOW_EM_OVERLAP_MAX
+}
+
 pub fn rect_holds_point(rect: &Rect, x: f64, y: f64) -> bool {
     const SLACK: f64 = 1.0;
     rect.width > 0.0
@@ -4340,7 +4451,11 @@ pub fn check_text_occlusion_dom(dom: &dyn Dom) -> Vec<ElFinding> {
             // never measured, so it counts for nothing. A box that carries text
             // of its own can still overflow its rect and is kept as text.
             let box_here = rect_holds_point(&dom.rect(top), x, y);
-            if box_here && !passes_through && is_opaque_decorated_box(Some(&top_style)) {
+            if box_here
+                && !passes_through
+                && is_opaque_decorated_box(Some(&top_style))
+                && border_box_covers_point(dom, top, x, y)
+            {
                 occluded += 1;
                 if occluder_el.is_none() {
                     occluder_el = Some(top);
@@ -4348,7 +4463,7 @@ pub fn check_text_occlusion_dom(dom: &dyn Dom) -> Vec<ElFinding> {
                     // one with no opaque fill is named for what it draws.
                     occluder_kind = if paints_opaque_fill(dom, top) { "box" } else { "border" };
                 }
-            } else if top_has_text {
+            } else if top_has_text && !laid_out_apart(dom, top, el) {
                 occluded += 1;
                 if occluder_el.is_none() {
                     occluder_el = Some(top);
@@ -7331,6 +7446,88 @@ mod tests {
         assert!(run(false).is_empty());
     }
 
+    /// observations-1006 row 17, pppasta.com: a 76.8px headline span under a
+    /// 24.6px kicker in the same `h1`, in an absolutely positioned slide.
+    /// Their content areas overlap by 12px; their line boxes do not, and
+    /// their em boxes meet by about 1px. Leading set tighter than the glyphs,
+    /// or a box moved out of flow, still collides.
+    #[test]
+    fn text_occlusion_skips_lines_normal_flow_lays_out_apart() {
+        let run = |head_lh: &str, head_top: f64, head_position: &str| {
+            let mut d = FakeDom::new();
+            let (_h, body) = d.with_page();
+            let slide = d.add(Some(body), "div");
+            d.set_styles(slide, OCCLUSION_BASE);
+            d.set_style(slide, "position", "absolute");
+            d.set_rect(slide, 51.0, 528.0, 478.0, 165.0);
+            let h1 = d.add(Some(slide), "h1");
+            d.set_styles(h1, OCCLUSION_BASE);
+            d.set_rect(h1, 51.0, 528.0, 478.0, 103.0);
+            let kicker = d.add(Some(h1), "small");
+            d.add_text(kicker, "A personal trainer, in your pocket");
+            d.set_styles(kicker, OCCLUSION_BASE);
+            d.set_styles(kicker, &[("fontSize", "24.576px"), ("lineHeight", "24.576px")]);
+            d.set_rect(kicker, 52.2, 527.6, 476.7, 24.6);
+            d.set_text_rect(kicker, 52.2, 524.6, 305.6, 30.0);
+            let head = d.add(Some(h1), "span");
+            d.add_text(head, "Train with Pasta.");
+            d.set_styles(head, OCCLUSION_BASE);
+            d.set_styles(head, &[("fontSize", "76.8px"), ("lineHeight", head_lh), ("position", head_position)]);
+            d.set_rect(head, 51.2, head_top + 14.0, 477.7, 73.7);
+            d.set_text_rect(head, 51.2, head_top, 471.5, 93.0);
+            mark_body_descendants(&mut d);
+            for (x, y) in occlusion_probe_points(&d.rect(kicker), 1280.0, 800.0) {
+                d.set_point(x, y, vec![head, h1, slide, body]);
+            }
+            check_text_occlusion_dom(&d).into_iter().map(|f| f.finding.detail).collect::<Vec<_>>()
+        };
+        assert!(run("66.048px", 542.6, "static").is_empty(), "{:?}", run("66.048px", 542.6, "static"));
+        // Leading so tight the headline's em box runs 8px into the kicker's.
+        assert_eq!(run("30px", 532.0, "static").len(), 1, "glyphs meet");
+        // Moved out of flow, the overlap is the page's doing.
+        assert_eq!(run("66.048px", 542.6, "relative").len(), 0, "relative with no offset is in flow");
+        assert_eq!(run("66.048px", 542.6, "absolute").len(), 1, "out of flow");
+    }
+
+    /// observations-1006 row 17, v0-morbiawebsite.vercel.app: a rotated 1px
+    /// ring with no fill answers over a pill. Its rect is the bounds of a
+    /// ring it does not fill, so it covers nothing; unrotated, it covers only
+    /// where its border runs.
+    #[test]
+    fn text_occlusion_reads_a_ring_by_its_border_band() {
+        let run = |transform: &str, ring_left: f64| {
+            let mut d = FakeDom::new();
+            let (_h, body) = d.with_page();
+            let pill = d.add(Some(body), "span");
+            d.add_text(pill, "MORBIA EN ORBITA");
+            d.set_styles(pill, OCCLUSION_BASE);
+            d.set_style(pill, "position", "absolute");
+            d.set_rect(pill, 100.0, 300.0, 200.0, 32.0);
+            let ring = d.add(Some(body), "div");
+            d.set_styles(ring, OCCLUSION_BASE);
+            d.set_styles(ring, &[("position", "absolute"), ("backgroundColor", "rgba(0, 0, 0, 0)"), ("transform", transform)]);
+            for side in ["Top", "Right", "Bottom", "Left"] {
+                d.set_style(ring, &format!("border{side}Width"), "1px");
+                d.set_style(ring, &format!("border{side}Color"), "rgb(126, 251, 242)");
+            }
+            if ring_left > 0.0 {
+                d.set_style(ring, "borderLeftWidth", "80px");
+            }
+            d.set_rect(ring, ring_left, 200.0, 400.0, 300.0);
+            mark_body_descendants(&mut d);
+            for (x, y) in occlusion_probe_points(&d.rect(pill), 1280.0, 800.0) {
+                d.set_point(x, y, vec![ring, pill, body]);
+            }
+            check_text_occlusion_dom(&d).len()
+        };
+        let turned = "matrix(0.848048, -0.529919, 0.529919, 0.848048, 0, 0)";
+        assert_eq!(run(turned, 0.0), 0, "a turned ring");
+        assert_eq!(run("none", 0.0), 0, "a frame around the pill");
+        // A frame whose 80px left border runs over the pill's first half
+        // covers the points under that border.
+        assert_eq!(run("none", 100.0), 1, "the border crosses the words");
+    }
+
     /// Covered text on an opaque box, a border-only field and an SVG shape;
     /// the same text blurred behind a gate, and one emoji.
     #[test]
@@ -7362,9 +7559,11 @@ mod tests {
                     if matches!(cover, Cover::Fill) {
                         d.set_style(el, "backgroundColor", "rgb(31, 122, 61)");
                     } else {
+                        // Borders count only where they are drawn: 24px
+                        // bands on a 44px box cross every line of the text.
                         d.set_style(el, "backgroundColor", "rgba(0, 0, 0, 0)");
                         for side in ["Top", "Right", "Bottom", "Left"] {
-                            d.set_style(el, &format!("border{side}Width"), "1px");
+                            d.set_style(el, &format!("border{side}Width"), "24px");
                             d.set_style(el, &format!("border{side}Color"), "rgb(153, 153, 153)");
                         }
                     }
