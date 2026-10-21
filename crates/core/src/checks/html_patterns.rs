@@ -82,6 +82,48 @@ re!(
     )
 );
 
+re!(
+    SVG_WIDTH_FONT_RE,
+    format!(
+        r#"{w}{WS}*={WS}*["']{WS}*([0-9.]+)({em}|{rem}){WS}*["']"#,
+        w = ci("width"),
+        em = ci("em"),
+        rem = ci("rem")
+    )
+);
+re!(
+    SVG_HEIGHT_FONT_RE,
+    format!(
+        r#"{h}{WS}*={WS}*["']{WS}*([0-9.]+)({em}|{rem}){WS}*["']"#,
+        h = ci("height"),
+        em = ci("em"),
+        rem = ci("rem")
+    )
+);
+re!(
+    SVG_DRAWN_SHAPE_RE,
+    format!(
+        r"<(?:{rect}|{circle}|{ellipse}|{polygon}|{path}|{line}|{polyline}){B}",
+        rect = ci("rect"),
+        circle = ci("circle"),
+        ellipse = ci("ellipse"),
+        polygon = ci("polygon"),
+        path = ci("path"),
+        line = ci("line"),
+        polyline = ci("polyline")
+    )
+);
+
+/// The font size an `em` or `rem` SVG size is read against: the browser
+/// default, since the source does not say what the SVG inherits.
+const SVG_FONT_SIZE_PX: f64 = 16.0;
+
+/// The share of an SVG's drawn shapes that must be primitives (rect, circle,
+/// ellipse, polygon) before it reads as a scene assembled from them. A logo
+/// or a traced drawing is paths with a few primitives among them (nic.sa's
+/// wordmark: 11 of 208).
+const SVG_PRIMITIVE_SHARE_MIN: f64 = 0.25;
+
 /// JS `attrDim(name)`: first `name="<num>"` in the open tag whose match is
 /// not preceded by `[-\w]` (the lookbehind keeps `stroke-width` out).
 fn svg_attr_dim(open_tag: &str, re: &Regex) -> Option<f64> {
@@ -116,10 +158,19 @@ pub fn scan_html_for_shape_assembled_illustration(html: &str) -> Vec<RuleHit> {
         if primitives < 8 {
             continue;
         }
+        let drawn = SVG_DRAWN_SHAPE_RE.find_iter(block).count();
+        if (primitives as f64) < drawn as f64 * SVG_PRIMITIVE_SHARE_MIN {
+            continue;
+        }
         let vb = SVG_VIEWBOX_RE.captures(open_tag);
+        // A size in `em` or `rem` is set at the text's scale (an inline
+        // logo at `width="4.33em"`), not at the viewBox's.
+        let font_dim = |re: &Regex| svg_attr_dim(open_tag, re).map(|v| v * SVG_FONT_SIZE_PX);
         let w = svg_attr_dim(open_tag, &SVG_WIDTH_RE)
+            .or_else(|| font_dim(&SVG_WIDTH_FONT_RE))
             .or_else(|| vb.as_ref().map(|v| parse_float(&v[1])));
         let h = svg_attr_dim(open_tag, &SVG_HEIGHT_RE)
+            .or_else(|| font_dim(&SVG_HEIGHT_FONT_RE))
             .or_else(|| vb.as_ref().map(|v| parse_float(&v[2])));
         let (w, h) = match (w, h) {
             (Some(w), Some(h)) => (w, h),
@@ -1006,6 +1057,27 @@ mod tests {
             nan[0].snippet,
             "inline <svg> scene: 8 primitive shapes, ~NaNxNaNpx, 3 fill colors"
         );
+    }
+
+    #[test]
+    fn shape_scene_reads_em_sizes_and_the_primitive_share() {
+        let scene = "<rect fill=\"red\"/><rect fill=\"blue\"/><rect fill=\"#0f0\"/><circle/><circle/><circle/><ellipse/><polygon/>";
+        let svg = |open: &str, extra: &str| {
+            scan_html_for_shape_assembled_illustration(&format!("{open}{scene}{extra}</svg>"))
+        };
+        // nic.sa's wordmark: an em size renders at the text's scale.
+        assert!(svg("<svg width=\"4.33em\" height=\"1em\" viewBox=\"0 0 3242 750\">", "").is_empty());
+        assert_eq!(
+            svg("<svg width=\"20em\" height=\"15rem\" viewBox=\"0 0 64 48\">", "")[0].snippet,
+            "inline <svg> scene: 8 primitive shapes, ~320x240px, 3 fill colors"
+        );
+        // `stroke-width` in em is not the SVG's width.
+        assert_eq!(svg("<svg stroke-width=\"1em\" viewBox=\"0 0 400 300\">", "").len(), 1);
+        // A drawing of paths with a few primitives among them.
+        let paths = "<path d=\"M0 0h1\"/>".repeat(25);
+        assert!(svg("<svg viewBox=\"0 0 400 300\">", &paths).is_empty(), "8 of 33");
+        let some_paths = "<path d=\"M0 0h1\"/>".repeat(24);
+        assert_eq!(svg("<svg viewBox=\"0 0 400 300\">", &some_paths).len(), 1, "8 of 32");
     }
 
     #[test]
