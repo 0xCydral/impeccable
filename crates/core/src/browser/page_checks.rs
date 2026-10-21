@@ -1885,6 +1885,22 @@ fn rhythm_ends_in_prose(dom: &dyn Dom, block: ElId, heading: ElId, text_size: f6
 }
 
 /// JS: checks.mjs#checkHeadingRhythmDOM()
+/// The widest gap, in px, at which a line above a heading touches it.
+const RHYTHM_TOUCH_GAP_PX: f64 = 2.0;
+
+/// Whether `el`'s text renders on one line: its recorded line boxes share
+/// one top (within 2px). A capture that recorded no lines answers no, and
+/// the line is judged as before.
+fn rhythm_one_line(dom: &dyn Dom, el: ElId) -> bool {
+    match dom.text_line_rects(el) {
+        Some(lines) if !lines.is_empty() => {
+            let first = lines[0].top;
+            lines.iter().all(|l| (l.top - first).abs() <= 2.0)
+        }
+        _ => false,
+    }
+}
+
 pub fn check_heading_rhythm_dom(dom: &dyn Dom) -> Vec<ElFinding> {
     const MIN_VIOLATIONS: usize = 2;
     const CARD_EXEMPT_HEIGHT: f64 = 200.0;
@@ -1924,7 +1940,16 @@ pub fn check_heading_rhythm_dom(dom: &dyn Dom) -> Vec<ElFinding> {
     // emit an eyebrow, and missing them measured the gap to the heading's
     // own label. Only a line that reads as a label folds in: `text_size` is
     // the size of the body text it is set against.
-    let cluster_top = |h: ElId, rect: &Rect, text_size: f64| -> (ElId, f64) {
+    //
+    // Two shapes fold whatever the 28px cap says (observations-1006 row 10).
+    // A short line on one line that touches the heading (a gap of 2px or
+    // less) at a size no larger than the heading's is the heading's own
+    // subtitle, however it is set (partner.co.il's 23px Hebrew line resting
+    // on its h2). And an eyebrow that opens its group sits with the heading
+    // when it is closer to it than the heading is to what it introduces
+    // (a0lang.vercel.app's "01 / Language and tools", 60px above an h2 with
+    // 100px below): `below` is that gap.
+    let cluster_top = |h: ElId, rect: &Rect, text_size: f64, below: f64| -> (ElId, f64) {
         let mut top_el = h;
         let mut top = rect.top;
         let mut cursor = h;
@@ -1957,7 +1982,12 @@ pub fn check_heading_rhythm_dom(dom: &dyn Dom) -> Vec<ElFinding> {
                 break;
             }
             let gap = top - sr.bottom;
-            if gap < 0.0 || gap >= 28.0 || sr.height > 60.0 {
+            if gap < 0.0 || sr.height > 60.0 {
+                break;
+            }
+            let opens_group = previous_box(sib).is_none();
+            let wide_eyebrow = gap >= 28.0;
+            if wide_eyebrow && !(opens_group && gap < below) {
                 break;
             }
             let text = js::trim(&dom.text_content(sib)).to_string();
@@ -1971,8 +2001,14 @@ pub fn check_heading_rhythm_dom(dom: &dyn Dom) -> Vec<ElFinding> {
             if matches!(tag_lower(dom, sib).as_str(), "h1" | "h2" | "h3" | "h4" | "h5" | "h6") {
                 break;
             }
-            let opens_group = previous_box(sib).is_none();
-            if text_len > 80 || !rhythm_reads_as_eyebrow(dom, sib, h, text_size, opens_group) {
+            if text_len > 80 {
+                break;
+            }
+            let subtitle = !wide_eyebrow
+                && gap <= RHYTHM_TOUCH_GAP_PX
+                && rhythm_font_size(dom, sib) <= rhythm_font_size(dom, h)
+                && rhythm_one_line(dom, sib);
+            if !subtitle && !rhythm_reads_as_eyebrow(dom, sib, h, text_size, opens_group) {
                 break;
             }
             top_el = sib;
@@ -2149,7 +2185,7 @@ pub fn check_heading_rhythm_dom(dom: &dyn Dom) -> Vec<ElFinding> {
             body.map_or(16.0, |b| rhythm_font_size(dom, b)),
             rhythm_text_size(dom, below_el),
         );
-        let (top_el, top) = cluster_top(h, &rect, text_size);
+        let (top_el, top) = cluster_top(h, &rect, text_size, below_top - rect.bottom);
         let Some((above_bottom, above_el)) = edge_above(h, top_el, top, &rect) else { continue };
         if inside_small_card(h) {
             continue;
@@ -5313,6 +5349,62 @@ mod tests {
             d.add_text(el, text);
         }
         el
+    }
+
+    /// observations-1006 row 10. A one-line subtitle touching its h2 at a
+    /// smaller size, set like body copy (partner.co.il), is the heading's
+    /// own; an uppercase eyebrow that opens its group 60px above an h2 with
+    /// 100px below (a0lang.vercel.app) is too. Twins: the same subtitle on
+    /// two lines or 3px off, and an eyebrow that follows a line of its own
+    /// group, stay blocks of their own.
+    #[test]
+    fn heading_rhythm_folds_a_touching_subtitle_and_an_opening_eyebrow() {
+        // Each section: a line of prose, 140px of space, then a group that
+        // holds `label` and the heading, with content `below` under it.
+        // Returns how many headings report.
+        let page = |label: &dyn Fn(&mut FakeDom, ElId, f64) -> f64, below: f64| {
+            let mut d = FakeDom::new();
+            let (_h, body) = d.with_page();
+            let mut y = 0.0;
+            for i in 0..2 {
+                let sec = flow(&mut d, body, "section", (0.0, y, 800.0, 500.0), "");
+                flow(&mut d, sec, "p", (0.0, y, 800.0, 20.0), "The end of the section above, a long sentence of prose.");
+                let group = flow(&mut d, sec, "div", (0.0, y + 160.0, 800.0, 300.0), "");
+                let h_top = label(&mut d, group, y + 160.0);
+                flow(&mut d, group, "h2", (0.0, h_top, 800.0, 30.0), &format!("Heading number {i}"));
+                flow(&mut d, group, "p", (0.0, h_top + 30.0 + below, 800.0, 20.0), "Body paragraph");
+                y += 500.0;
+            }
+            check_heading_rhythm_dom(&d).len()
+        };
+        let subtitle = |gap: f64, lines: usize| {
+            move |d: &mut FakeDom, group: ElId, top: f64| -> f64 {
+                let h = 24.0 * lines as f64;
+                let s = flow(d, group, "span", (0.0, top, 300.0, h), "Pick a plan in one click");
+                d.set_style(s, "fontSize", "20px");
+                let rows: Vec<(f64, f64, f64, f64)> =
+                    (0..lines).map(|n| (0.0, top + 24.0 * n as f64, 300.0, 24.0)).collect();
+                d.set_text_lines(s, &rows);
+                top + h + gap
+            }
+        };
+        assert_eq!(page(&subtitle(0.0, 2), 40.0), 2, "a two-line subtitle");
+        assert_eq!(page(&subtitle(3.0, 1), 40.0), 2, "a one-line subtitle 3px off");
+        assert_eq!(page(&subtitle(0.0, 1), 40.0), 0, "a one-line subtitle touching the h2");
+        let eyebrow = |after_a_line: bool| {
+            move |d: &mut FakeDom, group: ElId, top: f64| -> f64 {
+                let mut top = top;
+                if after_a_line {
+                    flow(d, group, "p", (0.0, top, 300.0, 20.0), "A line of the group's own");
+                    top += 40.0;
+                }
+                let e = flow(d, group, "p", (0.0, top, 300.0, 16.0), "01 / Language and tools");
+                d.set_styles(e, &[("fontSize", "12px"), ("textTransform", "uppercase")]);
+                top + 16.0 + 60.0
+            }
+        };
+        assert_eq!(page(&eyebrow(false), 100.0), 0, "an eyebrow that opens its group");
+        assert_eq!(page(&eyebrow(true), 100.0), 2, "an eyebrow after a line of its group");
     }
 
     /// observations-35 row 12 (kinghost.com.br 218700, 218716): a bare `div`
