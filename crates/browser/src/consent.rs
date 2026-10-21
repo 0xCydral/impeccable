@@ -588,6 +588,9 @@ pub const COOKIE_NOTICE_MAX_TEXT: usize = 1500;
 pub const COOKIE_NOTICE_MIN_OUTSIDE_TEXT: usize = 200;
 /// Longest control label read as a consent choice.
 pub const COOKIE_NOTICE_MAX_LABEL: usize = 40;
+/// Largest inline `blur()` radius a cookie lock is taken to have put on the
+/// page (ktk.de: 4px); a larger one is a decoration's.
+pub const COOKIE_NOTICE_MAX_BLUR_PX: f64 = 12.0;
 
 /// Page JS that defines `cookieNotices(out)`: a cookie notice a site wrote
 /// for itself, with none of a listed manager's markup, hidden the way a
@@ -600,33 +603,47 @@ pub const COOKIE_NOTICE_MAX_LABEL: usize = 40;
 /// wrapper. The `z-index` and dialog role a notice carries vary too much to
 /// read; what they share is below.
 ///
-/// A notice is the outermost element, not `html` or `body`, that
-/// - is `position: fixed`, or `position: absolute` covering at least 90% of
-///   the viewport, and shows a box that meets the viewport;
-/// - names cookies (`cookie`, any case, in any language that borrows the
-///   word) in its own text outside links and controls, so a footer or a
-///   newsletter modal that links a cookie policy is not one;
-/// - offers a consent choice: a button, `[role=button]`, link or button
-///   input whose label (at most 40 characters) accepts, refuses, allows,
-///   agrees, closes or says OK, and is what the page hit-tests at the centre
-///   of at least one such control;
-/// - holds no text field, `select`, `textarea`, password or email input
-///   (checkboxes and radios are a preference pane's), no `h1` and no `main`,
-///   so a sign-in or newsletter modal is never one;
-/// - carries at most 1,500 visible characters, while the page shows at
-///   least 200 outside it (a page that is only its notice is a wall, and is
-///   read as before).
+/// A notice is found from its choice, inward out:
+/// - a **choice control**: a `button`, `[role=button]`, button input, an `a`
+///   with no `href` or one that only names a fragment or `javascript:`, or an
+///   element with an `onclick` or `cursor: pointer`, whose whole label (at
+///   most 40 characters, case and end punctuation aside) is an accept or
+///   refuse phrase (`Accept`, `Accept all`, `Reject non-essential`, `Allow
+///   all cookies`, `Alle Cookies akzeptieren`, `Tout accepter`, `接受`, ... in
+///   [`cookie_notice_js`]'s list). A softer label (`OK`, `Got it`, `Close`,
+///   `Dismiss`, `Understood`, `Schließen`, `Fermer`, ...) counts only when the
+///   notice's text is a consent sentence: a use verb before `cookie`
+///   ("we use cookies", "verwendet Cookies", "utilise des cookies") or a
+///   policy, settings or preferences word after it. A plain link
+///   (`a[href]`) is never a choice;
+/// - its **box**: the nearest ancestor of the control whose own text
+///   (outside links and controls) names `cookie`, then up through every
+///   ancestor that adds no text, control or media of its own, so a strip
+///   inside a site header, or a bar stacked with a buy bar, is the notice
+///   alone and its container stays;
+/// - that box, or an ancestor of it, is `position: fixed`, or `position:
+///   absolute` covering at least 90% of the viewport (a layer, not the page);
+/// - the control is what the page hit-tests at its centre, and is in the
+///   viewport;
+/// - the box holds no text field, `select`, `textarea`, password or email
+///   input (checkboxes and radios are a preference pane's), no `h1` and no
+///   `main`, so a sign-in or newsletter modal is never one;
+/// - the box carries at most 1,500 visible characters, while the page shows
+///   at least 200 outside it (a page that is only its notice is a wall, and
+///   is read as before).
 ///
-/// It is hidden with an inline `display: none !important` and marked with
-/// [`COOKIE_NOTICE_MARK`]; nothing is clicked. An empty full-viewport fixed
-/// layer beside it (same parent, no element children, no text) is the
-/// notice's lock layer and is hidden too. Once a notice is hidden, an inline
-/// `filter` that blurs (`blur(`) on `html`, `body` or an element up to two
-/// levels below `body` outside the notice, covering at least half the
-/// viewport, is removed (`unlocked`:
-/// `filter <name>`), and so is an inline `overflow` / `overflow-y: hidden` on
-/// `html` or `body` when the notice covered at least half the viewport and
-/// no other dialog is showing.
+/// The box is hidden with an inline `display: none !important` and marked
+/// with [`COOKIE_NOTICE_MARK`]; nothing is clicked. A lock layer beside it is
+/// hidden too: a sibling `div` or `span` with no element children and no
+/// text, `position: fixed`, covering at least 90% of the viewport, with no
+/// background image and a fill under alpha 0.9, a positive `z-index`, and
+/// what the page hit-tests at one of five points while the notice still
+/// shows. When the notice covered at least half the viewport, or a lock
+/// layer went with it, an inline `filter` of one `blur()` of 12px or less on
+/// `html`, `body` or an element up to two levels below `body` outside the
+/// notice, covering at least half the viewport, is removed (`unlocked`:
+/// `filter <name>`), and so is an inline `overflow` / `overflow-y: hidden`
+/// on `html` or `body` when no other dialog is showing.
 fn cookie_notice_js() -> String {
     format!(
         r#"const COOKIE_MARK = {mark};
@@ -638,8 +655,12 @@ fn cookie_notice_js() -> String {
     const names = [];
     const report = n => {{ if (!names.includes(n)) names.push(n); }};
     for (const el of q('[' + COOKIE_MARK + ']')) {{ const n = el.getAttribute(COOKIE_MARK); if (n && !n.startsWith('lock ')) report(n); }}
-    const choice = /accept|akzept|zustimm|einverstanden|erlauben|zulassen|ablehn|accepter|j.accepte|refuser|autoriser|acepta|aceita|rechaz|rejeit|accett|rifiut|consent|agree|allow|reject|decline|refuse|deny|dismiss|got it|understood|^ok\b|^okay\b|close|schlie|fermer|cerrar|fechar|chiudi|necessary|essential|notwendig|n.cessaires|接受|同意|拒絕|拒绝|允許|允许|확인|동의|허용|거부|許可|拒否|принять|отклонить|kabul|reddet/i;
-    const label = c => (c.innerText || c.value || c.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim();
+    // A whole label that accepts or refuses, in the languages the corpus
+    // reads; and the softer labels that only dismiss.
+    const strict = /^(?:(?:i )?(?:accept|agree|allow|reject|refuse|decline|deny)(?: (?:all|everything))?(?: (?:cookies|all cookies|non-essential|non-essential cookies|optional cookies|necessary|necessary cookies|essential|only necessary|necessary only|essential only|and close|and continue))?|alle(?: cookies)? (?:akzeptieren|ablehnen|zulassen|erlauben)|(?:akzeptieren|ablehnen|zustimmen|zulassen|einverstanden)|(?:tout |tous )?(?:accepter|refuser)(?: tout| et fermer| les cookies| tous les cookies)?|j.accepte|(?:aceptar|rechazar)(?: todo| todas| todas las cookies| cookies)?|(?:aceitar|rejeitar|recusar)(?: todos| tudo| cookies)?|(?:accetta|accetto|rifiuta)(?: tutti| tutto| i cookie)?|(?:alles )?(?:accepteren|weigeren)|接受|全部接受|接受全部|同意|全部同意|拒絕|拒绝|全部拒绝|允許|允许|동의|모두 동의|거부|허용|すべて同意|同意する|拒否|принять|принять все|отклонить|kabul et|tümünü kabul et|reddet)$/;
+    const soft = /^(?:ok|okay|ok,? got it|got it|close|dismiss|understood|i understand|continue|schlie(?:ss|ß)en|verstanden|fermer|compris|d.accord|cerrar|entendido|fechar|entendi|chiudi|ho capito|確定|确定|知道了|닫기|확인|閉じる|закрыть|понятно|tamam|kapat)$/;
+    const consentSentence = t => /\b(?:we|this (?:web)?site|site|our site|uses?|using|used|use of|wir|verwende[nt]?|nutzen|nous|utilise[sz]?|utilisons|usamos|utilizamos|utilizziamo|usiamo|gebruik(?:en|t)?)\b[^.!?]{{0,80}}cookie|cookie[^.!?]{{0,80}}\b(?:polic|setting|preference|richtlinie|einstellung|politique|param|pol[ií]tica|impostazion)|使用[^。]{{0,20}}cookie|cookie[^。]{{0,20}}(?:使用|政策|偏好)|쿠키/i.test(t);
+    const labelOf = c => (c.innerText || c.value || c.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().toLowerCase().replace(/[.!…→›»>]+$/u, '').trim();
     const shownText = el => (el.innerText || '').replace(/\s+/g, ' ').trim();
     const ownText = root => {{
       let t = '';
@@ -657,71 +678,135 @@ fn cookie_notice_js() -> String {
       return (w * h) / (vw * vh) >= share;
     }};
     const meets = r => r.right > 0 && r.bottom > 0 && r.left < vw && r.top < vh;
+    // What a box shows of its own: visible text, controls and media.
+    const content = el => {{
+      let n = 0;
+      for (const c of el.querySelectorAll('a[href], button, [role=button], input:not([type=hidden]), select, textarea, img, svg, video, canvas, iframe')) if (boxShows(c)) n++;
+      return shownText(el).length * 1000 + n;
+    }};
+    const layered = el => {{
+      for (let a = el; a && a !== body && a !== document.documentElement; a = a.parentElement) {{
+        let cs;
+        try {{ cs = getComputedStyle(a); }} catch (e) {{ return false; }}
+        if (cs.position === 'fixed') return true;
+        if (cs.position === 'absolute' && covers(a.getBoundingClientRect(), 0.9)) return true;
+      }}
+      return false;
+    }};
+    const isChoice = c => {{
+      if (c.matches('a[href]')) {{
+        const h = c.getAttribute('href') || '';
+        if (!(h === '' || h.startsWith('#') || /^javascript:/i.test(h))) return false;
+      }}
+      return true;
+    }};
     const pageChars = shownText(body).length;
     const found = [];
-    const all = body.querySelectorAll('*');
+    const pick = 'button, [role=button], input[type=button], input[type=submit], a, [onclick], span, div, li';
+    const all = body.querySelectorAll(pick);
     for (let i = 0; i < all.length && i < 20000; i++) {{
-      const el = all[i];
-      if (found.some(f => f.el.contains(el)) || el.hasAttribute(COOKIE_MARK)) continue;
-      let cs;
-      try {{ cs = getComputedStyle(el); }} catch (e) {{ continue; }}
-      if (cs.position !== 'fixed' && cs.position !== 'absolute') continue;
-      const r = el.getBoundingClientRect();
-      if (cs.position === 'absolute' && !covers(r, 0.9)) continue;
-      if (!showing(el)) continue;
-      const text = shownText(el);
+      const c = all[i];
+      if (found.some(f => f.el.contains(c)) || c.closest('[' + COOKIE_MARK + ']')) continue;
+      // Only an element that acts as a control: a button of some kind, or a
+      // box with a click handler or a pointer cursor whose label is a choice.
+      const kind = c.matches('button, [role=button], input[type=button], input[type=submit], a, [onclick]');
+      let label = '';
+      if (!kind) {{
+        if (c.children.length > 2 || (c.textContent || '').length > 60) continue;
+        label = labelOf(c);
+        if (!label || label.length > {max_label} || !(strict.test(label) || soft.test(label))) continue;
+        try {{ if (getComputedStyle(c).cursor !== 'pointer') continue; }} catch (e) {{ continue; }}
+        if (c.parentElement && c.parentElement.closest('button, [role=button], a, [onclick]')) continue;
+      }} else {{
+        if (!isChoice(c)) continue;
+        label = labelOf(c);
+      }}
+      if (!label || label.length > {max_label}) continue;
+      const isStrict = strict.test(label);
+      if (!isStrict && !soft.test(label)) continue;
+      if (!boxShows(c)) continue;
+      const cr = c.getBoundingClientRect();
+      if (!meets(cr)) continue;
+      // The nearest ancestor whose own text names cookies.
+      let box = c.parentElement;
+      for (let k = 0; box && box !== body && k < 10 && !/cookie/i.test(ownText(box)); k++) box = box.parentElement;
+      if (!box || box === body || box === document.documentElement) continue;
+      if (!/cookie/i.test(ownText(box))) continue;
+      if (!isStrict && !consentSentence(ownText(box))) continue;
+      // Up through every ancestor that adds nothing of its own.
+      const chain = [box];
+      let have = content(box);
+      for (let a = box.parentElement; a && a !== body && a !== document.documentElement; a = a.parentElement) {{
+        const more = content(a);
+        if (more !== have) break;
+        chain.push(a);
+        box = a;
+      }}
+      if (!layered(box)) continue;
+      if (!showing(box)) continue;
+      const text = shownText(box);
       if (!text || text.length > {max_text}) continue;
-      if (!/cookie/i.test(ownText(el))) continue;
-      if (el.querySelector('h1, main, textarea, select, input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit]):not([type=reset])')) continue;
+      if (box.querySelector('h1, main, textarea, select, input:not([type=hidden]):not([type=checkbox]):not([type=radio]):not([type=button]):not([type=submit]):not([type=reset])')) continue;
       if (pageChars - text.length < {min_outside}) continue;
-      const controls = Array.from(el.querySelectorAll('button, [role=button], a, input[type=button], input[type=submit]'))
-        .filter(c => {{ const l = label(c); return l.length > 0 && l.length <= {max_label} && choice.test(l) && boxShows(c); }});
-      if (!controls.length) continue;
-      const onTop = controls.some(c => {{
-        const cr = c.getBoundingClientRect();
-        const x = Math.min(vw - 1, Math.max(0, cr.left + cr.width / 2)), y = Math.min(vh - 1, Math.max(0, cr.top + cr.height / 2));
-        if (!meets(cr)) return false;
-        const hit = document.elementFromPoint(x, y);
-        return !!hit && el.contains(hit);
+      const x = Math.min(vw - 1, Math.max(0, cr.left + cr.width / 2)), y = Math.min(vh - 1, Math.max(0, cr.top + cr.height / 2));
+      const hit = document.elementFromPoint(x, y);
+      if (!hit || !box.contains(hit)) continue;
+      const wide = chain.some(el => covers(el.getBoundingClientRect(), 0.5)) || Array.from(box.querySelectorAll('*')).slice(0, 400).some(el => {{
+        try {{ const p = getComputedStyle(el).position; return (p === 'fixed' || p === 'absolute') && covers(el.getBoundingClientRect(), 0.5); }} catch (e) {{ return false; }}
       }});
-      if (!onTop) continue;
-      if (!meets(r) && !controls.some(c => meets(c.getBoundingClientRect()))) continue;
-      const cls = Array.from(el.classList || []).find(c => /^[A-Za-z_][\w-]*$/.test(c));
-      const n = el.tagName.toLowerCase() + (el.id ? '#' + el.id : el.getAttribute('role') ? '[role=' + el.getAttribute('role') + ']' : cls ? '.' + cls : '');
-      found.push({{ el, name: n, wide: covers(r, 0.5) }});
+      const cls = Array.from(box.classList || []).find(k => /^[A-Za-z_][\w-]*$/.test(k));
+      const n = box.tagName.toLowerCase() + (box.id ? '#' + box.id : box.getAttribute('role') ? '[role=' + box.getAttribute('role') + ']' : cls ? '.' + cls : '');
+      // A lock layer beside it: empty, see-through or dimming, above the page,
+      // and taking hit tests while the notice shows.
+      const locks = [];
+      const parent = box.parentElement;
+      if (parent && parent !== document.documentElement) {{
+        const points = [[0.5, 0.5], [0.2, 0.2], [0.8, 0.2], [0.2, 0.8], [0.8, 0.8]].map(([px, py]) => [Math.floor(vw * px), Math.floor(vh * py)]);
+        for (const sib of Array.from(parent.children)) {{
+          if (sib === box || !sib.matches('div, span') || sib.children.length || shownText(sib) || sib.hasAttribute(COOKIE_MARK)) continue;
+          let scs;
+          try {{ scs = getComputedStyle(sib); }} catch (e) {{ continue; }}
+          if (scs.position !== 'fixed' || scs.display === 'none' || !covers(sib.getBoundingClientRect(), 0.9)) continue;
+          if (scs.backgroundImage !== 'none') continue;
+          const m = /rgba?\(([^)]*)\)/.exec(scs.backgroundColor || '');
+          const parts = m ? m[1].split(/[\s,/]+/).filter(Boolean) : [];
+          const a = parts.length >= 4 ? parseFloat(parts[3]) : (m ? 1 : 0);
+          if (!(a < 0.9)) continue;
+          if (!(parseInt(scs.zIndex, 10) > 0)) continue;
+          if (!points.some(([px, py]) => document.elementFromPoint(px, py) === sib)) continue;
+          locks.push(sib);
+        }}
+      }}
+      found.push({{ el: box, name: n, wide, locks }});
     }}
-    let wide = false;
+    let unblur = false;
     for (const f of found) {{
       f.el.setAttribute(COOKIE_MARK, f.name);
       f.el.style.setProperty('display', 'none', 'important');
       report(f.name);
-      wide = wide || f.wide;
       out.changed = true;
-      // The empty layer a notice lays over the page beside itself.
-      const parent = f.el.parentElement;
-      if (parent && parent !== document.documentElement) for (const sib of Array.from(parent.children)) {{
-        if (sib === f.el || sib.children.length || shownText(sib) || sib.hasAttribute(COOKIE_MARK)) continue;
-        let scs;
-        try {{ scs = getComputedStyle(sib); }} catch (e) {{ continue; }}
-        if (scs.position !== 'fixed' || scs.display === 'none' || !covers(sib.getBoundingClientRect(), 0.9)) continue;
+      for (const sib of f.locks) {{
         sib.setAttribute(COOKIE_MARK, 'lock ' + f.name);
         sib.style.setProperty('display', 'none', 'important');
       }}
+      unblur = unblur || f.wide || f.locks.length > 0;
     }}
     if (!names.length) return;
-    if (found.length) {{
+    if (unblur) {{
       const notice = el => !!el.closest('[' + COOKIE_MARK + ']');
       const describe = el => el.tagName.toLowerCase() + (el.id ? '#' + el.id : '');
       const near = [document.documentElement, body];
       for (const c of Array.from(body.children)) {{ near.push(c); for (const g of Array.from(c.children)) near.push(g); }}
       for (const el of near) {{
-        // Only a box the size of the page: a blurred decoration stays.
+        // Only a box the size of the page, and only a light blur: a blurred
+        // decoration or a paywalled teaser keeps its own.
         if (notice(el) || !covers(el.getBoundingClientRect(), 0.5)) continue;
         const f = el.style.getPropertyValue('filter');
-        if (f && /blur\(/.test(f)) {{ el.style.removeProperty('filter'); out.unlocked.push('filter ' + describe(el)); out.changed = true; }}
+        const m = /^\s*blur\(\s*([\d.]+)px\s*\)\s*$/.exec(f || '');
+        if (m && parseFloat(m[1]) <= {max_blur}) {{ el.style.removeProperty('filter'); out.unlocked.push('filter ' + describe(el)); out.changed = true; }}
       }}
       const otherDialog = q('dialog[open], [aria-modal="true"], [role="dialog"], [role="alertdialog"]').some(el => !notice(el) && showing(el));
-      if (wide && !otherDialog) for (const [el, tag] of [[document.documentElement, 'html'], [body, 'body']]) {{
+      if (!otherDialog) for (const [el, tag] of [[document.documentElement, 'html'], [body, 'body']]) {{
         for (const p of ['overflow', 'overflow-y']) {{
           if (el.style.getPropertyValue(p) === 'hidden') {{ el.style.removeProperty(p); out.unlocked.push(tag + ' style ' + p); out.changed = true; }}
         }}
@@ -735,6 +820,7 @@ fn cookie_notice_js() -> String {
         max_text = COOKIE_NOTICE_MAX_TEXT,
         min_outside = COOKIE_NOTICE_MIN_OUTSIDE_TEXT,
         max_label = COOKIE_NOTICE_MAX_LABEL,
+        max_blur = COOKIE_NOTICE_MAX_BLUR_PX,
     )
 }
 

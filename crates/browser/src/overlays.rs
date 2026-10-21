@@ -34,7 +34,10 @@
 //!
 //! - **Intros** as preloaders are, named `intro` or `splash` instead of a
 //!   loader word ([`INTRO_WORDS`]), with up to [`INTRO_MAX_TEXT`] characters
-//!   and [`INTRO_WAIT_MS`] to go on their own. A fill counts as opaque when it
+//!   and [`INTRO_WAIT_MS`] to go on their own, when they stand in front of a
+//!   page: no `h1` of their own, at least [`SPLASH_MIN_OUTSIDE_TEXT`]
+//!   characters outside, and something of the page under them at a probe
+//!   point (a fixed `section.intro` hero the content scrolls over is the page). A fill counts as opaque when it
 //!   is a colour at alpha 0.9 or more or a gradient whose every stop is (for
 //!   preloaders too). Corpus run 1006: tirionai.com's `div.cine-intro`.
 //! - **Splash gates** by structure (`splashes()` in [`preloader_js`]): a
@@ -43,7 +46,8 @@
 //!   ([`ENTER_WORDS`]), no age, cookie, accept or agree words, no field,
 //!   frame or dialog, at most one link or button, and a way through (the
 //!   layer is `cursor: pointer` or has an `onclick`, or its one control says
-//!   enter). Hidden at once, never clicked. Corpus run 1006: noteforge.co's
+//!   enter), standing in front of a page as an intro must. Hidden at once,
+//!   never clicked. Corpus run 1006: noteforge.co's
 //!   "Enter NoteForge" layer, which stays until clicked, covered all six
 //!   captures.
 //!
@@ -161,6 +165,9 @@ pub const ENTER_WORDS: &[&str] = &[
 ];
 /// Most visible characters a splash gate may carry ("Enter NoteForge →").
 pub const SPLASH_MAX_TEXT: usize = 60;
+/// Least visible text the page shows outside a splash or an intro for it to
+/// be hidden: under that, the layer is the page.
+pub const SPLASH_MIN_OUTSIDE_TEXT: usize = 200;
 /// Least share of the first screen a preloader covers.
 pub const PRELOADER_MIN_COVER: f64 = 0.9;
 
@@ -196,6 +203,36 @@ pub fn preloader_js() -> String {
     if (!/gradient\(/.test(img) || /url\(/.test(img)) return false;
     const stops = img.match(/rgba?\([^)]*\)/g) || [];
     return stops.length > 0 && stops.every(c => alpha(c) >= 0.9);
+  }};
+  // Whether a full-screen layer stands in front of a page rather than being
+  // it: no h1 of its own, at least {min_outside} characters of text outside
+  // it, and, with the layer out of the hit test, something of the page
+  // under it at one of the probe points (text of its own, a replaced
+  // element, or a box smaller than the screen). A hero the content scrolls
+  // over from 100vh, or a one-screen site, has nothing under it.
+  const frontsPage = (el, points) => {{
+    const vw = window.innerWidth || 0, vh = window.innerHeight || 0;
+    if (el.querySelector('h1')) return false;
+    const chars = n => (n.innerText || '').replace(/\s+/g, ' ').trim().length;
+    if (!document.body || chars(document.body) - chars(el) < {min_outside}) return false;
+    const big = r => {{
+      const w = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0));
+      const h = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
+      return (w * h) / (vw * vh) >= 0.9;
+    }};
+    const prev = [el.style.getPropertyValue('visibility'), el.style.getPropertyPriority('visibility')];
+    el.style.setProperty('visibility', 'hidden', 'important');
+    try {{
+      return points.some(([x, y]) => {{
+        const hit = document.elementFromPoint(x, y);
+        if (!hit || hit === document.body || hit === document.documentElement || el.contains(hit)) return false;
+        const own = Array.from(hit.childNodes).some(n => n.nodeType === 3 && n.data.trim());
+        return own || hit.matches('img, svg, video, canvas, picture, input, button, textarea, select') || !big(hit.getBoundingClientRect());
+      }});
+    }} finally {{
+      if (prev[0]) el.style.setProperty('visibility', prev[0], prev[1]);
+      else el.style.removeProperty('visibility');
+    }}
   }};
   const enterText = t => {{
     const words = t.toLowerCase().split(/[^\p{{L}}\p{{N}}]+/u).filter(Boolean);
@@ -256,6 +293,8 @@ pub fn preloader_js() -> String {
       // A layer that asks to be entered is a splash gate: it never goes on
       // its own, so it is not waited for (`splashes`).
       if (enterText(shown)) continue;
+      // An intro fronts a page that is already there; a fixed hero is the page.
+      if (!loader && !frontsPage(el, points)) continue;
       // The outermost match stands for the ones inside it.
       if (found.some(f => f.el.contains(el))) continue;
       const names = loader ? namesLoader : namesIntro;
@@ -316,6 +355,7 @@ pub fn preloader_js() -> String {
         }}
       }}
       if (!onTop) continue;
+      if (!frontsPage(el, points)) continue;
       const cls = Array.from(el.classList || []).find(c => /^[A-Za-z_][\w-]*$/.test(c));
       const name = el.tagName.toLowerCase() + (el.id ? '#' + el.id : cls ? '.' + cls : '') + ' ("' + text.slice(0, 40).replace(/"/g, "'") + '")';
       found.push({{ el, name, kind: 'splash' }});
@@ -330,6 +370,7 @@ pub fn preloader_js() -> String {
         max_text = PRELOADER_MAX_TEXT,
         intro_max_text = INTRO_MAX_TEXT,
         splash_max_text = SPLASH_MAX_TEXT,
+        min_outside = SPLASH_MIN_OUTSIDE_TEXT,
     )
 }
 

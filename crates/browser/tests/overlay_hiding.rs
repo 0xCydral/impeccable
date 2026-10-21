@@ -357,3 +357,24 @@ fn an_intro_that_never_ends_is_hidden_after_its_budget() {
     assert_eq!(report.hidden, vec![hidden("intro", "div.cine-intro")]);
     assert!(report.waited_ms >= impeccable_browser::overlays::INTRO_WAIT_MS, "{}", report.waited_ms);
 }
+
+/// The review's probes: a one-screen site, a curtain hero with an Enter
+/// link, and a fixed hero named intro are the page, not a layer in front of
+/// it. Nothing is hidden and nothing is waited for.
+#[test]
+fn heroes_that_are_the_page_stay() {
+    let Some(engine) = engine() else { return };
+    let port = serve();
+    let mut browser = engine.launch().expect("launch");
+    for page in ["stay-landing.html", "stay-curtain.html", "stay-intro-hero.html"] {
+        let url = format!("http://127.0.0.1:{port}/{page}");
+        let (findings, evidence) =
+            detect_url_evidence(&mut browser, &url, &ScanOptions::default(), "load", 100, &EvidenceRequest::default())
+                .expect("scan");
+        assert!(has(&flagged(&findings), "low-contrast", "#own"), "{page}: {:#?}", flagged(&findings));
+        let report = evidence.overlays.as_ref().expect("overlay report");
+        assert!(report.hidden.is_empty(), "{page}: {report:?}");
+        assert_eq!(report.waited_ms, 0, "{page}");
+    }
+    browser.close();
+}

@@ -619,3 +619,64 @@ fn tealium_and_transcend_banners_are_hidden() {
         }
     }
 }
+
+/// The review's probes (work/round12/harness-review.md): page parts that
+/// mention cookies, or sit beside a real cookie bar, stay as they are.
+#[test]
+fn page_parts_that_look_like_a_notice_stay() {
+    let Some(engine) = engine() else { return };
+    let port = serve();
+    for page in ["stay-announce.html", "stay-header.html", "stay-cart.html", "stay-gdpr-modal.html"] {
+        let url = format!("http://127.0.0.1:{port}/{page}");
+        let scan = engine.detect_url_scan(&url, &ScanOptions::default()).expect("scan");
+        assert!(has(&flagged(&scan.findings), "low-contrast", "#own"), "{page}: {:#?}", flagged(&scan.findings));
+        assert!(scan.findings.iter().all(|f| f.extras.get("consentHidden").is_none()), "{page}");
+    }
+}
+
+#[test]
+fn a_notice_inside_a_header_or_a_stack_goes_alone() {
+    let Some(engine) = engine() else { return };
+    let port = serve();
+    let mut browser = engine.launch().expect("launch");
+    for (page, notice) in [("header-strip.html", "div.cookie-strip"), ("bottom-stack.html", "div.cookies")] {
+        let url = format!("http://127.0.0.1:{port}/{page}");
+        let (findings, evidence) =
+            detect_url_evidence(&mut browser, &url, &ScanOptions::default(), "load", 100, &EvidenceRequest::default())
+                .expect("scan");
+        assert!(has(&flagged(&findings), "low-contrast", "#own"), "{page}: {:#?}", flagged(&findings));
+        let consent = evidence.consent.as_ref().expect("consent report");
+        assert_eq!(consent.matched, vec![("cookie notice".to_string(), vec![notice.to_string()])], "{page}");
+    }
+    browser.close();
+}
+
+#[test]
+fn backgrounds_and_blurs_beside_a_cookie_bar_stay() {
+    let Some(engine) = engine() else { return };
+    let port = serve();
+    let mut browser = engine.launch().expect("launch");
+    for page in [
+        "stay-bg-layer.html",
+        "stay-bg-image.html",
+        "stay-bg-canvas.html",
+        "stay-blur-deco.html",
+        "stay-blur-deco-absolute.html",
+        "stay-blur-paywall.html",
+    ] {
+        let url = format!("http://127.0.0.1:{port}/{page}");
+        let (findings, evidence) =
+            detect_url_evidence(&mut browser, &url, &ScanOptions::default(), "load", 100, &EvidenceRequest::default())
+                .expect("scan");
+        let consent = evidence.consent.as_ref().expect("consent report");
+        assert_eq!(consent.matched, vec![("cookie notice".to_string(), vec!["div.cookie-bar".to_string()])], "{page}");
+        assert!(consent.unlocked.is_empty(), "{page}: {:?}", consent.unlocked);
+        assert!(!evidence.scan_snapshot.as_deref().unwrap().contains("lock div.cookie-bar"), "{page}");
+        // The light title on the dark image is not read against white (the
+        // review's probe: hiding the background made it 1.1:1).
+        if page == "stay-bg-image.html" {
+            assert!(!has(&flagged(&findings), "low-contrast", "#night-title"), "{page}: {:#?}", flagged(&findings));
+        }
+    }
+    browser.close();
+}
