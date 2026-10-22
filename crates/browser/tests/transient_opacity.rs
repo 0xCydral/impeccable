@@ -97,3 +97,41 @@ fn the_url_engine_blends_only_the_opacity_at_rest() {
         "only the four faded-at-rest cases should report, got {snippets:?}"
     );
 }
+
+/// Text faded by a box a visitor's action changes. A stepper's inactive
+/// item beside the active one at 1, with an opacity transition, is dim at
+/// rest and reports as advisory (r13-t1); links all faded alike, a tab with
+/// no transition, an inactive tab button and a number written inline keep
+/// their severity; a box a
+/// script parked in its `style` attribute at the start of a reveal is not
+/// at rest and passes at its declared colour.
+#[test]
+fn the_url_engine_demotes_a_state_and_skips_a_parked_reveal() {
+    let Some(engine) = engine() else { return };
+    let port = serve();
+    let url = format!("http://127.0.0.1:{port}/low-contrast-resting-states.html");
+    let findings = engine.detect_url(&url, &ScanOptions::default()).expect("scan");
+    let contrast: Vec<(String, bool)> = findings
+        .iter()
+        .filter(|f| f.antipattern == "low-contrast")
+        .map(|f| (f.snippet.clone(), f.advisory == Some(true)))
+        .collect();
+
+    for (case, expected, advisory) in [
+        ("inactive stepper item beside the active one", "text #b3b4b6 on #ffffff", true),
+        ("footer links all faded alike", "text #9a9c9e on #ffffff", false),
+        ("inactive tab with no transition", "text #b3b5b6 on #ffffff", false),
+        ("inactive tab button beside the selected one", "text #9fa2a4 on #ffffff", false),
+        ("a number written inline", "text #d2d4d5 on #ffffff", false),
+    ] {
+        assert!(
+            contrast.iter().any(|(s, a)| s.contains(expected) && *a == advisory),
+            "{case} should flag as `{expected}` (advisory {advisory}), got {contrast:?}"
+        );
+    }
+    assert_eq!(
+        contrast.len(),
+        5,
+        "the three parked reveals should not report, got {contrast:?}"
+    );
+}

@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dimmed by a State vs Parked for a Reveal: Should Flag vs Should Pass</title>
+  <style>
+    /* Fixture for text faded by a box a visitor's action changes.
+
+       A stepper's inactive items held at 0.3 by a stylesheet, beside the
+       `is-active` item at 1, with an opacity transition (arc.net), are dim
+       at rest: low-contrast reports them at the faded colour, as advisory
+       (r13-t1). Items all faded alike, an item faded with no transition, an
+       inactive tab (its label names the control a visitor picks), and a
+       number written inline with nothing to show it moves keep their
+       severity.
+
+       A box a script parked in its `style` attribute at the start of a
+       reveal it has not played is not at rest, and its text is scored at
+       its declared colour:
+
+       - `opacity` with a transform and `will-change`, displaced (an
+         animation library's start values, framer.com);
+       - `opacity` that reads a custom property a script scrubs, with an
+         opacity transition (ramp.com);
+       - `opacity: 0.2` with an opacity transition, while the same component
+         elsewhere on the page is already revealed at 1 (raycast.com).
+
+       The static HTML engine reads no transition, transform or
+       `will-change`, so it reports the stepper item at full severity and
+       the parked card and key at their faded colour (it does not resolve
+       the scrubbed opacity, and scores that copy as declared); its output
+       is pinned by the oracle. The URL behavior
+       is pinned by crates/browser/tests/transient_opacity.rs. Every case
+       uses its own text colour so a finding names the case. */
+    body { font: 16px/1.5 system-ui, sans-serif; margin: 0; color: #111111; background: #ffffff; }
+    .grid { display: grid; grid-template-columns: 560px 560px; gap: 40px; padding: 24px 20px; }
+    .col { width: 560px; }
+    .col h2 { font: 600 20px/1.2 system-ui, sans-serif; margin: 0 0 16px; color: #111111; }
+    .col h3 { font: 600 16px/1.3 system-ui, sans-serif; margin: 28px 0 8px; color: #111111; }
+    .case { width: 480px; }
+    .case p, .case h4, .case span, .case a { margin: 0; font-size: 16px; line-height: 24px; font-weight: 400; }
+
+    /* Dimmed by a state: advisory. */
+    .step { opacity: 0.3; transition: opacity 0.3s; }
+    .step.is-active { opacity: 1; }
+    .step-title { color: #01060b; }
+    .step-active-title { color: #111111; }
+
+    /* Keep their severity. */
+    .foot-link { display: block; opacity: 0.4; transition: opacity 0.2s; color: #02070c; text-decoration: none; }
+    .tab { opacity: 0.3; }
+    .tab.is-current { opacity: 1; }
+    .tab-label { color: #03080d; }
+    .tab-current-label { color: #111111; }
+    .pick { border: 0; background: none; padding: 0; font: inherit; opacity: 0.4; transition: opacity 0.3s; color: #10161c; }
+    .pick.selected { opacity: 1; color: #111111; }
+    .inline-dim { transition: opacity 0.3s; }
+    .inline-dim-copy { color: #20262c; }
+
+    /* Parked for a reveal: not at rest. */
+    .parked-card-copy { color: #050a0f; }
+    .scrubbed { transition: opacity 0.3s, transform 0.3s; }
+    .scrubbed-copy { color: #303438; }
+    .key { display: inline-block; width: 64px; transition: opacity 0.4s, box-shadow 0.2s; }
+    .key.glowing { transition: opacity 1.5s, box-shadow 1.5s; }
+    .key-label { color: #404448; }
+    .key-lit-label { color: #111111; }
+  </style>
+</head>
+<body>
+  <main class="grid">
+    <section class="col" data-col="flag">
+      <h2>Should flag</h2>
+
+      <h3>Inactive stepper item beside the active one (advisory)</h3>
+      <div class="case">
+        <article class="step is-active"><h4 class="step-active-title">Profiles</h4></article>
+        <article class="step"><h4 class="step-title">Sidebar tabs</h4></article>
+      </div>
+
+      <h3>Footer links all faded alike, with a hover transition</h3>
+      <div class="case">
+        <a class="foot-link" href="#a">Privacy</a>
+        <a class="foot-link" href="#b">Terms</a>
+      </div>
+
+      <h3>Inactive tab beside the current one, with no transition</h3>
+      <div class="case">
+        <div class="tab is-current"><span class="tab-current-label">Overview</span></div>
+        <div class="tab"><span class="tab-label">Pricing</span></div>
+      </div>
+
+      <h3>Inactive tab button beside the selected one, with a transition</h3>
+      <div class="case" role="tablist">
+        <button class="pick selected" role="tab" aria-selected="true">Fibre</button>
+        <button class="pick" role="tab" aria-selected="false">Mobile</button>
+      </div>
+
+      <h3>A number written inline, with nothing to show it moves</h3>
+      <div class="case"><div class="inline-dim" style="opacity: 0.2"><p class="inline-dim-copy">Archived projects</p></div></div>
+    </section>
+
+    <section class="col" data-col="pass">
+      <h2>Should pass</h2>
+
+      <h3>Card parked at its start values (URL engine)</h3>
+      <div class="case"><div class="parked-card" style="will-change: transform; opacity: 0.2; transform: translateX(-20px)"><p class="parked-card-copy">Design with an agent</p></div></div>
+
+      <h3>Copy held at the floor of a scrubbed opacity (URL engine)</h3>
+      <div class="case" style="--card-animation-1: 0"><div class="scrubbed" style="opacity: max(.2, var(--card-animation-1))"><p class="scrubbed-copy">Spend limits per card</p></div></div>
+
+      <h3>Key parked for a reveal the page plays below (URL engine)</h3>
+      <div class="case">
+        <div class="key" style="opacity: 0.2"><span class="key-label">esc</span></div>
+      </div>
+      <div class="case">
+        <div class="key glowing"><span class="key-lit-label">cmd</span></div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
