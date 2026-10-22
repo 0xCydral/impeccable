@@ -653,7 +653,9 @@ fn install_user_codex(root: &str, home: &str, cwd: &str, codex_home: Option<&str
         r#"{"hooks":{"PostToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"node \".codex/skills/impeccable/scripts/hook.mjs\""}]}]}}"#,
     );
     let mut env = HashMap::new();
+    // Windows resolves the home dir from USERPROFILE, posix from HOME.
     env.insert("HOME".to_string(), home.to_string());
+    env.insert("USERPROFILE".to_string(), home.to_string());
     if let Some(v) = codex_home {
         env.insert("CODEX_HOME".to_string(), v.to_string());
     }
@@ -717,6 +719,7 @@ fn repair_rewrites_a_stale_manifest_under_codex_home() {
     );
     let mut env = HashMap::new();
     env.insert("HOME".to_string(), home.clone());
+    env.insert("USERPROFILE".to_string(), home.clone());
     env.insert("CODEX_HOME".to_string(), codex_home.clone());
     let sys = Sys::new(env, home.clone());
 
