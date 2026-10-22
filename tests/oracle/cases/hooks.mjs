@@ -220,6 +220,22 @@ export default [
     ],
   },
 
+  // Umbrella session (#1101): the session cwd is a plain folder holding the
+  // projects, so the per-edit pass keys each cache to the project root below
+  // it. Stop finds them through the per-user session index (in the case's
+  // isolated HOME), reports both projects, and writes nothing in the
+  // umbrella folder. The second Stop is silent.
+  {
+    id: 'hook-stop-umbrella-cwd', verb: 'hook', workspace: 'hook-umbrella',
+    files: ['.impeccable/**', 'site/.impeccable/**', 'app/.impeccable/**'],
+    steps: [
+      { stdin: claudeEdit('site/src/a.css', { session_id: 'u1' }) },
+      { stdin: claudeEdit('app/src/b.css', { session_id: 'u1' }) },
+      { stdin: stop({ session_id: 'u1' }) },
+      { stdin: stop({ session_id: 'u1' }) },
+    ],
+  },
+
   // --- hook-before-edit.mjs (Cursor) ---
   { id: 'hbe-write-with-findings', verb: 'hook-before-edit', workspace: 'hook-project', stdin: { hook_event_name: 'preToolUse', conversation_id: 'cv1', workspace_roots: [WS], tool_name: 'Write', tool_input: { path: 'src/new.css', content: '.t { background: linear-gradient(90deg,#f00,#00f); -webkit-background-clip: text; color: transparent; }\n' } }, files: CACHE_FILES },
   { id: 'hbe-write-clean', verb: 'hook-before-edit', workspace: 'hook-project', stdin: { hook_event_name: 'preToolUse', conversation_id: 'cv1', workspace_roots: [WS], tool_name: 'Write', tool_input: { path: 'src/new.css', content: '.t { color: #111; }\n' } }, files: CACHE_FILES },
