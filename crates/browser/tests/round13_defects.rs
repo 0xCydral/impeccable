@@ -11,8 +11,8 @@
 //!   not charged with the list's lines.
 //! - `buried-raster-tracking-pixel.html`: a 0x0 beacon is not a buried
 //!   image; a faint photo is.
-//! - `straggler-clamped.html`: lines a clamp hides and a footnote marker
-//!   glued to the last word leave the last line unjudged.
+//! - `straggler-clamped.html`: lines a clamp hides leave the last line
+//!   unjudged.
 //! - `cramped-padding-dividers.html`: text under a lone divider is measured
 //!   to its glyphs; a scroller cuts the line that meets its bottom edge.
 //! - `low-contrast-covered-and-masked.html`: a caption under a higher panel
@@ -133,13 +133,13 @@ fn a_tracking_pixel_is_not_a_buried_raster() {
 }
 
 #[test]
-fn hidden_lines_and_end_markers_leave_the_last_line_unjudged() {
+fn lines_a_clamp_hides_leave_the_last_line_unjudged() {
     let Some(f) = scan("straggler-clamped.html") else { return };
     columns(
         &f,
         "straggler",
-        &["flag-unclamped", "flag-marker-early"],
-        &["pass-clamped", "pass-marker-last"],
+        &["flag-unclamped", "flag-marker-last"],
+        &["pass-clamped"],
     );
 }
 

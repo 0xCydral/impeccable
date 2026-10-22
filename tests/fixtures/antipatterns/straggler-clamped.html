@@ -2,14 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Straggler, clamped lines and footnote markers</title>
+  <title>Straggler, clamped lines</title>
   <!--
     Browser-only reads. Columns are 40ch of a monospace face, so the text
     breaks the same on any host font: three full lines and "copy." alone on
     a fourth. A line clamp of three hides that line (vercel.com's
-    line-clamp-2 cards), and a footnote marker glued to the last word
-    (apple.com's reliability.<sup>22</sup>) leaves the last line unjudged.
-    The same paragraph unclamped, or with its marker earlier, reports.
+    line-clamp-2 cards). The same paragraph unclamped reports, and so does
+    a lone last word carrying a footnote marker (apple.com's "audio.4").
   -->
   <style>
     body { margin: 0; padding: 32px; font-family: monospace; font-size: 16px; line-height: 24px; color: #1a1a1a; background: #ffffff; }
@@ -24,13 +23,12 @@
 <main>
   <section>
     <h2>Should flag</h2>
+    <p id="flag-marker-last">Line breaks decide how a block of text sits on the page, and one word alone on the last line leaves a hole under the copy.<sup>22</sup></p>
     <p id="flag-unclamped">Line breaks decide how a block of text sits on the page, and one word alone on the last line leaves a hole under the copy.</p>
-    <p id="flag-marker-early">Line<sup>1</sup> breaks decide how a block of text sits on the page, and one word alone on the last line leaves a hole under the copy.</p>
   </section>
   <section>
     <h2>Should pass</h2>
     <p id="pass-clamped" class="clamp">Line breaks decide how a block of text sits on the page, and one word alone on the last line leaves a hole under the copy.</p>
-    <p id="pass-marker-last">Line breaks decide how a block of text sits on the page, and one word alone on the last line leaves a hole under the copy.<sup>22</sup></p>
   </section>
 </main>
 </body>

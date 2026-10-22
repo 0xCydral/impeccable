@@ -138,34 +138,6 @@ fn push_rendered_text(dom: &dyn Dom, el: ElId, out: &mut String) {
     }
 }
 
-/// Whether the last text `el` sets on its lines sits in a `sup` or `sub`: a
-/// footnote marker glued to the last word (apple.com's
-/// `reliability.<sup>22</sup>`). The words are read with no boundary
-/// between text nodes, so the marker lengthens the last word, and a raised
-/// marker's width is not the characters it holds: the last line's share of
-/// the characters cannot be read. The line is not judged.
-fn ends_in_a_marker(dom: &dyn Dom, el: ElId) -> bool {
-    fn last_text(dom: &dyn Dom, el: ElId, in_marker: bool) -> Option<bool> {
-        for child in dom.child_nodes(el).into_iter().rev() {
-            match child {
-                DomChild::Text(text) if !text.trim().is_empty() => return Some(in_marker),
-                DomChild::Text(_) => {}
-                DomChild::Element(c) => {
-                    if renders_no_text(dom, c) {
-                        continue;
-                    }
-                    let marker = in_marker || matches!(tag_lower(dom, c).as_str(), "sup" | "sub");
-                    if let Some(found) = last_text(dom, c, marker) {
-                        return Some(found);
-                    }
-                }
-            }
-        }
-        None
-    }
-    last_text(dom, el, false).unwrap_or(false)
-}
-
 /// Whether `el`'s lines run past a box that clips them: a `-webkit-line-clamp`
 /// box (vercel.com's `p.line-clamp-2`, impeccable.style's release summaries)
 /// or one whose `overflow` clips on y, on `el` or within
@@ -248,7 +220,7 @@ fn chars_per_px(dom: &dyn Dom, el: ElId, widths: &[f64]) -> Option<f64> {
 /// them, and the last line holds one word when its share of the characters
 /// is nearer the last word's length than the last two words'.
 fn check_straggler(dom: &dyn Dom, el: ElId) -> Option<RuleHit> {
-    if wraps_with(dom, el, "pretty") || breaks_are_authored(dom, el) || ends_in_a_marker(dom, el) {
+    if wraps_with(dom, el, "pretty") || breaks_are_authored(dom, el) {
         return None;
     }
     let widths = line_widths(dom, el)?;
@@ -407,27 +379,6 @@ mod tests {
         d.set_styles(roomy, &[("display", "-webkit-box"), ("webkitLineClamp", "3"), ("overflow", "hidden")]);
         d.set_rect(roomy, 0.0, 100.0, 600.0, 72.0);
         assert_eq!(ids(&d, roomy), vec!["straggler"], "a clamp of three shows all three lines");
-    }
-
-    /// apple.com: `and reliability.<sup>22</sup>` on the last line. The
-    /// marker glues onto the last word and its raised width is not the
-    /// characters it holds. Twin: a marker earlier in the paragraph leaves
-    /// the last line judged.
-    #[test]
-    fn a_footnote_marker_at_the_end_leaves_the_last_line_unjudged() {
-        let mut d = FakeDom::new();
-        let (_h, body) = d.with_page();
-        let p = block(&mut d, body, "p", "Line breaks decide how a block of text sits on the page, and one word alone on the last line leaves a hole under the", &[560.0, 560.0, 40.0]);
-        inline(&mut d, p, "sup", "22", &[]);
-        assert!(ids(&d, p).is_empty());
-
-        let q = d.add(Some(body), "p");
-        d.add_text(q, "Line breaks decide how a block");
-        inline(&mut d, q, "sup", "1", &[]);
-        d.add_text(q, " of text sits on the page, and one word alone on the last line leaves a hole under the text.");
-        d.set_styles(q, &[("fontSize", "16px"), ("display", "block"), ("whiteSpace", "normal")]);
-        d.set_text_lines(q, &[(0.0, 100.0, 560.0, 19.0), (0.0, 124.0, 560.0, 19.0), (0.0, 148.0, 40.0, 19.0)]);
-        assert_eq!(ids(&d, q), vec!["straggler"]);
     }
 
     /// A soft hyphen paints nothing, so the snippet names the word a reader
