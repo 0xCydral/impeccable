@@ -840,6 +840,62 @@ fn visible_x_extent(
     Some((left, right, cut_left, cut_right))
 }
 
+/// How far past a clipping box's edge text has to run before the side is
+/// cut rather than crowded ([`visible_x_extent`], [`visible_y_extent`]).
+const CLIP_CUT_TOLERANCE_PX: f64 = 0.5;
+
+/// [`visible_x_extent`] on the y axis: what the boxes from `node` up to `el`
+/// that clip or scroll vertically leave of `tr`, top and bottom, and whether
+/// each side was cut by more than `tolerance`. A box that scrolls on y and
+/// holds more than it shows cuts its content at its bottom edge, so text
+/// within `scroll_edge` of that edge is cut there too: stripe.com's API
+/// docs shell fills the viewport, and its sidebar's list runs on past y 800
+/// inside a scroller whose edge the last line it shows happens to meet.
+/// That line is where the scroll stops, not text flush against padding.
+/// `None` when nothing of the text is left.
+fn visible_y_extent(
+    dom: &dyn Dom,
+    el: ElId,
+    node: ElId,
+    tr: &Rect,
+    tolerance: f64,
+    scroll_edge: f64,
+) -> Option<(f64, f64, bool, bool)> {
+    let (mut top, mut bottom) = (tr.top, tr.bottom);
+    let (mut cut_top, mut cut_bottom) = (false, false);
+    let mut cur = dom.parent(node);
+    while let Some(p) = cur {
+        let oy = crate::browser::text_geometry::overflow_y(dom, p);
+        if dom.style(p, "display") != "inline" && matches!(oy.as_str(), "hidden" | "clip" | "auto" | "scroll") {
+            let pr = dom.rect(p);
+            let border_top = style_px(dom, p, "borderTopWidth");
+            let inner_top = pr.top + if border_top.is_finite() { border_top.max(0.0) } else { 0.0 };
+            let ch = dom.client_height(p);
+            let inner_bottom = if ch.is_finite() && ch > 0.0 { inner_top + ch } else { pr.bottom };
+            if top < inner_top {
+                cut_top |= inner_top - top > tolerance;
+                top = inner_top;
+            }
+            if bottom > inner_bottom {
+                cut_bottom |= bottom - inner_bottom > tolerance;
+                bottom = inner_bottom;
+            }
+            let scrolls_on = matches!(oy.as_str(), "auto" | "scroll") && dom.scroll_height(p) > ch + 1.0;
+            if scrolls_on && bottom >= inner_bottom - scroll_edge {
+                cut_bottom = true;
+            }
+            if bottom - top < 1.0 {
+                return None;
+            }
+        }
+        if p == el {
+            break;
+        }
+        cur = dom.parent(p);
+    }
+    Some((top, bottom, cut_top, cut_bottom))
+}
+
 /// The width of every line the element's text rendered on, or `None` when
 /// the DOM cannot say where the lines are.
 ///
@@ -1193,7 +1249,11 @@ fn drawn_inner_edge(dom: &dyn Dom, el: ElId) -> [f64; 4] {
 /// In a chip under [`SMALL_CHIP_HEIGHT_UNDER_PX`] tall the text is measured by
 /// its glyphs ([`glyph_band`]) rather than by the content area its rect spans:
 /// the line box there already holds the glyphs off the edge, and two pixels
-/// of declared padding read as enough. Taste call r3-20 (2026-09-18).
+/// of declared padding read as enough. Taste call r3-20 (2026-09-18). So is
+/// text under a lone hairline divider on a box with no fill.
+///
+/// Text a clip cuts by more than half a pixel is cut on that side, not
+/// flush ([`visible_x_extent`], [`visible_y_extent`]).
 pub fn text_descendants_flush_sides(dom: &dyn Dom, el: ElId, rect: &Rect) -> [bool; 4] {
     let mut flush = [false; 4];
     // Rects are screen pixels and the thresholds layout pixels: a box drawn
@@ -1236,6 +1296,23 @@ pub fn text_descendants_flush_sides(dom: &dyn Dom, el: ElId, rect: &Rect) -> [bo
         };
         js::math_max(border, inner_edge[i])
     });
+    // A lone hairline rule, top or bottom, on a box with no fill and no rule
+    // on the opposite side is a divider between stacked rows, not a frame:
+    // theguardian.com's most-viewed list draws a 1px rule over each item
+    // and sets the headline 3px under it, its capitals about 7px under it.
+    // On such a side the glyphs are measured ([`glyph_band`]) rather than
+    // the content area, which runs from the font's ascent, as a small chip's
+    // are. A frame (rules on both sides), a fill, or a thicker rule keep the
+    // content-area measure.
+    let unfilled = {
+        let bg = crate::color::parse_any_color(Some(&dom.style(el, "backgroundColor")));
+        let image = dom.style(el, "backgroundImage");
+        bg.is_some_and(|c| c.alpha_or_one() == 0.0) && matches!(image.as_str(), "none" | "")
+    };
+    let divider = |side: usize, opposite: usize| {
+        unfilled && border_drawn[side] > 0.0 && border_drawn[side] <= 1.0 && border_drawn[opposite] == 0.0
+    };
+    let divider_sides = [divider(0, 2), divider(2, 0)];
     let candidates = dom.query_all(Some(el), TEXT_EDGE_QUERY).unwrap_or_default();
     for node in candidates {
         let tag_name = dom.tag_name(node);
@@ -1281,13 +1358,27 @@ pub fn text_descendants_flush_sides(dom: &dyn Dom, el: ElId, rect: &Rect) -> [bo
         // this rule had before, rather than going silent. In a small chip the
         // glyphs are measured rather than the font's content area.
         let nr = match dom.direct_text_rect(node) {
-            Some(t) if t.width > 0.0 && t.height > 0.0 => match clamp_to(
-                &if small_chip { glyph_band_at(dom, node, &t, scale) } else { t },
-                &br,
-            ) {
-                Some(c) => c,
-                None => continue,
-            },
+            Some(t) if t.width > 0.0 && t.height > 0.0 => {
+                let measured = if small_chip {
+                    glyph_band_at(dom, node, &t, scale)
+                } else if divider_sides[0] || divider_sides[1] {
+                    let band = glyph_band_at(dom, node, &t, scale);
+                    let mut r = t;
+                    if divider_sides[0] {
+                        r.top = band.top;
+                    }
+                    if divider_sides[1] {
+                        r.bottom = band.bottom;
+                    }
+                    Rect::from_xywh(r.left, r.top, r.width, r.bottom - r.top)
+                } else {
+                    t
+                };
+                match clamp_to(&measured, &br) {
+                    Some(c) => c,
+                    None => continue,
+                }
+            }
             _ => br,
         };
         // Only what the clipping boxes on the way leave of the line reaches
@@ -1295,7 +1386,16 @@ pub fn text_descendants_flush_sides(dom: &dyn Dom, el: ElId, rect: &Rect) -> [bo
         // off (a table scrolled sideways inside the box, a tab strip that
         // scrolls, a title an ellipsis ends), not where glyphs crowd a
         // boundary.
-        let Some((left, right, cut_left, cut_right)) = visible_x_extent(dom, el, node, &nr, edge_threshold) else {
+        // A clip cuts a side when the text runs past it by more than half a
+        // pixel: stripe.com's code tab clips a link 3px past its right
+        // edge, and the glyphs there are cut off, not crowding it.
+        let cut_tolerance = CLIP_CUT_TOLERANCE_PX * scale;
+        let Some((left, right, cut_left, cut_right)) = visible_x_extent(dom, el, node, &nr, cut_tolerance) else {
+            continue;
+        };
+        let Some((top, bottom, cut_top, cut_bottom)) =
+            visible_y_extent(dom, el, node, &nr, cut_tolerance, edge_threshold)
+        else {
             continue;
         };
         // Text lands on a side when it stops within the threshold of it, on
@@ -1314,9 +1414,9 @@ pub fn text_descendants_flush_sides(dom: &dyn Dom, el: ElId, rect: &Rect) -> [bo
             gap <= land && gap - border_drawn[side] * scale < land && gap >= -edge_threshold
         };
         let sides = [
-            lands(nr.top - rect.top, 0),
+            !cut_top && lands(top - rect.top, 0),
             !cut_right && lands(rect.right - right, 1),
-            lands(rect.bottom - nr.bottom, 2),
+            !cut_bottom && lands(rect.bottom - bottom, 2),
             !cut_left && lands(left - rect.left, 3),
         ];
         // The remaining tests run only for text that reached an edge.
@@ -4439,6 +4539,62 @@ mod tests {
             hits[0].snippet,
             "<div> \"border\": children flush against border on top/bottom (no inset)"
         );
+    }
+
+    /// theguardian.com's most-viewed list: a 1px rule over each item, the
+    /// headline's content area 3px under it and its glyphs 5px under it. A
+    /// lone hairline divider on a box with no fill is measured to the
+    /// glyphs. Twins: the same text in a frame (rules on both sides), or on
+    /// a fill, keeps the content-area measure and stays flush.
+    #[test]
+    fn cramped_padding_measures_glyphs_under_a_lone_divider() {
+        let run = |tweak: &dyn Fn(&mut FakeDom, ElId)| {
+            let mut d = FakeDom::new();
+            let (row, button) = accordion_row(&mut d);
+            for side in ["Right", "Bottom", "Left"] {
+                d.set_style(row, &format!("border{side}Width"), "0px");
+            }
+            d.set_rect(row, 0.0, 0.0, 600.0, 100.0);
+            d.set_styles(row, &[("boxShadow", "none"), ("outlineOffset", "0px")]);
+            d.set_styles(button, &[("fontSize", "17px"), ("lineHeight", "19.55px")]);
+            d.set_text_rect(button, 24.0, 3.0, 300.0, 21.0);
+            tweak(&mut d, row);
+            cramped(&d, row)
+        };
+        assert!(run(&|_, _| {}).is_empty(), "{:?}", run(&|_, _| {}));
+        assert_eq!(run(&|d, row| { d.set_style(row, "borderBottomWidth", "1px"); }).len(), 1, "a frame");
+        assert_eq!(run(&|d, row| { d.set_style(row, "backgroundColor", "rgb(240, 240, 240)"); }).len(), 1, "a fill");
+        assert_eq!(run(&|d, row| { d.set_style(row, "borderTopWidth", "2px"); }).len(), 1, "a 2px rule");
+    }
+
+    /// stripe.com's code tab clips a link 3px past its right edge: the
+    /// glyphs there are cut off, not crowding the edge. A list that runs on
+    /// past a scroller's bottom edge is cut there too. Twins: text a third
+    /// of a pixel past the clip, and a scroller with nothing more to show,
+    /// stay flush.
+    #[test]
+    fn cramped_padding_reads_text_a_clip_cuts_as_cut() {
+        let run = |text: (f64, f64, f64, f64), scroll_height: f64| {
+            let mut d = FakeDom::new();
+            let (row, button) = accordion_row(&mut d);
+            d.set_styles(row, &[("overflowX", "auto"), ("overflowY", "auto"), ("paddingRight", "0px")]);
+            d.el_mut(row).client_width = 600.0;
+            d.el_mut(row).client_height = 56.0;
+            d.el_mut(row).scroll_height = Some(scroll_height);
+            // The label's box reaches the row's right edge.
+            let h3 = d.parent(button).unwrap();
+            d.set_rect(h3, 24.0, 0.0, 576.0, 58.0);
+            d.set_rect(button, 24.0, 0.0, 578.0, 58.0);
+            d.set_text_rect(button, text.0, text.1, text.2, text.3);
+            cramped(&d, row)
+        };
+        // Past the right edge by 3px: cut, not flush. A third of a pixel is
+        // a line that ends on the edge.
+        assert!(run((300.0, 20.0, 302.0, 18.0), 56.0).is_empty());
+        assert_eq!(run((300.0, 20.0, 299.3, 18.0), 56.0).len(), 1);
+        // On the bottom edge of a box that scrolls on to more: cut there.
+        assert!(run((300.0, 39.0, 100.0, 18.0), 400.0).is_empty());
+        assert_eq!(run((300.0, 39.0, 100.0, 18.0), 56.0).len(), 1);
     }
 
     /// observations-47 row 13: auction.co.kr's menu links set their text at
