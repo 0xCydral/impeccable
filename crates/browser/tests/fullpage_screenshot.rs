@@ -299,6 +299,7 @@ fn a_fixed_scroll_frame_page_is_captured_by_scrolling_the_frame() {
     assert!(!all.iter().any(|(_, s, _)| *s == "#pass-frame-foot-copy"), "{all:?}");
 
     let shot = evidence.screenshot.as_ref().expect("screenshot");
+    std::fs::write("/private/tmp/claude-501/-Users-paulbakaus-code-impeccable-second/20cf1c68-ea9d-4ce9-b919-ddd097a160e0/scratchpad/relayout-engine.jpg", base64::engine::general_purpose::STANDARD.decode(&shot.jpeg_base64).unwrap()).unwrap();
     assert_eq!(shot.method, impeccable_browser::fullpage::method::STITCHED);
     assert!(shot.height > 3400.0, "{}", shot.height);
     let img = decode(&shot.jpeg_base64);
@@ -462,6 +463,7 @@ fn a_scroller_measured_mid_scroll_keeps_the_band_above_it() {
         .expect("evidence scan");
     browser.close();
     let shot = evidence.screenshot.as_ref().expect("screenshot");
+    std::fs::write("/private/tmp/claude-501/-Users-paulbakaus-code-impeccable-second/20cf1c68-ea9d-4ce9-b919-ddd097a160e0/scratchpad/relayout-engine.jpg", base64::engine::general_purpose::STANDARD.decode(&shot.jpeg_base64).unwrap()).unwrap();
     assert_eq!(shot.method, impeccable_browser::fullpage::method::STITCHED);
     let img = decode(&shot.jpeg_base64);
     // The band is the image's first hundred rows, as the rects measured it.
@@ -498,6 +500,7 @@ fn a_shell_inside_a_body_margin_is_captured_by_scrolling_the_shell() {
         .expect("evidence scan");
     browser.close();
     let shot = evidence.screenshot.as_ref().expect("screenshot");
+    std::fs::write("/private/tmp/claude-501/-Users-paulbakaus-code-impeccable-second/20cf1c68-ea9d-4ce9-b919-ddd097a160e0/scratchpad/relayout-engine.jpg", base64::engine::general_purpose::STANDARD.decode(&shot.jpeg_base64).unwrap()).unwrap();
     assert_eq!(shot.method, impeccable_browser::fullpage::method::STITCHED);
     assert!(shot.height > 3000.0, "{}", shot.height);
     let img = decode(&shot.jpeg_base64);
@@ -537,6 +540,7 @@ fn a_footer_under_a_scrolled_shell_reaches_the_screenshot() {
         .expect("evidence scan");
     browser.close();
     let shot = evidence.screenshot.as_ref().expect("screenshot");
+    std::fs::write("/private/tmp/claude-501/-Users-paulbakaus-code-impeccable-second/20cf1c68-ea9d-4ce9-b919-ddd097a160e0/scratchpad/relayout-engine.jpg", base64::engine::general_purpose::STANDARD.decode(&shot.jpeg_base64).unwrap()).unwrap();
     assert_eq!(shot.method, impeccable_browser::fullpage::method::STITCHED);
     assert!(shot.height >= 3140.0, "{}", shot.height);
     let img = decode(&shot.jpeg_base64);
@@ -567,4 +571,180 @@ fn serve_page(body: &'static str) -> u16 {
         }
     });
     port
+}
+
+fn scan_page(
+    engine: &BrowserEngine,
+    body: &'static str,
+    viewport: (u32, u32),
+    request: &EvidenceRequest,
+) -> (Vec<Finding>, Evidence) {
+    let port = serve_page(body);
+    let options = ScanOptions {
+        viewport: Some(viewport),
+        ..Default::default()
+    };
+    let mut browser = engine.launch().expect("launch");
+    let url = format!("http://127.0.0.1:{port}/");
+    let out = detect_url_evidence(&mut browser, &url, &options, "load", 100, request)
+        .expect("evidence scan");
+    browser.close();
+    out
+}
+
+/// The share of the pixels inside `rect` that `is` matches.
+fn share(img: &image::RgbImage, rect: [f64; 4], is: impl Fn([u8; 3]) -> bool) -> f64 {
+    let x0 = rect[0].max(0.0) as u32;
+    let y0 = rect[1].max(0.0) as u32;
+    let x1 = ((rect[0] + rect[2]) as u32).min(img.width());
+    let y1 = ((rect[1] + rect[3]) as u32).min(img.height());
+    let (mut hit, mut all) = (0usize, 0usize);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            all += 1;
+            if is(img.get_pixel(x, y).0) {
+                hit += 1;
+            }
+        }
+    }
+    hit as f64 / all.max(1) as f64
+}
+
+/// A phone page with a fixed sheet over the lower two thirds of the
+/// viewport (theguardian.com's support appeal, round 13 row 21), and small
+/// print far past the screenshot's cut.
+const COVER_SHEET_PAGE: &str = r#"<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Fixed sheet</title>
+<style>
+  body { margin: 0; background: #ffffff; color: #111111; font: 16px/1.5 Arial, sans-serif; }
+  .spacer { height: 4000px; background: repeating-linear-gradient(45deg, #dfe6ee 0 12px, #c3cfdc 12px 24px); }
+  .tiny { margin: 40px 20px; width: 300px; height: 60px; font-size: 9px; color: #222222; background: #ffffff; }
+  .sheet { position: fixed; left: 0; right: 0; top: 30%; bottom: 0; z-index: 40; background: #d00000; color: #ffffff; }
+</style></head><body>
+<h1>A long read</h1>
+<div class="spacer"></div>
+<p class="tiny" id="under-sheet">Small print far down a long page, under the sheet when scrolled to.</p>
+<div class="spacer" style="height: 1200px"></div>
+<aside class="sheet"><p>Support our journalism</p></aside>
+</body></html>"#;
+
+/// The same small print over a fixed backdrop painted under the page.
+const FIXED_BACKDROP_PAGE: &str = r#"<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Fixed backdrop</title>
+<style>
+  body { margin: 0; background: #ffffff; color: #111111; font: 16px/1.5 Arial, sans-serif; }
+  .backdrop { position: fixed; inset: 0; z-index: -1; background: #2050c0; }
+  .spacer { height: 4000px; }
+  .tiny { margin: 40px 20px; width: 300px; height: 60px; font-size: 9px; color: #222222; }
+</style></head><body>
+<div class="backdrop"></div>
+<h1>A long read</h1>
+<div class="spacer"></div>
+<p class="tiny" id="over-backdrop">Small print far down a long page, over the fixed backdrop.</p>
+<div class="spacer" style="height: 1200px"></div>
+</body></html>"#;
+
+fn element_shot<'a>(evidence: &'a Evidence, selector: &str) -> &'a impeccable_browser::fullpage::ElementShot {
+    evidence
+        .element_shots
+        .iter()
+        .find(|s| s.selector == selector)
+        .unwrap_or_else(|| panic!("no shot for {selector}: {:?}", evidence.element_rects.keys()))
+}
+
+#[test]
+fn an_element_shot_hides_the_fixed_sheet_over_the_element() {
+    let Some(engine) = engine() else { return };
+    let request = EvidenceRequest {
+        max_screenshot_height: 1500.0,
+        ..EvidenceRequest::default()
+    };
+    let (findings, evidence) = scan_page(&engine, COVER_SHEET_PAGE, (390, 844), &request);
+    let all = flagged(&findings, &evidence);
+    assert!(all.iter().any(|(_, s, _)| *s == "#under-sheet"), "{all:?}");
+    let shot = element_shot(&evidence, "#under-sheet");
+    let img = decode(&shot.jpeg_base64);
+    let red = share(&img, shot.rect, |p| p[0] > 170 && p[1] < 70 && p[2] < 70);
+    assert!(red < 0.2, "the sheet covers the element in its shot: {red}");
+    let white = share(&img, shot.rect, |p| p[0] > 230 && p[1] > 230 && p[2] > 230);
+    assert!(white > 0.5, "the element's own white box is missing: {white}");
+}
+
+#[test]
+fn an_element_shot_keeps_a_fixed_backdrop_under_the_element() {
+    let Some(engine) = engine() else { return };
+    let request = EvidenceRequest {
+        max_screenshot_height: 1500.0,
+        ..EvidenceRequest::default()
+    };
+    let (findings, evidence) = scan_page(&engine, FIXED_BACKDROP_PAGE, (390, 844), &request);
+    let all = flagged(&findings, &evidence);
+    assert!(all.iter().any(|(_, s, _)| *s == "#over-backdrop"), "{all:?}");
+    let shot = element_shot(&evidence, "#over-backdrop");
+    let img = decode(&shot.jpeg_base64);
+    let blue = share(&img, shot.rect, |p| p[2] > 150 && p[0] < 80 && p[1] < 120);
+    assert!(blue > 0.5, "the backdrop under the element was hidden: {blue}");
+}
+
+/// A page whose layout moves while the capture paints (round 13 row 23:
+/// developer.apple.com folds its navigator when the beyond-viewport capture
+/// resizes the page, and slides its column back after). That resize is
+/// Chromium's to give or not, so this page moves its column on its own: a
+/// slow `margin-left` animation, which shifts every box the probe samples.
+/// A section bar under a header that scrolls away sticks at the top of every
+/// tile after the first; the stitched image shows it once, where it sits.
+const RELAYOUT_PAGE: &str = r#"<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Relayout</title>
+<style>
+  body { margin: 0; background: #ffffff; }
+  .main { margin-left: 400px; animation: fold 20s linear forwards; }
+  @keyframes fold { from { margin-left: 400px; } to { margin-left: 0px; } }
+  .block { width: 300px; height: 300px; background: #0a7d3b; }
+  .row { height: 200px; background: #e8e8e8; margin-top: 20px; }
+  .tall { height: 6000px; }
+  .head { height: 60px; background: #ffffff; }
+  .bar { position: sticky; top: 0; height: 50px; background: #d00000; }
+</style></head><body>
+<div class="head"></div><div class="bar"></div>
+<div class="main"><div class="block"></div><div class="row"></div><div class="row"></div><div class="tall"></div></div>
+</body></html>"#;
+
+/// The twin: a page that moves only by transform (a carousel) and answers no
+/// resize keeps its beyond-viewport capture.
+const SLIDING_PAGE: &str = r#"<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Sliding</title>
+<style>
+  body { margin: 0; background: #ffffff; }
+  .main { margin-left: 400px; }
+  .block { width: 300px; height: 300px; background: #0a7d3b; animation: slide 0.8s linear infinite alternate; }
+  @keyframes slide { from { transform: translateX(0); } to { transform: translateX(200px); } }
+  .row { height: 200px; background: #e8e8e8; margin-top: 20px; }
+  .tall { height: 3000px; }
+</style></head><body>
+<div class="main"><div class="block"></div><div class="row"></div><div class="row"></div><div class="tall"></div></div>
+</body></html>"#;
+
+#[test]
+fn a_page_whose_layout_moves_during_the_capture_is_stitched() {
+    let Some(engine) = engine() else { return };
+    let (_, evidence) = scan_page(&engine, RELAYOUT_PAGE, (1280, 800), &EvidenceRequest::default());
+    let shot = evidence.screenshot.as_ref().expect("screenshot");
+    assert_eq!(shot.method, impeccable_browser::fullpage::method::STITCHED);
+    assert_eq!(shot.height, shot.document_height);
+    let img = decode(&shot.jpeg_base64);
+    let red = |p: [u8; 3]| p[0] > 170 && p[1] < 70 && p[2] < 70;
+    assert!(share(&img, [0.0, 65.0, 1280.0, 40.0], red) > 0.9, "the bar is missing where it sits");
+    for tile in 1..4 {
+        let top = tile as f64 * 800.0;
+        let stuck = share(&img, [0.0, top + 5.0, 1280.0, 40.0], red);
+        assert!(stuck < 0.1, "the stuck bar repeats on tile {tile}: {stuck}");
+    }
+}
+
+#[test]
+fn a_page_that_only_slides_keeps_its_beyond_viewport_capture() {
+    let Some(engine) = engine() else { return };
+    let (_, evidence) = scan_page(&engine, SLIDING_PAGE, (1280, 800), &EvidenceRequest::default());
+    let shot = evidence.screenshot.as_ref().expect("screenshot");
+    assert_eq!(shot.method, impeccable_browser::fullpage::method::BEYOND_VIEWPORT);
 }
