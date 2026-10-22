@@ -728,10 +728,13 @@ fn repair_rewrites_a_stale_manifest_under_codex_home() {
     assert_eq!(repaired, [".agents"]);
     let after = read(&manifest);
     assert!(!after.contains("hook.mjs"));
-    assert!(after.contains("scripts/impeccable"));
+    assert!(is_impeccable_manifest(&manifest));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 fn is_impeccable_manifest(path: &str) -> bool {
-    std::fs::read_to_string(path).is_ok_and(|t| t.contains("scripts/impeccable"))
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .is_some_and(|v| value_has_launcher_hook_marker(&v))
 }
