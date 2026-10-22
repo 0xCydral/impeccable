@@ -2234,13 +2234,22 @@ async function waitForDevServerModules(page, tmp, edits, { timeout = 20_000 } = 
     const deadline = Date.now() + timeout;
     let missing = expected;
     for (;;) {
-      const served = await page.evaluate(async (url) => {
-        const res = await fetch(url, { cache: 'no-store' });
-        return res.ok ? res.text() : null;
-      }, '/' + file).catch(() => null);
-      if (served === null) break;
-      missing = expected.filter((text) => !served.includes(text));
-      if (missing.length === 0) break;
+      // Each request is bounded by what is left of the deadline, so a stalled
+      // dev server cannot hold this wait past its timeout.
+      const requestMs = Math.max(250, Math.min(5_000, deadline - Date.now()));
+      const result = await page.evaluate(async ({ url, requestMs }) => {
+        try {
+          const res = await fetch(url, { cache: 'no-store', signal: AbortSignal.timeout(requestMs) });
+          return res.ok ? { text: await res.text() } : { notServed: true };
+        } catch (err) {
+          return { error: String(err?.message || err) };
+        }
+      }, { url: '/' + file, requestMs }).catch((err) => ({ error: err.message }));
+      if (result.notServed) break;
+      if (typeof result.text === 'string') {
+        missing = expected.filter((text) => !result.text.includes(text));
+        if (missing.length === 0) break;
+      }
       if (Date.now() > deadline) {
         throw new Error(`dev server still serves a stale /${file} after Apply; missing ${JSON.stringify(missing)} although the file on disk has them`);
       }
