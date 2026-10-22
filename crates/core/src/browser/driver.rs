@@ -1855,23 +1855,21 @@ static ORGANIC_VERTICES_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::syn
     regex::Regex::new(r"polygon\(\) with (\d+) vertices").expect("ORGANIC_VERTICES_RE")
 });
 
-/// The elements whose computed `clip-path` is a `polygon()` of `vertices`
-/// points.
+/// The elements whose computed `clip-path` is a `polygon()` the
+/// organic-clip-path rule would report with `vertices` points
+/// ([`crate::checks::css_scan::organic_polygon_vertices`]: the same count,
+/// grid, rectilinear and zigzag tests the scan applies to the stylesheet).
 fn elements_clipped_to_polygon(dom: &dyn Dom, vertices: usize) -> Vec<ElId> {
     dom.query_all(None, "*")
         .unwrap_or_default()
         .into_iter()
         .filter(|&el| {
             let clip = dom.style(el, "clipPath");
-            let Some(body) = clip.trim().strip_prefix("polygon(").and_then(|b| b.strip_suffix(')')) else {
-                return false;
-            };
-            // A fill rule (`evenodd, ...`) leads with no coordinates.
-            let points = crate::js_ext_a::split_commas_outside_parens(body)
-                .into_iter()
-                .filter(|p| p.trim().chars().any(|c| c.is_ascii_digit()))
-                .count();
-            points == vertices
+            clip.trim()
+                .strip_prefix("polygon(")
+                .and_then(|b| b.strip_suffix(')'))
+                .and_then(crate::checks::css_scan::organic_polygon_vertices)
+                == Some(vertices)
         })
         .collect()
 }
@@ -4880,18 +4878,27 @@ mod page_level_form_tests {
     /// element whose computed style carries them.
     #[test]
     fn a_clip_or_an_easing_page_form_is_anchored_on_its_carrier() {
-        let organic = "clip-path: polygon() with 4 vertices approximating an organic contour";
+        let blob_clip = "polygon(3% 7%, 21% 1%, 47% 4%, 73% 2%, 96% 9%, 99% 33%, 94% 61%, 97% 88%, 71% 97%, 44% 93%, 18% 99%, 2% 84%, 6% 52%, 1% 27%)";
+        let organic = "clip-path: polygon() with 14 vertices approximating an organic contour";
         let mut d = FakeDom::new();
         let (_html, body) = d.with_page();
-        // Another vertex count, and a carrier with no box, are passed over.
+        // Another vertex count, a 14-point zigzag divider the rule would not
+        // report, and a carrier with no box are all passed over.
         let triangle = d.add(Some(body), "div");
         d.set_rect(triangle, 0.0, 0.0, 200.0, 200.0);
         d.set_style(triangle, "clipPath", "polygon(50% 0%, 100% 100%, 0% 100%)");
+        let zigzag = d.add(Some(body), "div");
+        d.set_rect(zigzag, 0.0, 200.0, 1200.0, 40.0);
+        d.set_style(
+            zigzag,
+            "clipPath",
+            "polygon(0% 0%, 7.7% 100%, 15.4% 0%, 23.1% 100%, 30.8% 0%, 38.5% 100%, 46.2% 0%, 53.8% 100%, 61.5% 0%, 69.2% 100%, 76.9% 0%, 84.6% 100%, 92.3% 0%, 100% 100%)",
+        );
         let closed = d.add(Some(body), "div");
-        d.set_style(closed, "clipPath", "polygon(3% 7%, 96% 2%, 91% 97%, 6% 92%)");
+        d.set_style(closed, "clipPath", blob_clip);
         let blob = d.add(Some(body), "div");
         d.set_rect(blob, 0.0, 300.0, 600.0, 400.0);
-        d.set_style(blob, "clipPath", "polygon(3% 7%, 96% 2%, 91% 97%, 6% 92%)");
+        d.set_style(blob, "clipPath", blob_clip);
         assert_eq!(page_form_anchor(&d, "organic-clip-path", organic), Some(blob));
         assert_eq!(
             page_form_anchor(&d, "organic-clip-path", "clip-path: polygon() with 9 vertices approximating an organic contour"),

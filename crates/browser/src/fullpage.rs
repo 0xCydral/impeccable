@@ -68,6 +68,11 @@ pub struct ElementShot {
     pub height: f64,
     /// The element's `[x, y, width, height]` inside this image.
     pub rect: [f64; 4],
+    /// The fixed layers hidden while this image was taken, because they were
+    /// painted over the element it was taken for (a support appeal, a cookie
+    /// sheet), as short selectors (`aside#appeal`, `div.sheet.open`). Empty
+    /// when the image shows the page as a visitor scrolled there sees it.
+    pub hidden_covers: Vec<String>,
 }
 
 /// The element a page scrolls instead of its document.
@@ -341,6 +346,26 @@ const SCROLL_TO_JS: &str = r#"(async ({ x, y, useScroller, hideFixed, docY }) =>
     }
     window.__impeccableShotHidden = hidden;
     await frame();
+  } else if (hideFixed && !el && window.__impeccableShotHidden && window.__impeccableShotAnchors) {
+    // Each later tile: a sticky box that sticks only now (a section bar
+    // further down) goes too. Once hidden it stays hidden: its place at the
+    // top of its section is on an earlier tile.
+    const hidden = window.__impeccableShotHidden;
+    const done = new Set(hidden.map(h => h[0]));
+    let added = false;
+    for (const [node] of window.__impeccableShotAnchors.boxes) {
+      if (done.has(node) || !node.isConnected) continue;
+      const cs = getComputedStyle(node);
+      if (cs.position !== 'sticky') continue;
+      const r = node.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) continue;
+      const offset = parseFloat(cs.top);
+      if (!Number.isFinite(offset) || Math.abs(r.top - offset) >= 0.5) continue;
+      hidden.push([node, node.style.getPropertyValue('opacity'), node.style.getPropertyPriority('opacity')]);
+      node.style.setProperty('opacity', '0', 'important');
+      added = true;
+    }
+    if (added) await frame();
   }
   return pos;
 })"#;
@@ -445,20 +470,26 @@ const ELEMENT_INTO_VIEW_JS: &str = r#"(async (resolve, { selector, identity, nod
 /// element's visible part lists something of the layer before it. Never the
 /// layer that holds the element, never one that scrolls along (a fixed box
 /// under a transformed or filtered ancestor, as `stitch` reads it), and never
-/// one painted under it (a fixed backdrop). A layer that takes no pointer
-/// events stays: the hit test does not list it. Returns how many were hidden;
-/// [`RESTORE_COVERS_JS`] puts them back. With `check` it hides nothing and
-/// answers whether the last tile's hiding left this element covered or
-/// hidden: 0 when the last tile serves it.
+/// one painted under it (a fixed backdrop). A point counts only when its
+/// stack reaches the element or something inside it: where the element takes
+/// no pointer events the stack runs past it to what lies beneath, so nothing
+/// there is known to be above it, and such an element keeps whatever covers
+/// it (as before). A layer that takes no pointer events stays too: the hit
+/// test does not list it. Neither does an open modal (`dialog[open]`,
+/// `aria-modal="true"`): a visitor sees it over the page, so it stays in the
+/// shot. Returns the hidden layers' short selectors; [`RESTORE_COVERS_JS`]
+/// puts them back. With `check` it hides nothing and answers whether the
+/// last tile's hiding left this element covered or hidden: 0 when the last
+/// tile serves it.
 const HIDE_COVERS_JS: &str = r#"(async (resolve, { selector, identity, node }, check) => {
   if (!check) window.__impeccableShotTileCovers = [];
   let el;
   try {
     el = resolve(selector, identity, node);
   } catch (e) {
-    return 0;
+    return check ? 0 : [];
   }
-  if (!el) return 0;
+  if (!el) return check ? 0 : [];
   const up = n => n.assignedSlot || n.parentElement || (n.parentNode && n.parentNode.host) || null;
   const holds = (outer, inner) => {
     for (let n = inner; n; n = up(n)) if (n === outer) return true;
@@ -486,20 +517,34 @@ const HIDE_COVERS_JS: &str = r#"(async (resolve, { selector, identity, node }, c
   const top = Math.max(r.top, 0);
   const right = Math.min(r.right, window.innerWidth);
   const bottom = Math.min(r.bottom, window.innerHeight);
-  if (right - left < 1 || bottom - top < 1) return 0;
+  if (right - left < 1 || bottom - top < 1) return check ? 0 : [];
   const layers = new Set();
   for (let i = 0; i < 3; i++) {
     for (let j = 0; j < 3; j++) {
       const x = left + (right - left) * (i + 0.5) / 3;
       const y = top + (bottom - top) * (j + 0.5) / 3;
+      const above = [];
       for (const hit of document.elementsFromPoint(x, y)) {
-        if (holds(hit, el) || holds(el, hit)) break;
+        // The element or something inside it: what came before is over it.
+        if (holds(el, hit)) {
+          for (const layer of above) layers.add(layer);
+          break;
+        }
+        // An ancestor first: the element is not in the stack here.
+        if (holds(hit, el)) break;
         const layer = fixedLayer(hit);
-        if (layer && !holds(layer, el)) layers.add(layer);
+        if (layer && !holds(layer, el)) above.push(layer);
       }
     }
   }
-  const covers = [...layers].filter(layer => !scrollsAlong(layer));
+  const modal = layer => {
+    for (let n = layer; n; n = up(n)) {
+      if (n.nodeType !== 1) continue;
+      if ((n.localName === 'dialog' && n.hasAttribute('open')) || n.getAttribute('aria-modal') === 'true') return true;
+    }
+    return false;
+  };
+  const covers = [...layers].filter(layer => !scrollsAlong(layer) && !modal(layer));
   if (check) {
     // Whether the last tile serves this element too: it hid every layer
     // over this one, and none that holds it.
@@ -517,7 +562,13 @@ const HIDE_COVERS_JS: &str = r#"(async (resolve, { selector, identity, node }, c
   if (hidden.length) {
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 50))));
   }
-  return hidden.length;
+  const name = n => {
+    let out = n.localName;
+    if (n.id) return out + '#' + n.id;
+    const cls = typeof n.className === 'string' ? n.className.trim().split(/\s+/).filter(Boolean).slice(0, 2) : [];
+    return out + cls.map(c => '.' + c).join('');
+  };
+  return covers.map(name);
 })"#;
 
 /// Undo [`HIDE_COVERS_JS`].
@@ -584,17 +635,22 @@ fn capture_with(
     // keeps the beyond-viewport capture.
     let after = probe_layout(page, false);
     if layout_moved(&before, &after) {
-        wait_for_layout(page, &before);
-        if let Ok(stitched) = stitch(page, geometry, None, width, height) {
-            if let Some(jpeg_base64) = encode_jpeg(&stitched, quality) {
-                return Ok(Screenshot {
-                    jpeg_base64,
-                    width,
-                    height,
-                    document_height,
-                    method: method::STITCHED,
-                    origin_x: geometry.capture_origin_x(),
-                });
+        // Only a page that comes back to where it was measured relaid for
+        // the capture. One that keeps moving (a marquee on `margin-left`, an
+        // autoplaying accordion) is in motion either way, and a beyond-viewport
+        // capture shows it no worse than tiles would.
+        if wait_for_layout(page, &before) {
+            if let Ok(stitched) = stitch(page, geometry, None, width, height) {
+                if let Some(jpeg_base64) = encode_jpeg(&stitched, quality) {
+                    return Ok(Screenshot {
+                        jpeg_base64,
+                        width,
+                        height,
+                        document_height,
+                        method: method::STITCHED,
+                        origin_x: geometry.capture_origin_x(),
+                    });
+                }
             }
         }
     }
@@ -703,15 +759,27 @@ pub fn layout_moved(before: &[Option<[f64; 4]>], after: &[Option<[f64; 4]>]) -> 
     moved >= 2 && moved * 4 >= measured
 }
 
-/// Wait, up to 2 seconds, for the sample to measure as it did `before`.
-fn wait_for_layout(page: &mut Page<'_>, before: &[Option<[f64; 4]>]) {
+/// Whether a page measured `before` has settled back there: the last two
+/// measures of the sample, 100ms apart, both read as unmoved
+/// ([`layout_moved`]). A box in steady motion can pass its old place once,
+/// not twice in a row.
+pub fn settled(before: &[Option<[f64; 4]>], measures: &[Vec<Option<[f64; 4]>>]) -> bool {
+    measures.len() >= 2 && measures[measures.len() - 2..].iter().all(|m| !layout_moved(before, m))
+}
+
+/// Measure the sample every 100ms, up to 2 seconds, until it has
+/// [`settled`] back to `before`. Returns whether it did.
+fn wait_for_layout(page: &mut Page<'_>, before: &[Option<[f64; 4]>]) -> bool {
     let started = std::time::Instant::now();
+    let mut measures: Vec<Vec<Option<[f64; 4]>>> = Vec::new();
     while started.elapsed() < std::time::Duration::from_secs(2) {
         std::thread::sleep(std::time::Duration::from_millis(100));
-        if !layout_moved(before, &probe_layout(page, false)) {
-            return;
+        measures.push(probe_layout(page, false));
+        if settled(before, &measures) {
+            return true;
         }
     }
+    false
 }
 
 /// The start and length, in rows, of the longest run of rows that each read
@@ -977,6 +1045,8 @@ pub fn capture_element_shots(
     let mut last: Option<String> = None;
     let mut captures = 0usize;
     let mut moved_any = false;
+    // The fixed layers hidden for the last tile ([`ElementShot::hidden_covers`]).
+    let mut tile_covers: Vec<String> = Vec::new();
     for (selector, rect) in rects {
         if selector == "body" || selector == "html" {
             continue;
@@ -1036,14 +1106,16 @@ pub fn capture_element_shots(
                 captures += 1;
                 // Fixed chrome over the element goes for the shot and comes
                 // back after it: elements that share the tile share it too.
-                let covered = page
+                tile_covers = page
                     .evaluate_value(&format!("({HIDE_COVERS_JS})({RESOLVE_FLAGGED_JS}, {args}, false)"))
                     .ok()
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0)
-                    > 0.0;
+                    .and_then(|v| {
+                        v.as_array()
+                            .map(|a| a.iter().filter_map(Value::as_str).map(String::from).collect())
+                    })
+                    .unwrap_or_default();
                 let shot = page.screenshot_viewport_jpeg(quality);
-                if covered {
+                if !tile_covers.is_empty() {
                     let _ = page.evaluate(RESTORE_COVERS_JS);
                 }
                 match shot {
@@ -1059,6 +1131,7 @@ pub fn capture_element_shots(
             width: vw,
             height: vh,
             rect: [live[0], live[1], live[2], live[3]],
+            hidden_covers: tile_covers.clone(),
         });
     }
     let _ = page.evaluate(FORGET_COVERS_JS);
@@ -1148,6 +1221,20 @@ mod tests {
         // Nothing measured twice, nothing moved.
         assert!(!layout_moved(&[], &[]));
         assert!(!layout_moved(&before, &[None, None, None, None, None]));
+    }
+
+    #[test]
+    fn a_page_has_settled_when_two_measures_in_a_row_match() {
+        let at = |x: f64| vec![Some([x, 0.0, 300.0, 40.0]), Some([x, 60.0, 300.0, 40.0])];
+        let before = at(390.0);
+        // Folded, then on its way back, then back twice: settled.
+        assert!(settled(&before, &[at(0.0), at(300.0), at(390.0), at(390.0)]));
+        // Back once is not enough: a marquee passes its old place.
+        assert!(!settled(&before, &[at(0.0), at(390.0)]));
+        assert!(!settled(&before, &[at(390.0), at(200.0)]));
+        // Never back.
+        assert!(!settled(&before, &[at(100.0), at(200.0), at(300.0)]));
+        assert!(!settled(&before, &[]));
     }
 
     #[test]
