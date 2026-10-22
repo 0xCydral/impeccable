@@ -3228,3 +3228,26 @@ fn claims_default_to_the_users_home() {
     assert!(scanned(&first) && !scanned(&second));
     assert!(t.exists("home/.impeccable/hook-claims"));
 }
+
+/// The first edit in a fresh home: concurrent hooks race to create
+/// `~/.impeccable`, and the loser must still claim rather than scan.
+#[test]
+fn concurrent_first_edits_in_a_fresh_home_scan_once() {
+    for round in 0..8 {
+        let t = Tmp::new();
+        let cwd = t.path();
+        let file = t.write("src/card.css", SIDE_TAB_CSS);
+        let home = jsp::join(&[&cwd, "home"]);
+        std::fs::create_dir(&home).unwrap();
+        let e = env(&[("HOME", &home), ("USERPROFILE", &home)]);
+        let stdin = claude_post_tool_use(&cwd, &file, "toolu_fresh");
+        let barrier = std::sync::Barrier::new(4);
+        let scans = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| s.spawn(|| { barrier.wait(); scanned(&hook::run_hook(&rt_with(&cwd, e.clone()), &stdin)) }))
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).filter(|scanned| *scanned).count()
+        });
+        assert_eq!(scans, 1, "round {round}");
+    }
+}

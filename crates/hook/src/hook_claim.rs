@@ -154,8 +154,12 @@ fn safe_root(rt: &Runtime) -> Option<PathBuf> {
     let root = claim_root(rt)?;
     if std::fs::symlink_metadata(&root).is_err() {
         if let Some(parent) = root.parent() {
-            if std::fs::symlink_metadata(parent).is_err() {
-                create_private_dir(parent).ok()?;
+            // Two hooks of one first edit race to make it: losing that race
+            // is fine, any other failure is not.
+            match create_private_dir(parent) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(_) => return None,
             }
         }
     }
