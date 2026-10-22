@@ -11,9 +11,13 @@
   from line-length and tiny-text and stays advisory under tight-leading
   (decision 3, round 13). A link inside it keeps undersized-ui-text.
 
-  Weaker evidence (a small element, a terms or copyright class, a block that
-  opens with an asterisk or a footnote mark) reports as advisory under all
-  three rules (taste call r5-p27).
+  Weaker evidence (a small element, a terms or copyright class, a singular
+  disclosure class, a footnote class after a type-scale word such as
+  text-footnote, a block that opens with an asterisk or a footnote mark)
+  reports as advisory under all three rules (taste call r5-p27). So does a
+  legal block that is, or directly holds, an expand/collapse widget (a
+  details, a summary, an aria-expanded control), and a policy page's body
+  (fine-print-policy.html).
 
   A consent or form label is not fine print and keeps failing. The column
   says what each row reports.
@@ -71,7 +75,7 @@
   <div id="disclaimer-banner"><small class="fine adv-banner">Mercury is a financial technology company, not a bank. Banking services provided by partner banks.</small></div>
 
   <!-- a link inside a footnote keeps undersized-ui-text -->
-  <p class="fine adv-footnote-link" id="footnote-4">See the <a class="fail-footnote-link" href="#" style="font-size: 10px">rate disclosure</a> for how the annual yield is set.</p>
+  <p class="fine adv-footnote-link" id="footnote-4">See the <a class="fail-footnote-link" href="#" style="font-size: 10px">rate disclosure</a> for how the annual yield is set, when it changes, and which balances earn it in each account.</p>
 </div>
 
 <!-- ================= ADVISORY ================= -->
@@ -89,6 +93,15 @@
 
   <!-- an input hint in a small element stays advisory: small alone is weak evidence -->
   <div><input type="email" aria-label="Email"><small class="fine adv-hint">We only use your email address to send the receipt for this order.</small></div>
+
+  <!-- a disclosure widget's panel: singular disclosure is the widget's name, not a legal block -->
+  <div class="disclosure"><button type="button" aria-expanded="true" class="disclosure__button">Refunds</button><div class="disclosure__panel"><p class="fine adv-disclosure-panel">Refunds go back to the card you paid with, once the warehouse team inspects the item.</p></div></div>
+
+  <!-- a footnote-marked accordion: the marked box is a details, so it is demoted, not dropped -->
+  <details open class="footer-footnote-accordion"><summary>Rates</summary><p class="fine adv-accordion">Rates apply to new customers only and may change at any time without notice.</p></details>
+
+  <!-- a type-scale class: text-footnote names Apple's Footnote text style -->
+  <p class="fine adv-type-footnote text-footnote">Our team ships every feature behind a flag first and measures how customers use it.</p>
 
   <!-- a row of terms links: terms is weak evidence, and the links keep undersized-ui-text -->
   <div class="fine adv-terms terms-links">Read our policies before you order: <a class="fail-terms-link" href="#" style="font-size: 10px">Privacy</a> and <a href="#" style="font-size: 10px">Cookies</a> apply.</div>
@@ -108,6 +121,9 @@
 <p class="wide ex-wide offer-disclaimer">Monthly price reflects net monthly payment, after application of the trade-in credit applied over thirty-six months with purchase of a new device on a qualifying plan. Trade-in values will vary based on the condition, year and configuration of your eligible trade-in device. Offer may not be available in all stores, and may vary between in-store and online trade-in.</p>
 
 <h2>Wide: advisory</h2>
+<!-- the FAQ answer in a disclosure widget stays reported -->
+<div class="disclosure"><button type="button" class="disclosure__button">How do refunds work?</button><div class="disclosure__panel"><p class="wide adv-faq-wide" style="font-size: 13px; line-height: 20px">Refunds go back to the card you paid with. Once we receive the returned item, our warehouse team inspects it within two business days, and if it passes inspection your refund is issued immediately. Banks usually take another three to five days to show the money in your account, and some take longer around holidays.</p></div></div>
+
 <p class="wide adv-wide offer-terms">Monthly price reflects net monthly payment, after application of the trade-in credit applied over thirty-six months with purchase of a new device on a qualifying plan. Trade-in values will vary based on the condition, year and configuration of your eligible trade-in device. Offer may not be available in all stores, and may vary between in-store and online trade-in.</p>
 
 </body>

@@ -957,7 +957,8 @@ const FOOTNOTE_MARKS: &[char] = &['*', '†', '‡', '§', '¹', '²', '³', '�
 /// The markers that name a legal or footnote block outright (decision 3,
 /// round 13): text under one of them is exempt from `line-length` and
 /// `tiny-text`. `copyright` and `terms` stay advisory: they also mark a
-/// photo credit, a timing note or a row of links.
+/// photo credit, a timing note or a row of links. `disclosure` is strict
+/// only in the plural ([`LEGAL_PLURAL_ONLY`]).
 pub const LEGAL_BLOCK_MARKERS: &[&str] = &[
     "legal",
     "fineprint",
@@ -965,16 +966,25 @@ pub const LEGAL_BLOCK_MARKERS: &[&str] = &[
     "smallprint",
     "small-print",
     "disclaimer",
-    "disclosure",
     "footnote",
 ];
+/// Markers that name a legal block only in the plural. A `disclosure`, in
+/// the singular, is also the WAI-ARIA name of an expand/collapse widget
+/// (target.com's `menuDisclosure`, Osano's `osano-cm-disclosure__toggle`),
+/// so it stays advisory; `disclosures` is a list of them.
+pub const LEGAL_PLURAL_ONLY: &[&str] = &["disclosure"];
+/// Words that turn a following `footnote` into the name of a type size
+/// (Apple's "Footnote" text style: `text-footnote`, `upl-type-footnote`).
+const TYPE_SCALE_WORDS: &[&str] = &["type", "text", "typography", "font", "fs"];
 
 /// Which markers a class or id carries: `None`, any of
 /// [`FINE_PRINT_MARKERS`] (`Advisory`), or one of [`LEGAL_BLOCK_MARKERS`]
-/// (`Exempt`). A marker counts as a whole token (`legal`,
-/// `copyright-notice`, `fine-print`, `footnote_2`, plural `disclaimers`,
-/// camelCase `legalNotice`), never as a part of a longer word (`illegal`,
-/// `testimonials`).
+/// or the plural of [`LEGAL_PLURAL_ONLY`] (`Exempt`). A marker counts as a
+/// whole token (`legal`, `copyright-notice`, `fine-print`, `footnote_2`,
+/// plural `disclaimers`, camelCase `legalNotice`), never as a part of a
+/// longer word (`illegal`, `testimonials`). A `footnote` after a type-scale
+/// word in the same token (`text-footnote`) is a size name and only
+/// advisory.
 fn fine_print_marker(class_or_id: &str) -> FinePrint {
     let mut found = FinePrint::No;
     for token in class_or_id.split_whitespace() {
@@ -994,24 +1004,73 @@ fn fine_print_marker(class_or_id: &str) -> FinePrint {
             spaced.extend(ch.to_lowercase());
         }
         let words: Vec<&str> = spaced.split_whitespace().collect();
-        let names = |m: &&str| {
-            // A marker of two words (`fine-print`) is two words in a row.
-            // The last word may be plural (`disclaimers`, `footnotes`).
+        // Where a marker of one or more words (`fine-print` is two in a
+        // row) starts, with its last word as typed or plural.
+        let starts = |m: &str, plural_only: bool| -> Vec<usize> {
             let parts: Vec<&str> = m.split('-').collect();
-            words.windows(parts.len()).any(|w| {
-                let last = parts.len() - 1;
-                w[..last] == parts[..last]
-                    && (w[last] == parts[last] || w[last].strip_suffix('s') == Some(parts[last]))
-            })
+            let last = parts.len() - 1;
+            words
+                .windows(parts.len())
+                .enumerate()
+                .filter(|(_, w)| {
+                    w[..last] == parts[..last]
+                        && ((!plural_only && w[last] == parts[last])
+                            || w[last].strip_suffix('s') == Some(parts[last]))
+                })
+                .map(|(i, _)| i)
+                .collect()
         };
-        if LEGAL_BLOCK_MARKERS.iter().any(names) {
+        let strict = LEGAL_BLOCK_MARKERS.iter().any(|m| {
+            starts(m, false).into_iter().any(|i| {
+                !(*m == "footnote" && i > 0 && TYPE_SCALE_WORDS.contains(&words[i - 1]))
+            })
+        }) || LEGAL_PLURAL_ONLY.iter().any(|m| !starts(m, true).is_empty());
+        if strict {
             return FinePrint::Exempt;
         }
-        if FINE_PRINT_MARKERS.iter().any(names) {
+        if FINE_PRINT_MARKERS.iter().any(|m| !starts(m, false).is_empty()) {
             found = FinePrint::Advisory;
         }
     }
     found
+}
+
+/// Whether a box marked as a legal block is, or directly holds, an
+/// expand/collapse widget: a `details`, a `summary` or a control with
+/// `aria-expanded`. Its text is an accordion panel a visitor opened, so the
+/// marker stays advisory (freenet.de's `footer-footnote-accordion` keeps
+/// its advisory, not silence).
+fn is_disclosure_widget<N: ContextNode>(c: &N) -> bool {
+    let widget = |k: &N| matches!(k.tag().as_str(), "details" | "summary") || k.attr("aria-expanded").is_some();
+    widget(c) || c.children().iter().any(widget)
+}
+
+/// The fewest characters a legal block holds to read as a policy page's
+/// body (about a screen of 14px text).
+pub const LEGAL_PAGE_MIN_CHARS: usize = 2000;
+
+/// Whether a box marked as a legal block is a policy page's own body text
+/// rather than a block on the page: it sits under no `footer` or
+/// `role="contentinfo"`, holds at least [`LEGAL_PAGE_MIN_CHARS`]
+/// characters, and holds at least half the page's text. A privacy policy
+/// under `div.legal-content` at 14px is a document a visitor reads, so it
+/// stays advisory.
+fn is_legal_page_body<N: ContextNode>(el: &N, marked: &N) -> bool {
+    let mut cur = Some(el.clone());
+    let mut root = el.clone();
+    while let Some(c) = cur {
+        if c.tag() == "footer" || c.attr("role").is_some_and(|r| r.trim().eq_ignore_ascii_case("contentinfo")) {
+            return false;
+        }
+        root = c.clone();
+        cur = c.parent();
+    }
+    let own = rendered_text_chars(marked, usize::MAX);
+    if own < LEGAL_PAGE_MIN_CHARS {
+        return false;
+    }
+    let page = rendered_text_chars(&root, own.saturating_mul(2).saturating_add(1));
+    page > 0 && own * 2 >= page
 }
 
 /// Whether a class or id names fine print by any of [`FINE_PRINT_MARKERS`].
@@ -1139,6 +1198,11 @@ pub fn fine_print<N: ContextNode>(el: &N) -> FinePrint {
         }
         let marker = fine_print_marker(&c.class_list()).max(fine_print_marker(&c.id_attr()));
         if marker == FinePrint::Exempt {
+            // An accordion panel and a policy page's body are demoted, not
+            // dropped (decision 3 review, round 13).
+            if is_disclosure_widget(&c) || is_legal_page_body(el, &c) {
+                return FinePrint::Advisory;
+            }
             return FinePrint::Exempt;
         }
         if tag == "small" || marker == FinePrint::Advisory {
@@ -2205,13 +2269,28 @@ mod tests {
             "footer-disclaimers",
             "disclaimers",
             "disclaimer-banner",
-            "carrier-disclosure",
+            "carrier-disclosures",
+            "footer-disclosures",
+            "hpPriceDisclosures",
             "fine-print",
             "smallPrint",
         ] {
             assert_eq!(fine_print_marker(name), FinePrint::Exempt, "{name}");
         }
-        for name in ["copyright", "offer-terms", "terms-links", "site-copyright_notice"] {
+        // A singular `disclosure` is also the name of an expand/collapse
+        // widget, and a `footnote` after a type-scale word is a type size.
+        for name in [
+            "copyright",
+            "offer-terms",
+            "terms-links",
+            "site-copyright_notice",
+            "disclosure__panel",
+            "styles_menuDisclosure__x1",
+            "osano-cm-disclosure__toggle",
+            "text-footnote",
+            "upl-type-footnote",
+            "fsFootnote",
+        ] {
             assert_eq!(fine_print_marker(name), FinePrint::Advisory, "{name}");
         }
         for name in ["illegal-moves", "testimonials", "footer", "notes"] {
@@ -2255,6 +2334,42 @@ mod tests {
         let far = body.add("div").class("legal-page");
         let deep = far.add("div").add("div").add("div").add("p").text("You agree to the following terms of service.");
         assert_eq!(fine_print(&deep), FinePrint::No);
+        // An accordion panel under a strict marker is demoted, not dropped:
+        // the marked box is a `details`, or holds an `aria-expanded` toggle.
+        let acc = body.add("details").class("footer-footnote-accordion");
+        let p = acc.add("p").text("Rates apply to new customers and may change at any time.");
+        assert_eq!(fine_print(&p), FinePrint::Advisory);
+        let faq = body.add("div").class("legal-faq");
+        faq.add("button").attr("aria-expanded", "true").text("How do refunds work?");
+        let p = faq.add("div").add("p").text("Refunds go back to the card you paid with.");
+        assert_eq!(fine_print(&p), FinePrint::Advisory);
+    }
+
+    #[test]
+    fn a_policy_pages_body_stays_advisory() {
+        let long = "We keep account data for as long as your account stays open. ".repeat(60);
+        // A policy page: the legal box holds the page's text, outside a footer.
+        let (_t, body) = Tree::new();
+        let body = body.font(14.0);
+        body.add("h1").font(32.0).text("Privacy policy");
+        let p = body.add("div").class("legal-content").add("p").text(&long);
+        assert_eq!(fine_print(&p), FinePrint::Advisory);
+        // The same block in a footer is a legal block.
+        let (_t, body) = Tree::new();
+        let body = body.font(14.0);
+        let p = body.add("footer").add("div").class("legal-content").add("p").text(&long);
+        assert_eq!(fine_print(&p), FinePrint::Exempt);
+        // A short legal block on a page is a legal block.
+        let (_t, body) = Tree::new();
+        let body = body.font(14.0);
+        let p = body.add("div").class("legal-content").add("p").text("Offer subject to credit approval.");
+        assert_eq!(fine_print(&p), FinePrint::Exempt);
+        // A long legal block under half of the page's text is a block too.
+        let (_t, body) = Tree::new();
+        let body = body.font(14.0);
+        body.add("main").add("p").font(16.0).text(&long.repeat(2));
+        let p = body.add("div").class("disclaimers").add("p").text(&long);
+        assert_eq!(fine_print(&p), FinePrint::Exempt);
     }
 
     #[test]

@@ -148,6 +148,12 @@ fn fine_print_is_advisory_under_three_rules() {
         assert_eq!(on(&f, "tight-leading", class), ["advisory"], "{class}: {f:#?}");
     }
     assert_eq!(on(&f, "tiny-text", "adv-hint"), ["advisory"], "{f:#?}");
+    // A singular `disclosure` widget panel, a footnote-marked accordion and a
+    // type-scale `text-footnote` class stay advisory (decision 3 review).
+    for class in ["adv-disclosure-panel", "adv-accordion", "adv-type-footnote"] {
+        assert_eq!(on(&f, "tiny-text", class), ["advisory"], "{class}: {f:#?}");
+    }
+    assert_eq!(on(&f, "line-length", "adv-faq-wide"), ["advisory"], "{f:#?}");
     assert_eq!(on(&f, "tiny-text", "adv-terms"), ["advisory"], "{f:#?}");
     // A legal or footnote block (decision 3, round 13): exempt from
     // tiny-text, advisory under tight-leading. The id row is named by its id.
@@ -156,6 +162,7 @@ fn fine_print_is_advisory_under_three_rules() {
         assert_eq!(on(&f, "tight-leading", class), ["advisory"], "{class}: {f:#?}");
     }
     assert!(on(&f, "tiny-text", "#footnote-4").is_empty(), "{f:#?}");
+    assert_eq!(on(&f, "tight-leading", "#footnote-4"), ["advisory"], "{f:#?}");
     // Links inside a footnote or a terms row keep undersized-ui-text.
     assert_eq!(on(&f, "undersized-ui-text", "fail-footnote-link"), ["warning"], "{f:#?}");
     assert_eq!(on(&f, "undersized-ui-text", "fail-terms-link"), ["warning"], "{f:#?}");
@@ -174,6 +181,16 @@ fn fine_print_is_advisory_under_three_rules() {
     assert_eq!(on(&f, "line-length", "fail-wide"), ["warning"], "{f:#?}");
     assert_eq!(on(&f, "line-length", "fail-document"), ["warning"], "{f:#?}");
     assert_eq!(on(&f, "line-length", "fail-disclaimer-intro"), ["warning"], "{f:#?}");
+}
+
+#[test]
+fn a_policy_pages_body_stays_advisory() {
+    let Some(f) = scan("fine-print-policy.html") else { return };
+    // The legal wrapper holds the page's text outside a footer: advisory.
+    let policy = on(&f, "line-length", "adv-policy");
+    assert!(!policy.is_empty() && policy.iter().all(|s| *s == "advisory"), "{f:#?}");
+    // The legal block in the footer is exempt.
+    assert!(on(&f, "line-length", "ex-footer-legal").is_empty(), "{f:#?}");
 }
 
 #[test]
