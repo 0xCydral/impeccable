@@ -89,6 +89,156 @@ pub enum Unpainted {
     /// opacity 0 and holds that frame ([`fades_out_for_good`]): the outgoing
     /// half of a swap, caught before it faded.
     FadesOut,
+    /// The element or an ancestor carries a `mask-image` gradient that is
+    /// all but clear where the element sits ([`masked_out_at`]): a demo
+    /// frame fading out its lower edge.
+    MaskedOut,
+}
+
+/// The mask alpha under which a point of a box is not painted
+/// ([`masked_out_at`]).
+const MASKED_OUT_ALPHA: f64 = 0.2;
+
+/// The alpha the `mask-image` on `el` leaves at document point `y` (or `x`
+/// for a horizontal gradient), when the mask is a single `linear-gradient`
+/// running along an axis, every stop a readable colour at a `px` or `%`
+/// position or none: arc.net's mobile `div.stage-frame`, `linear-gradient(
+/// #000 382px, rgba(0,0,0,.62) 424px, rgba(0,0,0,.22) 450px, transparent
+/// 467px)`. The gradient runs over the element's layout box, so a scaled
+/// box reads its stops at layout scale. `None` for no mask, any other mask
+/// (an image, several layers, an angle, a `calc()` stop), a tilted box, or a
+/// box the capture did not measure: the point is taken as painted.
+fn mask_alpha_at(dom: &dyn Dom, el: ElId, x: f64, y: f64) -> Option<f64> {
+    let image = {
+        let m = dom.style(el, "maskImage");
+        if matches!(js::trim(&m), "" | "none") { dom.style(el, "webkitMaskImage") } else { m }
+    };
+    let image = js::trim(&image);
+    let args = image.strip_prefix("linear-gradient(")?.strip_suffix(')')?;
+    if args.contains("gradient(") || args.contains("url(") {
+        return None;
+    }
+    let mut parts = crate::color::split_top_level_commas(args);
+    if parts.is_empty() {
+        return None;
+    }
+    let first = js::to_lower_case(js::trim(&parts[0]));
+    // (vertical, reversed)
+    let direction = match first.as_str() {
+        "to bottom" | "180deg" => Some((true, false)),
+        "to top" | "0deg" => Some((true, true)),
+        "to right" | "90deg" => Some((false, false)),
+        "to left" | "270deg" => Some((false, true)),
+        _ => None,
+    };
+    let (vertical, reversed) = match direction {
+        Some(d) => {
+            parts.remove(0);
+            d
+        }
+        None if first.starts_with("to ") || first.ends_with("deg") || first.ends_with("turn") || first.ends_with("rad") => {
+            return None
+        }
+        None => (true, false),
+    };
+    if super::page_checks::drawn_tilted(dom, el) {
+        return None;
+    }
+    let r = dom.rect(el);
+    let layout = if vertical { dom.offset_height(el) } else { dom.offset_width(el) };
+    let (start, extent) = if vertical { (r.top, r.height) } else { (r.left, r.width) };
+    if !(r.all_finite() && extent > 0.0) {
+        return None;
+    }
+    let length = if layout.is_finite() && layout > 0.0 { layout } else { extent };
+    let mut stops: Vec<(f64, Option<f64>)> = Vec::new();
+    for part in &parts {
+        let part = js::trim(part);
+        // The colour is everything up to its closing parenthesis, or the
+        // first token; the rest are positions.
+        let (color, rest) = match part.find(')') {
+            Some(i) if part[..i].contains('(') => (&part[..=i], &part[i + 1..]),
+            _ => match part.find(char::is_whitespace) {
+                Some(i) => (&part[..i], &part[i..]),
+                None => (part, ""),
+            },
+        };
+        let alpha = if color.eq_ignore_ascii_case("transparent") {
+            0.0
+        } else {
+            crate::color::parse_any_color(Some(color))?.alpha_or_one()
+        };
+        let positions: Vec<&str> = rest.split_whitespace().collect();
+        if positions.len() > 1 {
+            return None;
+        }
+        let at = match positions.first() {
+            None => None,
+            Some(p) => {
+                let v = if let Some(n) = p.strip_suffix("px") {
+                    js::parse_float(n)
+                } else if let Some(n) = p.strip_suffix('%') {
+                    js::parse_float(n) / 100.0 * length
+                } else {
+                    return None;
+                };
+                if !v.is_finite() {
+                    return None;
+                }
+                Some(v)
+            }
+        };
+        stops.push((alpha, at));
+    }
+    if stops.len() < 2 {
+        return None;
+    }
+    // Unplaced stops: the first at 0, the last at the line's end, the rest
+    // spread evenly between their placed neighbours; no stop sits before
+    // the one ahead of it.
+    let n = stops.len();
+    if stops[0].1.is_none() {
+        stops[0].1 = Some(0.0);
+    }
+    if stops[n - 1].1.is_none() {
+        stops[n - 1].1 = Some(length);
+    }
+    let mut placed: Vec<(f64, f64)> = Vec::with_capacity(n);
+    let mut i = 0;
+    while i < n {
+        if let Some(at) = stops[i].1 {
+            let at = placed.last().map_or(at, |&(prev, _)| at.max(prev));
+            placed.push((at, stops[i].0));
+            i += 1;
+        } else {
+            let prev = placed.last().map_or(0.0, |&(p, _)| p);
+            let mut j = i;
+            while stops[j].1.is_none() {
+                j += 1;
+            }
+            let next = stops[j].1.unwrap_or(length).max(prev);
+            let gap = (j - i + 1) as f64;
+            for (k, stop) in stops.iter().enumerate().take(j).skip(i) {
+                placed.push((prev + (next - prev) * (k - i + 1) as f64 / gap, stop.0));
+            }
+            i = j;
+        }
+    }
+    let point = if vertical { y } else { x };
+    let mut t = (point - start) / extent * length;
+    if reversed {
+        t = length - t;
+    }
+    if t <= placed[0].0 {
+        return Some(placed[0].1);
+    }
+    for w in placed.windows(2) {
+        let ((a, aa), (b, ba)) = (w[0], w[1]);
+        if t <= b {
+            return Some(if b - a <= 0.0 { ba } else { aa + (ba - aa) * (t - a) / (b - a) });
+        }
+    }
+    Some(placed[placed.len() - 1].1)
 }
 
 /// Which predicate a rule's findings pass through.
@@ -184,9 +334,11 @@ pub const TEXT_MIN_VISIBLE_SHARE_Y: f64 = 0.5;
 /// is not rendered, a seek bar parked off the canvas, a loader at
 /// `display: none`, a closed flyout, a row still waiting to be revealed, a
 /// slide parked past its track's clip) is not where a visitor meets how it
-/// animates (`bounce-easing`), the glow around it (`dark-glow`) or the
-/// palette it paints (`ai-color-palette`).
-pub const PAINT_GATED_BOX_RULES: &[&str] = &["ai-color-palette", "bounce-easing", "dark-glow", "hard-offset-shadow"];
+/// animates (`bounce-easing`), the glow around it (`dark-glow`), the
+/// palette it paints (`ai-color-palette`) or the card it nests
+/// (`nested-cards`: arc.net's sidebar folder under its frame's mask fade).
+pub const PAINT_GATED_BOX_RULES: &[&str] =
+    &["ai-color-palette", "bounce-easing", "dark-glow", "hard-offset-shadow", "nested-cards"];
 
 /// The rules whose page-level CSS-text form names the rule a selector
 /// declared: such a finding reports only when at least one element the
@@ -228,12 +380,16 @@ pub fn page_form_painted(dom: &dyn Dom, rule_id: &str, matches: &[ElId]) -> bool
 /// opaque layer drawn over the text that stays there as the page scrolls
 /// ([`covered_for_good`]): the size, leading and measure of text nobody
 /// sees. metlife.com's mobile breadcrumbs under the nav pinned to the top
-/// (observations-1006 row 8). Contrast reads the plain covered verdict on
+/// (observations-1006 row 8). Where the lines of covered text break
+/// (`straggler`, `unbalanced-heading`) is read no more than their size:
+/// apple.com's captions on the stacked gallery panels under the active one.
+/// Contrast reads the plain covered verdict on
 /// its own path. A bar fixed lower in the window, which a scroll lifts the
 /// text out from under, and stacks that cannot answer keep the finding.
 ///
 /// [`covered_for_good`]: super::text_layers::covered_for_good
-pub const PAINT_GATED_COVERED_RULES: &[&str] = &["line-length", "tight-leading", "tiny-text", "undersized-ui-text"];
+pub const PAINT_GATED_COVERED_RULES: &[&str] =
+    &["line-length", "straggler", "tight-leading", "tiny-text", "unbalanced-heading", "undersized-ui-text"];
 
 /// Drop the findings on `el` whose rule needs a painted element when `el` is
 /// not painted, and those in [`PAINT_GATED_COVERED_RULES`] when a layer
@@ -560,6 +716,22 @@ fn unpainted_walk(
         return None;
     }
     vis.measure(dom, el, &rect);
+    // Where a mask on the element or an ancestor is read: the middle of the
+    // text, or of the box.
+    let centre = {
+        let t = phrasing_text_extent(dom, el).filter(|t| t.all_finite() && t.width > 0.0 && t.height > 0.0).unwrap_or(rect);
+        (t.left + t.width / 2.0, t.top + t.height / 2.0)
+    };
+    let mut mask_alpha = 1.0;
+    let mut masked_out = |node: ElId| {
+        if let Some(a) = mask_alpha_at(dom, node, centre.0, centre.1) {
+            mask_alpha *= a.clamp(0.0, 1.0);
+        }
+        mask_alpha < MASKED_OUT_ALPHA
+    };
+    if masked_out(el) {
+        return Some(Unpainted::MaskedOut);
+    }
     let viewport_w = finite_or(dom.inner_width(), 0.0);
     let viewport_h = finite_or(dom.inner_height(), 0.0);
 
@@ -593,6 +765,9 @@ fn unpainted_walk(
         }
         if closed_inert_dialog(dom, p) {
             return Some(Unpainted::NotRendered);
+        }
+        if masked_out(p) {
+            return Some(Unpainted::MaskedOut);
         }
         if Some(p) == clip_root {
             clip_tests = false;
@@ -4452,6 +4627,45 @@ mod tests {
         d.set_style(photo, "opacity", "0.05");
         d.set_rect(photo, 0.0, 100.0, 600.0, 400.0);
         assert_eq!(unpainted_for(&d, photo, PaintGate::Raster), None);
+    }
+
+    /// arc.net's mobile demo frame fades its lower edge out with a mask:
+    /// a sidebar label at mask alpha about 0.04 is not painted, and neither
+    /// is the folder card below it. Twins: a heading in the frame's clear
+    /// zone, a frame whose mask fades only its last 10%, and a mask the
+    /// engine does not read (`calc()`) keep their findings.
+    #[test]
+    fn a_mask_fade_leaves_what_it_clears_unpainted() {
+        let (mut d, body) = page();
+        let frame = d.add(Some(body), "div");
+        d.set_rect(frame, -76.0, 4095.8, 466.0, 484.6);
+        d.set_style(
+            frame,
+            "maskImage",
+            "linear-gradient(rgb(0, 0, 0) 382.08px, rgba(0, 0, 0, 0.62) 424.31px, rgba(0, 0, 0, 0.22) 449.648px, rgba(0, 0, 0, 0) 466.54px)",
+        );
+        let label = d.add(Some(frame), "span");
+        d.add_text(label, "Design");
+        d.set_rect(label, 55.2, 4552.6, 72.6, 13.1);
+        assert_eq!(text(&d, label), Some(Unpainted::MaskedOut));
+        let folder = d.add(Some(frame), "div");
+        d.set_rect(folder, 29.7, 4545.2, 194.3, 151.7);
+        assert_eq!(unpainted_for(&d, folder, PaintGate::Box), Some(Unpainted::MaskedOut));
+        let heading = d.add(Some(frame), "h3");
+        d.add_text(heading, "Spaces");
+        d.set_rect(heading, 55.2, 4300.0, 120.0, 20.0);
+        assert_eq!(text(&d, heading), None, "in the clear zone");
+        // A fade over the last 10% leaves a heading 80% down painted.
+        d.set_style(frame, "maskImage", "linear-gradient(to bottom, rgb(0, 0, 0) 90%, transparent)");
+        d.set_rect(heading, 55.2, 4095.8 + 0.8 * 484.6, 120.0, 20.0);
+        assert_eq!(text(&d, heading), None, "above a 10% fade");
+        d.set_rect(heading, 55.2, 4095.8 + 0.99 * 484.6 - 10.0, 120.0, 20.0);
+        assert_eq!(text(&d, heading), Some(Unpainted::MaskedOut), "at the end of the fade");
+        // A mask the engine does not read is taken as painted.
+        d.set_style(frame, "maskImage", "linear-gradient(rgb(0, 0, 0) calc(100% - 56px), rgba(0, 0, 0, 0))");
+        assert_eq!(text(&d, label), None);
+        d.set_style(frame, "maskImage", "linear-gradient(135deg, rgb(0, 0, 0), transparent)");
+        assert_eq!(text(&d, label), None);
     }
 
     #[test]

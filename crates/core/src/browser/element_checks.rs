@@ -11156,6 +11156,38 @@ mod tests {
         assert!(!run(&|d, _, cover, _| { d.set_style(cover, "transform", "matrix(1, 0, 0, 1, 0, 4)"); }));
     }
 
+    /// apple.com's stacked gallery below the fold: five tab panels in one
+    /// grid cell, the active one at `z-index: 2` with a white fill, the
+    /// others at 0. A caption in a hidden panel is covered by the active
+    /// one, earlier in the tree. Twins: the caption in the active panel, a
+    /// panel ranked equal, and a higher card that covers part of the
+    /// caption keep their verdicts.
+    #[test]
+    fn a_sibling_ranked_above_the_text_covers_it_below_the_fold() {
+        let run = |active_z: &str, cover_h: f64, in_active: bool| {
+            let (mut d, body) = page();
+            let top = 13311.0;
+            let gallery = bare_box(&mut d, body, "div", (150.0, top, 980.0, 795.0));
+            d.set_styles(gallery, &[("display", "grid"), ("position", "relative")]);
+            let active = bare_box(&mut d, gallery, "div", (150.0, top, 980.0, cover_h));
+            d.set_styles(
+                active,
+                &[("zIndex", active_z), ("opacity", "1"), ("backgroundColor", "rgb(255, 255, 255)"), ("position", "static")],
+            );
+            let hidden = bare_box(&mut d, gallery, "div", (150.0, top, 980.0, 795.0));
+            d.set_styles(hidden, &[("zIndex", "0"), ("opacity", "1"), ("position", "static")]);
+            d.set_attr(hidden, "aria-hidden", "true");
+            let parent = if in_active { active } else { hidden };
+            let caption = faint_copy(&mut d, parent, "rgb(134, 134, 139)", (972.0, top + 596.0, 158.0, 14.0));
+            d.set_styles(caption, &[("zIndex", "auto"), ("position", "static")]);
+            reports_contrast(&colors(&d, caption))
+        };
+        assert!(!run("2", 795.0, false), "a caption under the active panel");
+        assert!(run("2", 795.0, true), "the active panel's own caption");
+        assert!(run("0", 795.0, false), "panels ranked equal fall to document order");
+        assert!(run("2", 600.0, false), "a panel that covers part of the caption");
+    }
+
     /// A transparent grain overlay laid over a section below the fold: the
     /// engine cannot see its alpha, and it is no avatar, so the muted copy
     /// under it keeps its verdict.
