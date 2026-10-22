@@ -44,9 +44,10 @@
 //!   writes `-1px +2px` as `-1px+2px` and `1 -2` as `1-2`, which re-tokenize
 //!   the same, but the shorthand expansion splits on whitespace and would
 //!   read `margin: 0 0 0 -8px` as three values. At the top level of a value
-//!   a signed number, percentage or dimension after another numeric value,
-//!   and a bare number after a function (`var(--x) 0`, which css-tree
-//!   writes `var(--x)0`), keep a space (`generate_declaration_value`);
+//!   a signed number, percentage or dimension after another numeric value
+//!   or a function, and a bare number after a function (`var(--x) 0`, which
+//!   css-tree writes `var(--x)0`), keep a space
+//!   (`generate_declaration_value`);
 //!   inside a function the
 //!   css-tree text stands (`lab(50%40-30)`). The fixture's expectations for
 //!   those top-level cases were edited by hand to match.

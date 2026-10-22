@@ -400,10 +400,10 @@ pub fn generate(node: &Node) -> String {
 
 /// `csstree.generate(value)` for a declaration value, with one deliberate
 /// divergence from css-tree: at the top level, a signed number, percentage
-/// or dimension after another numeric value, and a bare number after a
-/// function, keep the space before them. css-tree drops that space where
+/// or dimension after another numeric value or a function, and a bare number
+/// after a function, keep the space before them. css-tree drops that space where
 /// re-tokenizing gives the same tokens (`0 -8px` -> `0-8px`, `-1px +2px` ->
-/// `-1px+2px`, `var(--x) 0` -> `var(--x)0`), but the static cascade splits
+/// `-1px+2px`, `var(--x) 0` -> `var(--x)0`, `var(--x) +2px` -> `var(--x)+2px`), but the static cascade splits
 /// shorthand values on whitespace, so `margin: 0 0 0 -8px` would reach it as
 /// three values ending in a merged `0-8px`. Inside a function the text stays
 /// as css-tree writes it.
@@ -424,7 +424,8 @@ pub fn generate_declaration_value(node: &Node) -> String {
             }
             _ => (false, false),
         };
-        let separate = (prev_numeric && signed) || (prev_function && matches!(child, Node::Number { .. }));
+        let separate = (prev_numeric && signed)
+            || (prev_function && (signed || matches!(child, Node::Number { .. })));
         let start = g.buffer.len();
         g.node(child);
         if separate && !g.buffer[start..].starts_with(' ') {

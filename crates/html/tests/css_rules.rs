@@ -94,7 +94,8 @@ fn signed_values_in_shorthands_keep_their_space() {
          .i{margin:0 var(--pull) 0 -8px}\
          .j{--pull:0 -8px; margin:var(--pull, 0 -4px)}\
          .k{padding:8px 16px 4px 2px}\
-         .l{box-shadow:0 -2px 0 4px}",
+         .l{box-shadow:0 -2px 0 4px}\
+         .m{margin:0 var(--x) +2px calc(1px) 0}",
     );
     let got: Vec<(String, String, String)> = rules
         .iter()
@@ -121,6 +122,7 @@ fn signed_values_in_shorthands_keep_their_space() {
             s(".j", "margin", "var(--pull, 0 -4px)"),
             s(".k", "padding", "8px 16px 4px 2px"),
             s(".l", "box-shadow", "0 -2px 0 4px"),
+            s(".m", "margin", "0 var(--x) +2px calc(1px) 0"),
         ]
     );
 }
