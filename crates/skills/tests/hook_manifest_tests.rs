@@ -643,3 +643,92 @@ fn user_scope_keeps_project_hook_when_bundle_has_no_replacement() {
     assert!(!std::path::Path::new(&jsp::join(&[&home, ".claude", "settings.json"])).exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A user-scope `.agents` install at `home`, with `CODEX_HOME` set to
+/// `codex_home` when given and the process cwd at `cwd`.
+fn install_user_codex(root: &str, home: &str, cwd: &str, codex_home: Option<&str>) -> Sys {
+    let bundle = jsp::join(&[root, "bundle"]);
+    write(
+        &jsp::join(&[&bundle, ".codex", "hooks.json"]),
+        r#"{"hooks":{"PostToolUse":[{"matcher":"Edit","hooks":[{"type":"command","command":"node \".codex/skills/impeccable/scripts/hook.mjs\""}]}]}}"#,
+    );
+    let mut env = HashMap::new();
+    env.insert("HOME".to_string(), home.to_string());
+    if let Some(v) = codex_home {
+        env.insert("CODEX_HOME".to_string(), v.to_string());
+    }
+    let sys = Sys::new(env, cwd.to_string());
+    let written = copy_provider_hooks(&sys, &bundle, home, &[".agents"], false, None, None).unwrap();
+    assert_eq!(written, [".agents"]);
+    sys
+}
+
+#[test]
+fn user_scope_codex_install_writes_the_codex_home_manifest() {
+    let dir = tmp_dir("codex-home-install");
+    let root = dir.to_string_lossy().into_owned();
+    let home = jsp::join(&[&root, "home"]);
+    let codex_home = jsp::join(&[&root, "custom-codex"]);
+    let sys = install_user_codex(&root, &home, &home, Some(&codex_home));
+
+    let manifest = jsp::join(&[&codex_home, "hooks.json"]);
+    assert!(is_impeccable_manifest(&manifest));
+    assert!(!std::path::Path::new(&jsp::join(&[&home, ".codex", "hooks.json"])).exists());
+    assert!(hook_installed_for_provider(&sys, &home, ".agents"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn user_scope_codex_install_defaults_to_the_home_manifest_when_codex_home_is_empty() {
+    let dir = tmp_dir("codex-home-empty");
+    let root = dir.to_string_lossy().into_owned();
+    let home = jsp::join(&[&root, "home"]);
+    let sys = install_user_codex(&root, &home, &home, Some(""));
+
+    assert!(is_impeccable_manifest(&jsp::join(&[&home, ".codex", "hooks.json"])));
+    assert!(hook_installed_for_provider(&sys, &home, ".agents"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn user_scope_codex_install_resolves_a_relative_codex_home_against_cwd() {
+    let dir = tmp_dir("codex-home-relative");
+    let root = dir.to_string_lossy().into_owned();
+    let home = jsp::join(&[&root, "home"]);
+    let cwd = jsp::join(&[&root, "work"]);
+    install_user_codex(&root, &home, &cwd, Some("rel-codex"));
+
+    assert!(is_impeccable_manifest(&jsp::join(&[&cwd, "rel-codex", "hooks.json"])));
+    assert!(!std::path::Path::new(&jsp::join(&[&home, ".codex", "hooks.json"])).exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn repair_rewrites_a_stale_manifest_under_codex_home() {
+    let dir = tmp_dir("codex-home-repair");
+    let root = dir.to_string_lossy().into_owned();
+    let home = jsp::join(&[&root, "home"]);
+    let codex_home = jsp::join(&[&root, "custom-codex"]);
+    std::fs::create_dir_all(&home).unwrap();
+    let manifest = jsp::join(&[&codex_home, "hooks.json"]);
+    write(
+        &manifest,
+        r#"{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"node \".agents/skills/impeccable/scripts/hook.mjs\""}]}]}}"#,
+    );
+    let mut env = HashMap::new();
+    env.insert("HOME".to_string(), home.clone());
+    env.insert("CODEX_HOME".to_string(), codex_home.clone());
+    let sys = Sys::new(env, home.clone());
+
+    let repaired = repair_stale_hook_manifests(&sys, &home, &[".agents"], None).unwrap();
+
+    assert_eq!(repaired, [".agents"]);
+    let after = read(&manifest);
+    assert!(!after.contains("hook.mjs"));
+    assert!(after.contains("scripts/impeccable"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn is_impeccable_manifest(path: &str) -> bool {
+    std::fs::read_to_string(path).is_ok_and(|t| t.contains("scripts/impeccable"))
+}

@@ -659,7 +659,9 @@ fn global_install_rewrites_grok_project_hooks_to_the_global_skill_path() {
     }
     std::fs::create_dir_all(format!("{tmp}/.git")).unwrap();
     let bundle_root = create_fake_universal_bundle(&tmp, &[".claude", ".agents", ".cursor", ".grok"]);
-    let env = base_env(&home, &tmpdir, &bundle_root);
+    let mut env = base_env(&home, &tmpdir, &bundle_root);
+    // A global install keeps the project Codex hook even when CODEX_HOME is set.
+    env.insert("CODEX_HOME".to_string(), format!("{root}/codex-home"));
 
     let r = run_cli(
         &["install", "-y", "--providers=claude,codex,cursor,grok", "--scope=global"],
@@ -681,6 +683,7 @@ fn global_install_rewrites_grok_project_hooks_to_the_global_skill_path() {
     assert!(manifest_names_launcher(&format!("{home}/.claude/settings.json"), &home, ".claude"));
     assert!(!std::path::Path::new(&format!("{home}/.claude/settings.local.json")).exists());
     assert!(manifest_names_launcher(&format!("{tmp}/.codex/hooks.json"), &home, ".agents"));
+    assert!(!std::path::Path::new(&format!("{root}/codex-home/hooks.json")).exists());
     assert!(manifest_names_launcher(&format!("{tmp}/.cursor/hooks.json"), &home, ".cursor"));
     let grok_manifest = format!("{tmp}/.grok/hooks/impeccable.json");
     let grok_hooks = read(&grok_manifest);

@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::bundle::{self, download};
 use crate::engine_binary::install_engine_binaries;
-use crate::hook_manifest::{self, copy_provider_hooks, hook_installed_for_provider, hook_installed_for_provider_at_scope, HOOK_EXPLAINER};
+use crate::hook_manifest::{self, copy_provider_hooks, hook_installed_for_provider, HOOK_EXPLAINER};
 use crate::prompt::{CheckboxOption, Prompt, RadioOption};
 use crate::providers::*;
 use crate::util::{self, pad_end, utf16_len, utf16_prefix};
@@ -434,7 +434,7 @@ fn choose_install_plan(sys: &Sys, prompt: &mut Prompt, io: &mut Io, project_root
 }
 
 /// JS: decideHookInstall(root, targets, {yes})
-fn decide_hook_install(prompt: &mut Prompt, io: &mut Io, root: &str, targets: &[&'static str], yes: bool) -> R<bool> {
+fn decide_hook_install(sys: &Sys, prompt: &mut Prompt, io: &mut Io, root: &str, targets: &[&'static str], yes: bool) -> R<bool> {
     if targets.is_empty() {
         return Ok(false);
     }
@@ -443,7 +443,7 @@ fn decide_hook_install(prompt: &mut Prompt, io: &mut Io, root: &str, targets: &[
         Some("accepted") => return Ok(true),
         _ => {}
     }
-    if targets.iter().all(|p| hook_installed_for_provider(root, p)) {
+    if targets.iter().all(|p| hook_installed_for_provider(sys, root, p)) {
         return Ok(true);
     }
     if yes || !prompt.stdin_tty {
@@ -577,7 +577,7 @@ fn install(flags: &[String], io: &mut Io) -> R<()> {
         let linked_targets = sys.find_linked_providers(&install_root, &selected_installed, scope_opt);
         let copy_targets: Vec<&'static str> = selected_installed.iter().copied().filter(|p| !linked_targets.contains(p)).collect();
         let hook_targets: Vec<&'static str> = selected_installed.iter().chain(missing_selected_targets.iter()).copied().collect();
-        let want_hooks = install_hooks && decide_hook_install(&mut prompt, io, &hook_root, &hook_targets, yes)?;
+        let want_hooks = install_hooks && decide_hook_install(&sys, &mut prompt, io, &hook_root, &hook_targets, yes)?;
         let mut bundle_dir: Option<String> = None;
         let outcome: Result<(), String> = (|| {
             if !linked_targets.is_empty() {
@@ -594,7 +594,7 @@ fn install(flags: &[String], io: &mut Io) -> R<()> {
                     .copied()
                     .filter(|p| {
                         let manifest_root = if scope == Scope::User && *p == ".claude" { &install_root } else { &hook_root };
-                        !hook_installed_for_provider_at_scope(manifest_root, p, scope == Scope::User)
+                        !hook_installed_for_provider(&sys, manifest_root, p)
                     })
                     .collect()
             } else {
@@ -699,7 +699,7 @@ fn install(flags: &[String], io: &mut Io) -> R<()> {
         return Err(Flow::Exit(1));
     }
 
-    let want_hooks = install_hooks && decide_hook_install(&mut prompt, io, &hook_root, &targets, yes)?;
+    let want_hooks = install_hooks && decide_hook_install(&sys, &mut prompt, io, &hook_root, &targets, yes)?;
 
     out(io, "\nDownloading impeccable skills...");
     let bundle_dir = match bundle::download_and_extract_bundle(&sys) {
@@ -844,7 +844,7 @@ fn update(flags: &[String], io: &mut Io) -> R<()> {
             // Repair any stale pre-launcher (`node .../hook.mjs`) manifest a v3
             // install left behind, regardless of hook consent (triage E8).
             hook_manifest::repair_stale_hook_manifests(&sys, &root, &copy_providers, None).map_err(Flow::Throw)?;
-            let want_hooks = install_hooks && decide_hook_install(&mut prompt, io, &root, &copy_providers, yes)?;
+            let want_hooks = install_hooks && decide_hook_install(&sys, &mut prompt, io, &root, &copy_providers, yes)?;
             let hook_targets = if want_hooks {
                 copy_provider_hooks(&sys, &tmp_dir, &root, &copy_providers, force, None, Some(&project_root)).map_err(Flow::Throw)?
             } else {
@@ -900,7 +900,7 @@ fn update(flags: &[String], io: &mut Io) -> R<()> {
         // Repair any stale pre-launcher (`node .../hook.mjs`) manifest a v3
         // install left behind, regardless of hook consent (triage E8).
         hook_manifest::repair_stale_hook_manifests(&sys, &root, &copy_providers, None).map_err(Flow::Throw)?;
-        let want_hooks = install_hooks && decide_hook_install(&mut prompt, io, &root, &providers, yes)?;
+        let want_hooks = install_hooks && decide_hook_install(&sys, &mut prompt, io, &root, &providers, yes)?;
         let hook_targets = if want_hooks {
             copy_provider_hooks(&sys, &tmp_dir, &root, &providers, force, None, Some(&project_root)).map_err(Flow::Throw)?
         } else {

@@ -68,15 +68,28 @@ pub fn hook_artifacts_for_provider(bundle_dir: &str, root: &str, provider: &str)
         .collect()
 }
 
-fn hook_artifacts_for_install(bundle_dir: &str, root: &str, provider: &str, user_scope: bool) -> Vec<HookArtifact> {
-    if provider == ".claude" && user_scope {
-        return vec![HookArtifact {
-            src: jsp::join(&[bundle_dir, ".claude", "settings.json"]),
-            dest: jsp::join(&[root, ".claude", "settings.json"]),
-            shared_dest: None,
-        }];
+/// The hook manifests for `provider` rooted at `root`, the one answer the
+/// install write, the installed check, and the stale repair share. At the home
+/// dir: Claude's `<home>/.claude/settings.json`, Codex's `$CODEX_HOME/hooks.json`
+/// or `~/.codex/hooks.json` (the rule `impeccable context` reads them by).
+/// Anywhere else the project files: a global install's other providers keep
+/// writing project hooks that name the global skill. Callers that only read
+/// the destinations pass an empty `bundle_dir`.
+fn hook_artifacts_at(sys: &Sys, bundle_dir: &str, root: &str, provider: &str) -> Vec<HookArtifact> {
+    let mut artifacts = hook_artifacts_for_provider(bundle_dir, root, provider);
+    let home_manifest = match provider {
+        _ if !sys.is_home_dir(root) => None,
+        ".claude" => Some(jsp::join(&[root, ".claude", "settings.json"])),
+        ".agents" => impeccable_context::context_cli::user_hook_manifest("agents", &sys.cwd, &sys.env),
+        _ => None,
+    };
+    if let Some(dest) = home_manifest {
+        for artifact in &mut artifacts {
+            artifact.dest = dest.clone();
+            artifact.shared_dest = None;
+        }
     }
-    hook_artifacts_for_provider(bundle_dir, root, provider)
+    artifacts
 }
 
 /// JS: expectedHookDests(root, providers)
@@ -336,31 +349,19 @@ fn manifest_is_user_settings(provider: &str, user_scope: bool) -> bool {
     provider == ".gemini" || (provider == ".claude" && user_scope)
 }
 
-/// JS: hookInstalledForProvider(root, provider)
-pub fn hook_installed_for_provider(root: &str, provider: &str) -> bool {
-    let artifacts = provider_hook_artifacts(provider);
-    if artifacts.is_empty() {
-        return true;
-    }
-    artifacts.iter().all(|spec| {
-        let write_rel = spec.dest_rel.unwrap_or(spec.rel);
-        if file_has_impeccable_hook_marker(&jsp::join(&[root, spec.dest_provider, write_rel])) {
-            return true;
-        }
-        write_rel != spec.rel && file_has_impeccable_hook_marker(&jsp::join(&[root, spec.dest_provider, spec.rel]))
-    })
-}
-
-/// User-scoped Claude hooks are loaded only from `settings.json`; the
-/// project-only `settings.local.json` path must not satisfy a global install.
-/// For that file, "installed" means current (`user_claude_hook_is_current`),
-/// not merely marked: a legacy `hook.mjs` entry or one naming a launcher that
-/// no longer exists must be rewritten, not counted.
-pub fn hook_installed_for_provider_at_scope(root: &str, provider: &str, user_scope: bool) -> bool {
-    if user_scope && provider == ".claude" {
+/// JS: hookInstalledForProvider(root, provider), checked at the manifests
+/// `hook_artifacts_at` names. User-scoped Claude hooks are loaded only from
+/// `settings.json`, and for that file "installed" means current
+/// (`user_claude_hook_is_current`), not merely marked: a legacy `hook.mjs`
+/// entry or one naming a launcher that no longer exists must be rewritten,
+/// not counted.
+pub fn hook_installed_for_provider(sys: &Sys, root: &str, provider: &str) -> bool {
+    if provider == ".claude" && sys.is_home_dir(root) {
         return user_claude_hook_is_current(root);
     }
-    hook_installed_for_provider(root, provider)
+    hook_artifacts_at(sys, "", root, provider).iter().all(|artifact| {
+        file_has_impeccable_hook_marker(&artifact.dest) || artifact.shared_dest.as_deref().is_some_and(file_has_impeccable_hook_marker)
+    })
 }
 
 /// The command a user-scope install writes into `<home>/.claude/settings.json`:
@@ -539,7 +540,7 @@ pub fn copy_provider_hooks(sys: &crate::providers::Sys, bundle_dir: &str, root: 
     let mut written: Vec<&'static str> = Vec::new();
     for provider in providers {
         let manifest_root = if user_scope && *provider == ".claude" { skill_root } else { root };
-        for artifact in hook_artifacts_for_install(bundle_dir, manifest_root, provider, user_scope) {
+        for artifact in hook_artifacts_at(sys, bundle_dir, manifest_root, provider) {
             if !util::exists(&artifact.src) {
                 continue;
             }
@@ -624,14 +625,8 @@ pub fn repair_stale_hook_manifests(sys: &Sys, root: &str, providers: &[&'static 
             continue;
         }
         let mut changed = false;
-        for spec in provider_hook_artifacts(provider) {
-            let write_rel = spec.dest_rel.unwrap_or(spec.rel);
-            let mut rels: Vec<&str> = vec![write_rel];
-            if write_rel != spec.rel {
-                rels.push(spec.rel);
-            }
-            for rel in rels {
-                let path = jsp::join(&[root, spec.dest_provider, rel]);
+        for artifact in hook_artifacts_at(sys, "", root, provider) {
+            for path in std::iter::once(artifact.dest).chain(artifact.shared_dest) {
                 if !manifest_has_stale_hook(&path) {
                     continue;
                 }

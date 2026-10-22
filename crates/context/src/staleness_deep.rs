@@ -295,7 +295,7 @@ pub fn check_hook_installation(
                     broken.iter().map(|c| format!("`{}`", c)).collect::<Vec<_>>().join(", ")
                 ),
                 if *is_user {
-                    "Repoint this user-level manifest at the installed skill: `impeccable update --user` rewrites `~/.claude/settings.json` and `~/.codex/hooks.json`, but a hooks file under a custom `CODEX_HOME` has to be edited by hand."
+                    "Reinstall with `impeccable update --user`, which rewrites this user-level manifest against the skill's current location."
                 } else {
                     "Reinstall with `impeccable hooks on`, which rewrites the manifest against the skill's current location."
                 }
