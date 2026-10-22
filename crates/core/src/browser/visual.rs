@@ -2274,6 +2274,98 @@ fn base_candidate(dom: &dyn Dom, el: ElId, tag: &str, direct: &str, image_only: 
     Some(value)
 }
 
+/// How many levels up [`blended_echo_over`] looks for the box an echo
+/// copy hangs from, how many later siblings it reads at each, and how many
+/// boxes inside each one.
+const ECHO_MAX_LEVELS: usize = 3;
+const ECHO_MAX_SIBLINGS: usize = 4;
+const ECHO_MAX_BOXES: usize = 40;
+/// How far, in px, an echo's text may sit from the run on any edge.
+const ECHO_MAX_OFFSET_PX: f64 = 4.0;
+
+/// Whether a copy of this run's text paints over it, blended or
+/// translucent, so what a reader sees there is the two mixed and not the
+/// run's own ink on its ground: stripe.com's hero sets a green `h1` under a
+/// `hard-light` blue copy of itself at half alpha, and the green alone was
+/// scored on white at `2.4:1` (observations-craft-1009 row 7). The copy is
+/// a later sibling of the run or of an ancestor (up to
+/// [`ECHO_MAX_LEVELS`]), not at a negative `z-index`, holding the same
+/// direct text within [`ECHO_MAX_OFFSET_PX`] of the run's box, painted, and
+/// either with a `mix-blend-mode` other than `normal` on it or a box between
+/// it and that sibling, or with a translucent ink. An opaque copy at
+/// `normal` hides the run instead, which is the copy's verdict to give.
+pub fn blended_echo_over(dom: &dyn Dom, el: ElId) -> bool {
+    let words = |n: ElId| js::trim(&direct_text(dom, n)).split_whitespace().collect::<Vec<_>>().join(" ");
+    let own = words(el);
+    if own.is_empty() {
+        return false;
+    }
+    let Some(text) = dom.direct_text_rect(el) else {
+        return false;
+    };
+    let near = |r: &Rect| {
+        (r.left - text.left).abs() <= ECHO_MAX_OFFSET_PX
+            && (r.top - text.top).abs() <= ECHO_MAX_OFFSET_PX
+            && (r.left + r.width - text.left - text.width).abs() <= ECHO_MAX_OFFSET_PX
+            && (r.top + r.height - text.top - text.height).abs() <= ECHO_MAX_OFFSET_PX
+    };
+    let mut cur = el;
+    for _ in 0..ECHO_MAX_LEVELS {
+        let Some(parent) = dom.parent(cur) else {
+            return false;
+        };
+        let siblings = dom.children(parent);
+        let Some(at) = siblings.iter().position(|&c| c == cur) else {
+            return false;
+        };
+        for &sib in siblings[at + 1..].iter().take(ECHO_MAX_SIBLINGS) {
+            let z = parse_float(&dom.style(sib, "zIndex"));
+            if z.is_finite() && z < 0.0 {
+                continue;
+            }
+            // The sibling and the first boxes inside it, in tree order.
+            let mut boxes = Vec::with_capacity(ECHO_MAX_BOXES);
+            let mut stack = vec![sib];
+            while let Some(n) = stack.pop() {
+                if boxes.len() >= ECHO_MAX_BOXES {
+                    break;
+                }
+                boxes.push(n);
+                stack.extend(dom.children(n).into_iter().rev());
+            }
+            for n in boxes {
+                if !dom.direct_text_rect(n).is_some_and(|r| near(&r)) || words(n) != own {
+                    continue;
+                }
+                if dom.style(n, "visibility") == "hidden"
+                    || crate::browser::painted::effective_opacity_scrolled(dom, n) <= 0.05
+                {
+                    continue;
+                }
+                let fill = dom.style(n, "webkitTextFillColor");
+                let fill = if js::trim(&fill).is_empty() { dom.style(n, "color") } else { fill };
+                let ink = parse_rgb_or_any(&fill);
+                let translucent = ink.is_some_and(|c| c.alpha_or_one() < 0.98);
+                let mut blended = false;
+                let mut b = Some(n);
+                while let Some(c) = b {
+                    let mode = dom.style(c, "mixBlendMode");
+                    blended |= !matches!(js::trim(&mode), "" | "normal");
+                    if c == sib {
+                        break;
+                    }
+                    b = dom.parent(c);
+                }
+                if translucent || blended {
+                    return true;
+                }
+            }
+        }
+        cur = parent;
+    }
+    false
+}
+
 /// Why the element pass hands this text to the pixels rather than scoring
 /// it, if it does: `unread layer` where the structural climb finds paint the
 /// contrast walk never read under the run, `text outline` where the glyphs
@@ -2288,6 +2380,9 @@ pub fn routed_reason(dom: &dyn Dom, el: ElId) -> Option<&'static str> {
     let ink = dom.text_slot(el).unwrap_or(el);
     if text_outlined(dom, ink) {
         return Some("text outline");
+    }
+    if blended_echo_over(dom, el) {
+        return Some("unread layer");
     }
     let (under, found) = layer_under_text_found(dom, el);
     if matches!(under, LayerUnder::Ancestor | LayerUnder::Undecided) {
@@ -5103,6 +5198,57 @@ mod tests {
         d.set_pseudo_style(body, "::before", "backgroundImage", "radial-gradient(rgba(20, 30, 60, 1), rgba(20, 30, 60, 1))");
         d.set_pseudo_style(body, "::before", "opacity", "0.4");
         assert!(!handed_over_unmeasured(&d, p, verdict), "faded to 0.4");
+    }
+
+    /// stripe.com's hero: a green `h1` under a copy of itself in blue at
+    /// half alpha, blended `hard-light` at `z-index: 2`.
+    fn echoed_headline(blend: &str, ink: &str) -> (FakeDom, ElId, ElId) {
+        let mut d = FakeDom::new();
+        let (html, body) = d.with_page();
+        d.set_rect(html, 0.0, 0.0, 1280.0, 2000.0);
+        d.set_rect(body, 0.0, 0.0, 1280.0, 2000.0);
+        d.set_style(body, "backgroundColor", "rgb(255, 255, 255)");
+        let wrap = d.add(Some(body), "div");
+        d.set_rect(wrap, 135.0, 224.0, 1009.0, 221.0);
+        let mut copy = |d: &mut FakeDom, color: &str, styles: &[(&str, &str)]| {
+            let h1 = d.add(Some(wrap), "h1");
+            d.set_rect(h1, 135.0, 224.0, 1009.0, 221.0);
+            d.set_styles(h1, &[("position", "relative"), ("opacity", "1")]);
+            d.set_styles(h1, styles);
+            let span = text_run(d, h1, "span", "Financial infrastructure to grow your revenue", (135.0, 276.0, 1000.0, 171.0));
+            d.set_text_rect(span, 135.0, 276.0, 1000.0, 171.0);
+            d.set_styles(span, &[("color", color), ("webkitTextFillColor", color), ("fontSize", "64px")]);
+            span
+        };
+        let back = copy(&mut d, "rgb(129, 184, 26)", &[("mixBlendMode", "normal"), ("zIndex", "auto")]);
+        let front = copy(&mut d, ink, &[("mixBlendMode", blend), ("zIndex", "2")]);
+        (d, back, front)
+    }
+
+    #[test]
+    fn a_blended_echo_over_the_run_hands_it_to_the_pixels() {
+        let (d, back, front) = echoed_headline("hard-light", "rgba(0, 14, 255, 0.5)");
+        assert!(blended_echo_over(&d, back));
+        assert_eq!(routed_reason(&d, back), Some("unread layer"));
+        // The front copy has nothing over it.
+        assert!(!blended_echo_over(&d, front));
+        // Blended or translucent alone is enough.
+        let (d, back, _) = echoed_headline("normal", "rgba(0, 14, 255, 0.5)");
+        assert!(blended_echo_over(&d, back));
+        let (d, back, _) = echoed_headline("multiply", "rgb(0, 14, 255)");
+        assert!(blended_echo_over(&d, back));
+        // An opaque copy at `normal` hides the run: not a mix of the two.
+        let (d, back, front) = echoed_headline("normal", "rgb(0, 14, 255)");
+        assert!(!blended_echo_over(&d, back));
+        assert!(!blended_echo_over(&d, front));
+        // Other text blended over the same place is not an echo.
+        let (mut d, back, front) = echoed_headline("normal", "rgb(0, 14, 255)");
+        let wrap = d.parent(d.parent(front).unwrap()).unwrap();
+        let other = d.add(Some(wrap), "h1");
+        d.set_styles(other, &[("position", "relative"), ("mixBlendMode", "hard-light"), ("zIndex", "3")]);
+        let span = text_run(&mut d, other, "span", "Something else entirely", (135.0, 276.0, 1000.0, 171.0));
+        d.set_text_rect(span, 135.0, 276.0, 1000.0, 171.0);
+        assert!(!blended_echo_over(&d, back));
     }
 
     #[test]
