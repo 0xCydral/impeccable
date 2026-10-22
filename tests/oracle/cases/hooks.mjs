@@ -1,8 +1,9 @@
 /**
  * `impeccable hook`, `hook-before-edit`, `hook-admin` corpus.
  * Workspace: hook-project (package.json, PRODUCT.md web, UI files with and
- * without findings). Multi-step cases share one staged workspace so the
- * session cache carries between steps.
+ * without findings); hook-umbrella (a plain folder holding the projects
+ * site/ and app/, for Stop from a cwd above them). Multi-step cases share
+ * one staged workspace so the session cache carries between steps.
  */
 
 import fs from 'node:fs';

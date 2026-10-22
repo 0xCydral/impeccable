@@ -111,7 +111,9 @@ pub fn recorded_roots(rt: &Runtime, session: &str) -> Vec<String> {
             continue;
         }
         let Some(root) = read_entry(&entry.path()) else { continue };
-        if sha256_hex(&root) == name && Path::new(&root).is_absolute() && !roots.contains(&root) {
+        // A root that is gone (a deleted project, a test's temp dir) never
+        // takes one of the [`MAX_ROOTS`] places.
+        if sha256_hex(&root) == name && Path::new(&root).is_absolute() && Path::new(&root).is_dir() && !roots.contains(&root) {
             roots.push(root);
         }
     }

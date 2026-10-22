@@ -3460,6 +3460,9 @@ fn parallel_first_edits_record_each_root_once() {
             s.spawn(move || impeccable_hook::hook_sessions::record_root(&rt_with(&cwd, e), "p1", &root));
         }
     });
+    for root in &roots {
+        std::fs::create_dir_all(root).unwrap();
+    }
     let session_dir = jsp::join(&[&index_dir(&t), &sha256("p1")]);
     let mut expected: Vec<String> = roots.iter().map(|r| sha256(r)).collect();
     expected.sort();
@@ -3487,8 +3490,11 @@ fn index_names_are_safe_on_every_file_system() {
     let e = home_env(&t);
     let r = rt_with(&t.path(), e);
     let root = jsp::join(&[&t.path(), "proj"]);
+    std::fs::create_dir_all(&root).unwrap();
     let session = r"a/b:c*?<>|\d";
     impeccable_hook::hook_sessions::record_root(&r, session, &root);
+    // A recorded root that no longer exists is not returned.
+    impeccable_hook::hook_sessions::record_root(&r, session, &jsp::join(&[&t.path(), "gone"]));
     let sessions = names_in(&index_dir(&t));
     assert_eq!(sessions.len(), 1);
     let records = names_in(&jsp::join(&[&index_dir(&t), &sessions[0]]));
