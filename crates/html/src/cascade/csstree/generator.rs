@@ -399,14 +399,14 @@ pub fn generate(node: &Node) -> String {
 }
 
 /// `csstree.generate(value)` for a declaration value, with one deliberate
-/// divergence from css-tree: at the top level, a signed number, percentage
-/// or dimension after another numeric value or a function, and a bare number
-/// after a function, keep the space before them. css-tree drops that space where
-/// re-tokenizing gives the same tokens (`0 -8px` -> `0-8px`, `-1px +2px` ->
-/// `-1px+2px`, `var(--x) 0` -> `var(--x)0`, `var(--x) +2px` -> `var(--x)+2px`), but the static cascade splits
-/// shorthand values on whitespace, so `margin: 0 0 0 -8px` would reach it as
-/// three values ending in a merged `0-8px`. Inside a function the text stays
-/// as css-tree writes it.
+/// divergence from css-tree: at the top level, a number, percentage or
+/// dimension that follows another one or a function keeps the space before
+/// it. css-tree drops that space where re-tokenizing gives the same tokens
+/// (`0 -8px` -> `0-8px`, `-1px +2px` -> `-1px+2px`, `10% 0` -> `10%0`,
+/// `var(--x) 0` -> `var(--x)0`), but the static cascade splits shorthand
+/// values on whitespace, so `margin: 0 0 0 -8px` would reach it as three
+/// values ending in a merged `0-8px`. Inside a function the text stays as
+/// css-tree writes it.
 pub fn generate_declaration_value(node: &Node) -> String {
     let Node::Value { children } = node else {
         return generate(node);
@@ -418,14 +418,11 @@ pub fn generate_declaration_value(node: &Node) -> String {
     let mut prev_numeric = false;
     let mut prev_function = false;
     for child in children {
-        let (numeric, signed) = match child {
-            Node::Number { value } | Node::Dimension { value, .. } | Node::Percentage { value } => {
-                (true, value.starts_with('-') || value.starts_with('+'))
-            }
-            _ => (false, false),
-        };
-        let separate = (prev_numeric && signed)
-            || (prev_function && (signed || matches!(child, Node::Number { .. })));
+        let numeric = matches!(
+            child,
+            Node::Number { .. } | Node::Dimension { .. } | Node::Percentage { .. }
+        );
+        let separate = (prev_numeric || prev_function) && numeric;
         let start = g.buffer.len();
         g.node(child);
         if separate && !g.buffer[start..].starts_with(' ') {

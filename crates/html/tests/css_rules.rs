@@ -76,9 +76,9 @@ fn collect_static_css_rules_matches_node() {
     );
 }
 
-/// A signed value after a number, and a number after a function, keep their
-/// space, so a box shorthand splits into the values the author wrote.
-/// css-tree alone writes `0 0 0 -24px` as `0 0 0-24px` and `var(--x) 0` as
+/// A number after another number or a function keeps its space, so a box
+/// shorthand splits into the values the author wrote. css-tree alone writes
+/// `0 0 0 -24px` as `0 0 0-24px`, `10% 0` as `10%0` and `var(--x) 0` as
 /// `var(--x)0`.
 #[test]
 fn signed_values_in_shorthands_keep_their_space() {
@@ -95,7 +95,8 @@ fn signed_values_in_shorthands_keep_their_space() {
          .j{--pull:0 -8px; margin:var(--pull, 0 -4px)}\
          .k{padding:8px 16px 4px 2px}\
          .l{box-shadow:0 -2px 0 4px}\
-         .m{margin:0 var(--x) +2px calc(1px) 0}",
+         .m{margin:0 var(--x) +2px calc(1px) 0}\
+         .n{margin:10% 0 0 -24px}",
     );
     let got: Vec<(String, String, String)> = rules
         .iter()
@@ -123,6 +124,7 @@ fn signed_values_in_shorthands_keep_their_space() {
             s(".k", "padding", "8px 16px 4px 2px"),
             s(".l", "box-shadow", "0 -2px 0 4px"),
             s(".m", "margin", "0 var(--x) +2px calc(1px) 0"),
+            s(".n", "margin", "10% 0 0 -24px"),
         ]
     );
 }

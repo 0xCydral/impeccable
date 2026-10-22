@@ -40,17 +40,16 @@
 //!   `"\201C"` -> `"\u{201C}"`); `url("x y.png")` -> `url(x\ y.png)`,
 //!   `URL(x.png)` -> `url(x.png)`; `var( --x , red )` -> `var(--x, red )`
 //!   (the fallback is a raw span). Comments inside values vanish.
-//! - **Signed numbers keep their space (a deliberate divergence).** css-tree
-//!   writes `-1px +2px` as `-1px+2px` and `1 -2` as `1-2`, which re-tokenize
-//!   the same, but the shorthand expansion splits on whitespace and would
-//!   read `margin: 0 0 0 -8px` as three values. At the top level of a value
-//!   a signed number, percentage or dimension after another numeric value
-//!   or a function, and a bare number after a function (`var(--x) 0`, which
-//!   css-tree writes `var(--x)0`), keep a space
-//!   (`generate_declaration_value`);
-//!   inside a function the
-//!   css-tree text stands (`lab(50%40-30)`). The fixture's expectations for
-//!   those top-level cases were edited by hand to match.
+//! - **Adjacent numbers keep their space (a deliberate divergence).**
+//!   css-tree writes `-1px +2px` as `-1px+2px`, `1 -2` as `1-2` and `10% 0`
+//!   as `10%0`, which re-tokenize the same, but the shorthand expansion
+//!   splits on whitespace and would read `margin: 0 0 0 -8px` as three
+//!   values. At the top level of a value, a number, percentage or dimension
+//!   after another one or after a function (`var(--x) 0`, which css-tree
+//!   writes `var(--x)0`) keeps a space (`generate_declaration_value`);
+//!   inside a function the css-tree text stands (`lab(50%40-30)`). The
+//!   fixture's expectations for those top-level cases were edited by hand
+//!   to match.
 //! - **Custom properties** (`parseCustomProperty: false`) keep their raw text
 //!   including surrounding whitespace, which the JS then trims.
 //! - **`!important`** parses as `true`; another ident (`!ie`) is kept as a
