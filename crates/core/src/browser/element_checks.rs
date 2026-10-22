@@ -2200,6 +2200,18 @@ pub fn check_element_colors_dom(
     };
     let (text_color, visible_text, effective_bg, effective_bg_stops, own_bg) = painted_colours
         .unwrap_or((text_color, visible_text, effective_bg, effective_bg_stops, own_bg));
+    // Glyphs whose fill is transparent paint no colour of their own: an
+    // ancestor's background clipped to the text paints them (resend.com's
+    // `em` inside a gradient-clipped `h1` inherits its transparent fill), or
+    // nothing does. Their `color` is not what a reader sees.
+    let ink_unread = has_direct_text && {
+        let fill = dom.style(ink_el, "webkitTextFillColor");
+        if js::trim(&fill).is_empty() {
+            measures::css_color_is_transparent(Some(&dom.style(ink_el, "color")))
+        } else {
+            text_fill_is_transparent(&fill)
+        }
+    };
     let mut color_opts = ColorOpts {
         tag: tag.clone(),
         text_color,
@@ -2224,6 +2236,7 @@ pub fn check_element_colors_dom(
         bg_source,
         bg_source_host,
         same_color_surface_is_unread,
+        ink_unread,
     };
     // Only on the link and span path: a styled control takes the full pass,
     // which keeps its own reading of the page ground.
