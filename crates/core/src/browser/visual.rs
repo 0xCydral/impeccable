@@ -1580,11 +1580,15 @@ pub fn layer_matches_surface(under: LayerUnder, resolved: Option<Rgba>) -> bool 
 /// the climb decides; where they confirm the walk's
 /// surface, the climb decides only for a layer that ignores pointer events,
 /// which `elementsFromPoint` never lists (an `absolute inset-0
-/// pointer-events-none` hero photo), and for an SVG shape drawn around the
+/// pointer-events-none` hero photo), for an SVG shape drawn around the
 /// text, whose fill the stacks cannot read either and so never contradict (an
-/// initial's circle).
+/// initial's circle), and for a pseudo-element on an ancestor of the text
+/// that the capture places under the whole run for certain: a stack lists
+/// no pseudo-element and reads past the text's ancestors, so it never sees
+/// one (panic.com's chevron sections, painted by two sheared halves).
 pub fn surface_unread(
     dom: &dyn Dom,
+    el: ElId,
     under: (LayerUnder, Option<ElId>),
     resolved: Option<Rgba>,
     layers: super::text_layers::TextLayers,
@@ -1594,9 +1598,14 @@ pub fn surface_unread(
         return false;
     }
     match layers {
-        TextLayers::Consistent => under
-            .1
-            .is_some_and(|n| is_svg(dom, n) || js::trim(&dom.style(n, "pointerEvents")) == "none"),
+        TextLayers::Consistent => under.1.is_some_and(|n| {
+            is_svg(dom, n)
+                || js::trim(&dom.style(n, "pointerEvents")) == "none"
+                || (dom.contains(n, el) && {
+                    let text = dom.direct_text_rect(el).unwrap_or_else(|| dom.rect(el));
+                    pseudo_paint_placed(dom, n, &text).is_some_and(|(_, certain)| certain)
+                })
+        }),
         TextLayers::Covered | TextLayers::UnreadSurface | TextLayers::Undecided => true,
     }
 }

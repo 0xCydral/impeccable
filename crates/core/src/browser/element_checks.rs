@@ -2313,7 +2313,7 @@ pub fn check_element_colors_dom(
             TextLayers::UnreadSurface => !own_surface && unread() == UnreadVerdict::Fails,
             layers => {
                 own_surface
-                    || !crate::browser::visual::surface_unread(dom, under(), resolved_surface, layers)
+                    || !crate::browser::visual::surface_unread(dom, el, under(), resolved_surface, layers)
                     || unread() != UnreadVerdict::Passes
             }
         }
@@ -2369,7 +2369,7 @@ pub fn check_element_colors_dom(
     if findings.iter().any(|h| h.id == "low-contrast")
         && !own_surface
         && (layers_at() == crate::browser::text_layers::TextLayers::UnreadSurface
-            || crate::browser::visual::surface_unread(dom, under(), resolved_surface, layers_at()))
+            || crate::browser::visual::surface_unread(dom, el, under(), resolved_surface, layers_at()))
     {
         if let Some(rescore) = reading().rescore {
             for h in findings.iter_mut().filter(|h| h.id == "low-contrast") {
