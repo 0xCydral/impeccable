@@ -3265,9 +3265,14 @@ fn placed_size_is_known(size: &str, intrinsic_w: f64, intrinsic_h: f64) -> bool 
 /// composited over the cream page beneath the section instead, and printed
 /// 1.2:1 for its near-white title. The result is opaque where the fill is,
 /// and still translucent (the two layers composited) where it is not.
+/// Only a box with one image layer: with more, the layers under the sampled
+/// one lie between it and the fill, and the sample is returned as before.
 pub fn css_url_finish(dom: &dyn Dom, node: ElId, sample: Value) -> Value {
     let sample = with_method(sample, "canvas-background-image");
     if sample.get("status").and_then(Value::as_str) != Some("sampled") || sample_is_opaque(&sample) {
+        return sample;
+    }
+    if split_top_level_commas(&dom.style(node, "backgroundImage")).len() > 1 {
         return sample;
     }
     let Some(fill) = parse_rgb_or_any(&dom.style(node, "backgroundColor")) else { return sample };
@@ -4941,6 +4946,7 @@ mod tests {
         let (_, body) = d.with_page();
         let section = d.add(Some(body), "section");
         d.set_style(section, "backgroundColor", "rgb(17, 17, 17)");
+        d.set_style(section, "backgroundImage", "url(\"grain.png\")");
         let pixel = json!({ "status": "sampled", "color": { "r": 255.0, "g": 255.0, "b": 255.0, "a": 0.1 } });
         let out = css_url_finish(&d, section, pixel.clone());
         assert!(sample_is_opaque(&out), "{out}");
@@ -4961,6 +4967,13 @@ mod tests {
         d.set_style(section, "backgroundColor", "rgb(17, 17, 17)");
         let solid = json!({ "status": "sampled", "color": { "r": 250.0, "g": 250.0, "b": 250.0, "a": 1.0 } });
         assert_eq!(css_url_finish(&d, section, solid)["color"]["r"], 250.0);
+        // A photo beneath the grain lies between the pixel and the fill: the
+        // pixel is returned as sampled, not laid over a white fallback.
+        d.set_style(section, "backgroundColor", "rgb(255, 255, 255)");
+        d.set_style(section, "backgroundImage", "url(\"grain.png\"), url(\"photo.jpg\")");
+        let out = css_url_finish(&d, section, pixel.clone());
+        assert_eq!(out["color"]["a"], 0.1, "{out}");
+        assert_eq!(out["method"], "canvas-background-image");
     }
 
     /// fischundfang.de marks its whole page wrapper `aria-hidden="true"`.
