@@ -2204,13 +2204,14 @@ pub fn check_element_colors_dom(
     // ancestor's background clipped to the text paints them (resend.com's
     // `em` inside a gradient-clipped `h1` inherits its transparent fill), or
     // nothing does. Their `color` is not what a reader sees.
+    // Only a fill at the floor nothing is seen through counts: a ghost
+    // numeral at 5% white is still ink (reachmcp.com).
     let ink_unread = has_direct_text && {
         let fill = dom.style(ink_el, "webkitTextFillColor");
-        if js::trim(&fill).is_empty() {
-            measures::css_color_is_transparent(Some(&dom.style(ink_el, "color")))
-        } else {
-            text_fill_is_transparent(&fill)
-        }
+        let fill = if js::trim(&fill).is_empty() { dom.style(ink_el, "color") } else { fill };
+        js::trim(&fill) == "transparent"
+            || parse_rgb_or_any(&fill)
+                .is_some_and(|c| c.alpha_or_one() <= crate::checks::rules::TRANSPARENT_INK_FLOOR)
     };
     let mut color_opts = ColorOpts {
         tag: tag.clone(),

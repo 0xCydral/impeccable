@@ -992,7 +992,8 @@ fn pseudo_paint_placed(dom: &dyn Dom, node: ElId, text: &Rect) -> Option<(Paint,
 
 /// What a positioned `::before` or `::after` paints, read from its own
 /// style: a picture for a raster image; for a gradient over an opaque fill
-/// (`opacity` 1), the colours its stops make over that fill, as a gradient;
+/// (`opacity` 1, no `filter`), the colours its stops make over that fill, as
+/// a gradient;
 /// any other gradient, and a translucent fill, as paint the walk cannot
 /// read; an opaque fill as its colour. `None` where it paints nothing (no
 /// image and a fill at alpha 0.1 or less).
@@ -1005,7 +1006,11 @@ fn pseudo_layer_paint(dom: &dyn Dom, node: ElId, which: &str) -> Option<Paint> {
     let fill = parse_rgb_or_any(&get("backgroundColor"));
     if GRADIENT_RE.is_match(&image) {
         let opacity = get("opacity");
-        let opaque = js::trim(&opacity).is_empty() || parse_float(&opacity) >= 0.999;
+        let filter = get("filter");
+        // A filter repaints the colours (linear.app's `brightness(0.8)`
+        // panel face), which the stops do not say.
+        let opaque = (js::trim(&opacity).is_empty() || parse_float(&opacity) >= 0.999)
+            && matches!(js::trim(&filter), "" | "none");
         return Some(
             match fill.filter(|c| opaque && c.alpha_or_one() >= 0.999) {
                 Some(ground) => gradient_over(&image, ground).unwrap_or(Paint::Unmodelled),
@@ -2302,7 +2307,8 @@ const ECHO_MAX_OFFSET_PX: f64 = 4.0;
 /// direct text within [`ECHO_MAX_OFFSET_PX`] of the run's box, painted, and
 /// either with a `mix-blend-mode` other than `normal` on it or a box between
 /// it and that sibling, or with a translucent ink. An opaque copy at
-/// `normal` hides the run instead, which is the copy's verdict to give.
+/// `normal` hides the run instead, which is the copy's verdict to give, and
+/// a copy in a transparent ink paints no glyph of its own.
 pub fn blended_echo_over(dom: &dyn Dom, el: ElId) -> bool {
     let words = |n: ElId| js::trim(&direct_text(dom, n)).split_whitespace().collect::<Vec<_>>().join(" ");
     let own = words(el);
@@ -2353,8 +2359,15 @@ pub fn blended_echo_over(dom: &dyn Dom, el: ElId) -> bool {
                 }
                 let fill = dom.style(n, "webkitTextFillColor");
                 let fill = if js::trim(&fill).is_empty() { dom.style(n, "color") } else { fill };
-                let ink = parse_rgb_or_any(&fill);
-                let translucent = ink.is_some_and(|c| c.alpha_or_one() < 0.98);
+                // A copy whose ink is transparent paints no glyph of its own
+                // (a selectable copy laid over code, docs.stripe.com).
+                let Some(alpha) = parse_rgb_or_any(&fill).map(|c| c.alpha_or_one()) else {
+                    continue;
+                };
+                if alpha <= crate::checks::rules::TRANSPARENT_INK_FLOOR {
+                    continue;
+                }
+                let translucent = alpha < 0.98;
                 let mut blended = false;
                 let mut b = Some(n);
                 while let Some(c) = b {
@@ -5250,6 +5263,9 @@ mod tests {
         let (d, back, front) = echoed_headline("normal", "rgb(0, 14, 255)");
         assert!(!blended_echo_over(&d, back));
         assert!(!blended_echo_over(&d, front));
+        // A transparent copy paints nothing (a selectable copy over code).
+        let (d, back, _) = echoed_headline("normal", "rgba(0, 0, 0, 0)");
+        assert!(!blended_echo_over(&d, back));
         // Other text blended over the same place is not an echo.
         let (mut d, back, front) = echoed_headline("normal", "rgb(0, 14, 255)");
         let wrap = d.parent(d.parent(front).unwrap()).unwrap();
