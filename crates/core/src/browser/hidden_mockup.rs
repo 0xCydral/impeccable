@@ -82,8 +82,10 @@ const ROOT_SKIP_PARTS: &[&str] = &[
     "ticker", "menu", "submenu", "dropdown", "popup", "popover", "modal", "drawer", "dialog",
     "tooltip", "toast", "offcanvas", "overlay", "nav", "navbar", "navigation", "panel", "tab",
     "tabpanel", "accordion", "collapse", "collapsible", "intro", "splash", "loader", "preloader",
-    "loading", "banner", "cookie", "cookies", "consent",
+    "loading", "banner", "cookie", "cookies", "consent", "sidebar", "sidenav", "toc",
 ];
+/// Form fields a visitor fills.
+const FIELD_TAGS: &[&str] = &["input", "select", "textarea"];
 /// Elements whose text is source, not words on the page.
 const SOURCE_TEXT_TAGS: &[&str] = &["script", "style", "noscript", "template"];
 
@@ -192,7 +194,7 @@ impl<'a> HiddenMockups<'a> {
         if own.runs < MIN_TEXT_RUNS || own.h1 {
             return false;
         }
-        if has_content_peer(dom, el, &own.text) {
+        if own.working || has_content_peer(dom, el, &own.text) || has_readable_alternative(dom, el) {
             return false;
         }
         if self.behind_open_modal(el) {
@@ -330,15 +332,21 @@ struct SubtreeText {
     /// peer (split text joins its words with or without spaces).
     text: String,
     h1: bool,
+    /// A form field or a link with an `href` sits inside.
+    working: bool,
 }
 
 /// The root's runs of text, characters and words, or `None` when the
 /// subtree is too large to be a drawing.
 fn subtree_text(dom: &dyn Dom, el: ElId) -> Option<SubtreeText> {
-    let mut out = SubtreeText { runs: 0, chars: 0, text: String::new(), h1: false };
-    let mut stack = vec![el];
+    let mut out = SubtreeText { runs: 0, chars: 0, text: String::new(), h1: false, working: false };
+    // Each entry carries whether a link with an `href` holds it.
+    let mut stack = vec![(el, false)];
     let mut visited = 0usize;
-    while let Some(n) = stack.pop() {
+    let mut fields = 0usize;
+    let mut labelled_form = false;
+    let mut link_runs = 0usize;
+    while let Some((n, in_link)) = stack.pop() {
         visited += 1;
         if visited > MAX_ROOT_NODES {
             return None;
@@ -350,14 +358,30 @@ fn subtree_text(dom: &dyn Dom, el: ElId) -> Option<SubtreeText> {
         if tag == "h1" {
             out.h1 = true;
         }
+        if FIELD_TAGS.contains(&tag.as_str()) && is_field(dom, n, &tag) {
+            fields += 1;
+        }
+        if tag == "label" {
+            labelled_form = true;
+        }
+        let in_link = in_link
+            || (tag == "a" && dom.attr(n, "href").is_some_and(|h| !js::trim(&h).is_empty()));
         let direct = dom.direct_text_nodes(n).join(" ");
         let chars = direct.chars().filter(|c| !c.is_whitespace()).count();
         if chars > 0 {
             out.runs += 1;
             out.chars += chars;
+            if in_link {
+                link_runs += 1;
+            }
         }
-        stack.extend(dom.children(n).into_iter().rev());
+        stack.extend(dom.children(n).into_iter().rev().map(|c| (c, in_link)));
     }
+    // Working UI the page hid for a while: a form (two fields or more, or
+    // a field with a `label`), or a list of links (half the runs or more).
+    // A drawn window may carry one stray real field (cursor.com's composer,
+    // a `textarea` in a `form`, no label) or a link among its labels.
+    out.working = fields >= 2 || (fields >= 1 && labelled_form) || link_runs * 2 >= out.runs.max(1);
     out.text = squash(&dom.text_content(el));
     Some(out)
 }
@@ -377,19 +401,33 @@ fn collapse(s: &str) -> String {
 /// a split or animated one).
 fn has_content_peer(dom: &dyn Dom, el: ElId, text: &str) -> bool {
     let tag = tag_lower(dom, el);
-    let class = collapse(&class_attr(dom, el));
-    if let Some(parent) = dom.parent(el) {
-        if dom
-            .attr(parent, "aria-label")
-            .is_some_and(|l| !text.is_empty() && squash(&l) == text)
-        {
-            return true;
+    let classes = class_tokens(dom, el);
+    // A split-text headline: the host's `aria-label` reads the whole line
+    // and each visual line under it is hidden (GSAP SplitText's
+    // `aria: "auto"`). An ancestor's label holding the root's characters
+    // makes the root a visual copy of words the page does read.
+    if !text.is_empty() {
+        let mut cur = dom.parent(el);
+        while let Some(a) = cur {
+            if dom.attr(a, "aria-label").is_some_and(|l| squash(&l).contains(text)) {
+                return true;
+            }
+            cur = dom.parent(a);
         }
+    }
+    if let Some(parent) = dom.parent(el) {
         for sib in dom.children(parent) {
             if sib == el {
                 continue;
             }
-            let same_shape = tag_lower(dom, sib) == tag && collapse(&class_attr(dom, sib)) == class;
+            // The same component: one tag, and the sibling wears every
+            // class the root wears (a carousel's current slide is
+            // `quote is-active` beside the resting `quote`), or neither has
+            // a class.
+            let sib_classes = class_tokens(dom, sib);
+            let same_shape = tag_lower(dom, sib) == tag
+                && classes.iter().all(|c| sib_classes.contains(c))
+                && (classes.is_empty() == sib_classes.is_empty());
             if same_shape && shown(dom, sib) && !declares_hidden(dom, sib) {
                 return true;
             }
@@ -399,6 +437,50 @@ fn has_content_peer(dom: &dyn Dom, el: ElId, text: &str) -> bool {
         }
     }
     false
+}
+
+/// The class tokens of an element.
+fn class_tokens(dom: &dyn Dom, el: ElId) -> Vec<String> {
+    class_attr(dom, el).split_whitespace().map(str::to_string).collect()
+}
+
+/// A form field a visitor can fill: not `type="hidden"`.
+fn is_field(dom: &dyn Dom, el: ElId, tag: &str) -> bool {
+    tag != "input"
+        || !dom
+            .attr(el, "type")
+            .is_some_and(|t| js::to_lower_case(js::trim(&t)) == "hidden")
+}
+
+/// Words a screen-reader description uses for a picture: cursor.com puts
+/// "This element contains an interactive demo for sighted users showing
+/// ..." beside each hidden demo window. Such a sibling describes a drawing;
+/// it does not restate content.
+static DESCRIBES_PICTURE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)\b(?:demo|demonstration|illustrat\w*|interface|screen ?shots?|mock-?ups?|graphic|animation|animated|preview|image|video|visual|diagram|depict\w*|shows|showing|displayed)\b")
+        .expect("DESCRIBES_PICTURE_RE")
+});
+
+/// Whether a sibling of the root carries its words for screen readers
+/// only (an `sr-only` sentence beside a stats band, a clipped table beside
+/// a visual pricing grid): the hidden box is then the visible form of
+/// content the page means to be read. A sibling that describes a picture
+/// ([`DESCRIBES_PICTURE_RE`]) is not such an alternative.
+fn has_readable_alternative(dom: &dyn Dom, el: ElId) -> bool {
+    let Some(parent) = dom.parent(el) else { return false };
+    dom.children(parent).into_iter().any(|sib| {
+        sib != el
+            && !SOURCE_TEXT_TAGS.contains(&tag_lower(dom, sib).as_str())
+            && !declares_hidden(dom, sib)
+            && dom.style(sib, "visibility") != "hidden"
+            && !js::trim(&dom.text_content(sib)).is_empty()
+            && (super::quality::is_visually_hidden(dom, sib) || {
+                let r = dom.rect(sib);
+                r.width <= 1.0 || r.height <= 1.0
+            })
+            && dom.style(sib, "display") != "none"
+            && !DESCRIBES_PICTURE_RE.is_match(&dom.text_content(sib))
+    })
 }
 
 /// The page's rendered words, counted once.
@@ -655,6 +737,89 @@ mod tests {
         d.set_attr(w, "aria-hidden", "true");
         d.set_attr(w, "class", "cine-intro");
         assert!(!HiddenMockups::scan(&d).declared(runs[0]), "an intro splash");
+    }
+
+    #[test]
+    fn split_text_lines_under_a_labelled_host_are_not_mockups() {
+        // GSAP SplitText `aria: "auto"`: the host reads the whole line, each
+        // visual line is hidden.
+        let (mut d, body) = page();
+        let host = d.add(Some(body), "div");
+        d.set_rect(host, 0.0, 400.0, 1000.0, 300.0);
+        d.set_attr(host, "aria-label", "Plan every launch with your whole team in one place");
+        let (line, runs) = window(&mut d, host, &["Plan", "every", "launch", "with"]);
+        d.set_attr(line, "aria-hidden", "true");
+        assert!(!HiddenMockups::scan(&d).declared(runs[0]));
+    }
+
+    #[test]
+    fn a_resting_slide_beside_a_current_one_with_a_state_class_is_not_a_mockup() {
+        let (mut d, body) = page();
+        let track = d.add(Some(body), "div");
+        d.set_rect(track, 0.0, 400.0, 1280.0, 400.0);
+        let (cur, _) = window(&mut d, track, LABELS);
+        let (rest, runs) = window(&mut d, track, &["Billing makes sense", "Sam Okafor", "CFO"]);
+        d.set_attr(cur, "class", "quote is-active");
+        d.set_attr(rest, "class", "quote");
+        d.set_attr(rest, "aria-hidden", "true");
+        assert!(!HiddenMockups::scan(&d).declared(runs[0]));
+    }
+
+    #[test]
+    fn working_ui_hidden_for_a_while_is_not_a_mockup() {
+        // A form step held `inert`, with fields a visitor will fill.
+        let (mut d, body) = page();
+        let (w, runs) = window(&mut d, body, LABELS);
+        d.set_attr(w, "inert", "");
+        let field = d.add(Some(w), "input");
+        d.set_rect(field, 110.0, 500.0, 200.0, 30.0);
+        assert!(HiddenMockups::scan(&d).declared(runs[0]), "one stray input in a drawing");
+        let second = d.add(Some(w), "textarea");
+        d.set_rect(second, 110.0, 540.0, 200.0, 30.0);
+        assert!(!HiddenMockups::scan(&d).declared(runs[0]), "two form fields");
+        d.set_attr(second, "type", "hidden");
+        d.el_mut(second).tag = "input".into();
+        assert!(HiddenMockups::scan(&d).declared(runs[0]), "a hidden input is no field");
+        let label = d.add(Some(w), "label");
+        d.set_rect(label, 110.0, 580.0, 200.0, 20.0);
+        assert!(!HiddenMockups::scan(&d).declared(runs[0]), "a field with a label");
+        // A docs sidebar a breakpoint script left `aria-hidden`.
+        let (mut d, body) = page();
+        let (w, runs) = window(&mut d, body, LABELS);
+        d.set_attr(w, "aria-hidden", "true");
+        let link = d.add(Some(w), "a");
+        d.set_rect(link, 110.0, 500.0, 100.0, 20.0);
+        d.set_attr(link, "href", "#install");
+        d.add_text(link, "Install");
+        assert!(HiddenMockups::scan(&d).declared(runs[0]), "one link among the labels");
+        for (i, l) in ["Configure", "Deploy", "Reference", "Changelog"].iter().enumerate() {
+            let a = d.add(Some(w), "a");
+            d.set_rect(a, 110.0, 520.0 + 20.0 * i as f64, 100.0, 20.0);
+            d.set_attr(a, "href", "#docs");
+            d.add_text(a, l);
+        }
+        assert!(!HiddenMockups::scan(&d).declared(runs[0]), "a list of links");
+        let (mut d, body) = page();
+        let (w, runs) = window(&mut d, body, LABELS);
+        d.set_attr(w, "aria-hidden", "true");
+        d.set_attr(w, "class", "sidebar");
+        assert!(!HiddenMockups::scan(&d).declared(runs[0]), "a sidebar");
+    }
+
+    #[test]
+    fn a_visual_with_a_screen_reader_alternative_is_not_a_mockup() {
+        // A stats band hidden beside an `sr-only` sentence saying the same.
+        let (mut d, body) = page();
+        let sr = d.add(Some(body), "p");
+        d.set_rect(sr, 0.0, 0.0, 1.0, 1.0);
+        d.add_text(sr, "Over twelve thousand teams and four minute replies.");
+        let (w, runs) = window(&mut d, body, &["12k", "teams", "4 min"]);
+        d.set_attr(w, "aria-hidden", "true");
+        assert!(!HiddenMockups::scan(&d).declared(runs[0]));
+        // cursor.com: the sibling describes the drawing instead.
+        d.el_mut(sr).child_nodes.clear();
+        d.add_text(sr, "This element contains an interactive demo for sighted users showing the IDE.");
+        assert!(HiddenMockups::scan(&d).declared(runs[0]));
     }
 
     #[test]

@@ -7,7 +7,11 @@
 //! and its headings leave the outline.
 //! A live demo with nothing hidden, an aria-hidden copy beside its shown
 //! original, a hidden badge too small for a frame, a hidden box with two
-//! runs of text and an inert dialog keep their findings. A box labelled as
+//! runs of text, an inert dialog, split-text lines under a labelled host, a
+//! resting carousel slide beside a current one with a state class, a band
+//! beside a screen-reader copy of its words, a hidden list of links and an
+//! inert form step keep their findings. The pixel pass takes no candidate
+//! inside a declared mockup. A box labelled as
 //! a screenshot reports as advisory (taste call r13-t5).
 
 use std::collections::HashMap;
@@ -102,8 +106,13 @@ fn declared_mockups_report_nothing() {
         }
     }
     for rule in ["tiny-text", "undersized-ui-text"] {
-        assert!(on(&f, rule, "#pass-hidden").is_empty(), "{rule}: {f:#?}");
+        assert!(on(&f, rule, "#pass-inert").is_empty(), "{rule}: {f:#?}");
         assert!(!on(&f, rule, "#fail-live").is_empty(), "{rule} in the live demo: {f:#?}");
+    }
+    // The pixel pass takes no candidate in a declared mockup, inert or
+    // aria-hidden: pale labels over a raster ground report nothing.
+    for id in ["#pass-pixel-inert", "#pass-pixel-hidden"] {
+        assert!(on(&f, "low-contrast", id).is_empty(), "{id}: {f:#?}");
     }
     let skips: Vec<&Row> = f.iter().filter(|r| r.0 == "skipped-heading").collect();
     assert!(
@@ -124,7 +133,20 @@ fn guarded_hidden_boxes_keep_their_findings() {
     for id in ["#fail-live-inner", "#fail-copy-inner", "#fail-two-runs-inner"] {
         assert_eq!(on(&f, "nested-cards", id), ["warning"], "nested-cards {id}: {f:#?}");
     }
-    for id in ["#fail-live", "#fail-copy", "#fail-badge", "#fail-two-runs", "#fail-dialog"] {
+    for id in [
+        "#fail-live",
+        "#fail-copy",
+        "#fail-badge",
+        "#fail-two-runs",
+        "#fail-dialog",
+        "#fail-carousel-rest",
+        "#fail-rail",
+        // The split lines, the stats band and the form step print no id of
+        // their own; their selectors name these parts.
+        "div.line",
+        "div.stat",
+        "label:nth-of-type",
+    ] {
         let sev = on(&f, "low-contrast", id);
         assert!(!sev.is_empty() && sev.iter().all(|s| *s == "warning"), "low-contrast {id}: {f:#?}");
     }
