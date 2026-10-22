@@ -1380,7 +1380,7 @@ fn render_template_dedupes_descriptions_and_quotes_hints() {
     // the sh launcher and bare names keep their spelling.
     assert_eq!(
         self_command_spelling(r"C:\Users\A B\impeccable.cmd", true),
-        r#"& "C:\\Users\\A B\\impeccable.cmd""#
+        r"& 'C:\Users\A B\impeccable.cmd'"
     );
     assert_eq!(self_command_spelling("/opt/a b/impeccable", false), "'/opt/a b/impeccable'");
     assert_eq!(self_command_spelling("/opt/a b/impeccable", true), "\"/opt/a b/impeccable\"");

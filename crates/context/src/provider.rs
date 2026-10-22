@@ -140,7 +140,7 @@ mod tests {
         // path; `& "<path>" <verb>` runs (#744). The raw path stays available
         // for callers that quote it themselves.
         let p = with_self(r"C:\Users\A B\skill\scripts\impeccable.cmd");
-        assert_eq!(p.verb_cmd("context"), r#"& "C:\Users\A B\skill\scripts\impeccable.cmd" context"#);
+        assert_eq!(p.verb_cmd("context"), r"& 'C:\Users\A B\skill\scripts\impeccable.cmd' context");
         assert_eq!(p.self_raw, r"C:\Users\A B\skill\scripts\impeccable.cmd");
     }
 

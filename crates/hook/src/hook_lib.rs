@@ -1044,8 +1044,8 @@ pub fn remember_findings(
 // ── rendering ─────────────────────────────────────────────────────────────
 
 /// JS: quoteCommandArg(value)
-/// How printed hook commands spell the engine: the quoted self path, with
-/// PowerShell's call operator when it is the Windows `.cmd` launcher (#744).
+/// How printed hook commands spell the engine: the quoted self path, or
+/// `& '<path>'` when it is the Windows `.cmd` launcher (#744).
 pub fn self_command_spelling(self_cmd: &str, win32: bool) -> String {
     impeccable_common::launcher::with_call_operator(self_cmd, quote_command_arg(self_cmd, win32))
 }
