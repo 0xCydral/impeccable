@@ -285,6 +285,79 @@ fn append_origin_to_directive(csp: &str, directive: &str, origin: &str) -> Strin
     format!("{}; {} 'self' {}", base, directive, origin)
 }
 
+/// Decode the HTML character references a CSP attribute value can carry:
+/// decimal and hex numeric references and the named `amp`, `quot`, `apos`,
+/// `lt` and `gt`, each terminated by `;`. Anything else, including a bare
+/// `&`, passes through unchanged.
+fn decode_html_attr_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut rest = value;
+    while let Some(pos) = rest.find('&') {
+        out.push_str(&rest[..pos]);
+        let tail = &rest[pos..];
+        match decode_reference(tail) {
+            Some((ch, len)) => {
+                out.push(ch);
+                rest = &tail[len..];
+            }
+            None => {
+                out.push('&');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `tail` starts with `&`. Returns the decoded char and the reference length.
+fn decode_reference(tail: &str) -> Option<(char, usize)> {
+    let semi = tail.find(';')?;
+    let body = &tail[1..semi];
+    let ch = if let Some(num) = body.strip_prefix('#') {
+        let code = if let Some(hex) = num.strip_prefix(['x', 'X']) {
+            if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return None;
+            }
+            u32::from_str_radix(hex, 16).ok()?
+        } else {
+            if num.is_empty() || !num.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            num.parse::<u32>().ok()?
+        };
+        if code == 0 {
+            return None;
+        }
+        char::from_u32(code)?
+    } else {
+        match body {
+            "amp" => '&',
+            "quot" => '"',
+            "apos" => '\'',
+            "lt" => '<',
+            "gt" => '>',
+            _ => return None,
+        }
+    };
+    Some((ch, semi + 1))
+}
+
+/// Encode a decoded value for an attribute delimited by `quote`: `&` and the
+/// delimiting quote are the only characters that must be escaped there.
+fn encode_html_attr_value(value: &str, quote: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '"' if quote == "\"" => out.push_str("&quot;"),
+            '\'' if quote == "'" => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 /// JS: patchCspMeta(content, port)
 pub fn patch_csp_meta(content: &str, port: i64) -> String {
     let tags = find_csp_meta_tags(content);
@@ -301,8 +374,13 @@ pub fn patch_csp_meta(content: &str, port: i64) -> String {
         let Some(content_attr) = get_attr(attrs, "content") else {
             continue;
         };
+        // The marker keeps the raw attribute text so revert restores the
+        // original bytes whatever quote style and character references it used.
         let original = content_attr.value.clone();
-        let mut patched = original.clone();
+        // Directives are parsed on the decoded value: a `;` that ends a
+        // character reference such as `&#39;` is not a directive separator.
+        let decoded = decode_html_attr_value(&original);
+        let mut patched = decoded.clone();
         patched = append_origin_to_directive(&patched, "script-src", &origin);
         // The detector the overlay loads from that origin is a WebAssembly
         // module (WASM-BUNDLE.md in the detector repo); a script-src that names the origin
@@ -313,12 +391,16 @@ pub fn patch_csp_meta(content: &str, port: i64) -> String {
         patched = append_origin_to_directive(&patched, "script-src", "'wasm-unsafe-eval'");
         patched = append_origin_to_directive(&patched, "connect-src", &origin);
         patched = append_origin_to_directive(&patched, "img-src", "blob:");
-        if patched == original {
+        if patched == decoded {
             continue;
         }
+        // Re-encode for the attribute's own quote style, so the quotes in
+        // `'self'` and `'wasm-unsafe-eval'` cannot close a single-quoted value.
         let new_content_attr = format!(
             "content={}{}{}",
-            content_attr.quote, patched, content_attr.quote
+            content_attr.quote,
+            encode_html_attr_value(&patched, &content_attr.quote),
+            content_attr.quote
         );
         let marker = format!(
             "{}=\"{}\"",
@@ -360,28 +442,22 @@ pub fn revert_csp_meta(content: &str) -> String {
             content_attr.quote, original_value, content_attr.quote
         );
         let mut new_attrs = tag.attrs.replacen(&content_attr.full, &new_content_attr, 1);
-        // JS: new RegExp(`\\s*${origAttr.full}`) (unescaped; the value is
-        // base64 + quotes, which carry no regex metacharacters besides `+`
-        // and `/`... `+` IS a metachar; JS would treat `A+` as a quantifier).
-        // JS-PARITY: build the same regex the JS builds.
-        let re_src = format!("\\s*{}", orig_attr.full);
-        match Regex::new(&re_src) {
-            Ok(re) => {
-                new_attrs = re.replacen(&new_attrs, 1, "").into_owned();
-            }
-            Err(_) => {
-                // A base64 value like `A+B` compiles in JS as a quantifier;
-                // fall back to a literal removal when the Rust regex rejects it.
-                if let Some(pos) = new_attrs.find(&orig_attr.full) {
-                    let before = &new_attrs[..pos];
-                    let ws = before.len() - before.trim_end().len();
-                    new_attrs = format!(
-                        "{}{}",
-                        &before[..before.len() - ws],
-                        &new_attrs[pos + orig_attr.full.len()..]
-                    );
-                }
-            }
+        // Remove the marker literally. The JS built a regex from the raw
+        // base64, where `+` acts as a quantifier, so a marker whose value held
+        // a `+` was never matched and stayed behind. Patch writes the marker
+        // as ` <marker>`: drop exactly that one space so the attributes come
+        // back byte for byte.
+        if let Some(pos) = new_attrs.find(&orig_attr.full) {
+            let start = if new_attrs[..pos].ends_with(' ') {
+                pos - 1
+            } else {
+                pos
+            };
+            new_attrs = format!(
+                "{}{}",
+                &new_attrs[..start],
+                &new_attrs[pos + orig_attr.full.len()..]
+            );
         }
         let new_tag = tag.full.replacen(tag.attrs.as_str(), &new_attrs, 1);
         result = format!("{}{}{}", &result[..tag.start], new_tag, &result[tag.end..]);
@@ -422,5 +498,129 @@ mod tests {
             patched.contains("script-src 'self' http://localhost:8412 'wasm-unsafe-eval'"),
             "{patched}"
         );
+    }
+
+    /// The `content` value of the first CSP meta, decoded the way a browser
+    /// reads it. Panics when the tag or the attribute cannot be found.
+    fn browser_policy(html: &str) -> String {
+        let tag = find_csp_meta_tags(html)
+            .into_iter()
+            .next()
+            .expect("csp meta");
+        let attr = get_attr(&tag.attrs, "content").expect("content attr");
+        decode_html_attr_value(&attr.value)
+    }
+
+    fn marker_value(html: &str) -> String {
+        let tag = find_csp_meta_tags(html)
+            .into_iter()
+            .next()
+            .expect("csp meta");
+        get_attr(&tag.attrs, CSP_MARKER_ATTR).expect("marker").value
+    }
+
+    #[test]
+    fn single_quoted_content_escapes_inserted_quotes() {
+        let html = "<meta http-equiv=\"Content-Security-Policy\" content='script-src https://example.com/a~' />";
+        let patched = patch_csp_meta(html, 9797);
+        assert!(
+            patched.contains("content='script-src https://example.com/a~ http://localhost:9797 &#39;wasm-unsafe-eval&#39;; connect-src &#39;self&#39; http://localhost:9797; img-src &#39;self&#39; blob:'"),
+            "{patched}"
+        );
+        assert_eq!(
+            browser_policy(&patched),
+            "script-src https://example.com/a~ http://localhost:9797 'wasm-unsafe-eval'; connect-src 'self' http://localhost:9797; img-src 'self' blob:"
+        );
+        assert_eq!(revert_csp_meta(&patched), html);
+    }
+
+    #[test]
+    fn entity_encoded_semicolons_are_not_directive_separators() {
+        let html = "<meta http-equiv=\"Content-Security-Policy\" content='script-src &#39;self&#39; https://a.example; object-src &#x27;none&#x27;' />";
+        let patched = patch_csp_meta(html, 9797);
+        assert_eq!(
+            browser_policy(&patched),
+            "script-src 'self' https://a.example http://localhost:9797 'wasm-unsafe-eval'; object-src 'none'; connect-src 'self' http://localhost:9797; img-src 'self' blob:"
+        );
+        assert_eq!(revert_csp_meta(&patched), html);
+    }
+
+    #[test]
+    fn double_quoted_content_with_entities_round_trips() {
+        let html = "<meta http-equiv='Content-Security-Policy' content=\"script-src &#39;self&#39; https://a.example/?a=1&amp;b=&quot;2&quot;\">";
+        let patched = patch_csp_meta(html, 8412);
+        assert_eq!(
+            browser_policy(&patched),
+            "script-src 'self' https://a.example/?a=1&b=\"2\" http://localhost:8412 'wasm-unsafe-eval'; connect-src 'self' http://localhost:8412; img-src 'self' blob:"
+        );
+        // Raw `'` is fine inside double quotes; `&` and `"` stay escaped.
+        assert!(
+            patched.contains("content=\"script-src 'self' https://a.example/?a=1&amp;b=&quot;2&quot; http://localhost:8412 'wasm-unsafe-eval';"),
+            "{patched}"
+        );
+        assert_eq!(revert_csp_meta(&patched), html);
+    }
+
+    #[test]
+    fn already_present_entity_encoded_source_is_not_duplicated() {
+        let html = "<meta http-equiv=\"Content-Security-Policy\" content='script-src http://localhost:9797 &#39;wasm-unsafe-eval&#39;; connect-src http://localhost:9797; img-src blob:'>";
+        assert_eq!(patch_csp_meta(html, 9797), html);
+    }
+
+    #[test]
+    fn revert_removes_marker_whose_base64_holds_plus_or_slash() {
+        for (html, needle) in [
+            (
+                "<meta http-equiv=\"Content-Security-Policy\" content=\"script-src https://example.com/a~\" />",
+                '+',
+            ),
+            ("<meta http-equiv=\"Content-Security-Policy\" content=\"img-src ???\">", '/'),
+        ] {
+            let patched = patch_csp_meta(html, 9797);
+            let marker = marker_value(&patched);
+            assert!(marker.contains(needle), "{marker} lacks {needle}");
+            let reverted = revert_csp_meta(&patched);
+            assert!(!reverted.contains(CSP_MARKER_ATTR), "{reverted}");
+            assert_eq!(reverted, html);
+        }
+    }
+
+    #[test]
+    fn decode_leaves_unknown_and_bare_ampersands_alone() {
+        assert_eq!(
+            decode_html_attr_value("a & b &copy; &#0; &#xZZ; &#"),
+            "a & b &copy; &#0; &#xZZ; &#"
+        );
+        assert_eq!(
+            decode_html_attr_value("&#39;&#x27;&#X27;&apos;&quot;&amp;&lt;&gt;"),
+            "''''\"&<>"
+        );
+    }
+
+    #[test]
+    fn patch_then_revert_is_byte_identical() {
+        let cases = [
+            "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self'; script-src 'self'; img-src 'self'\">",
+            "<meta http-equiv=\"Content-Security-Policy\" content='script-src https://example.com/a~' />",
+            "<meta http-equiv=\"Content-Security-Policy\" content='script-src &#39;self&#39; https://a.example; object-src &#x27;none&#x27;' />",
+            "<meta http-equiv=\"Content-Security-Policy\" content=\"script-src https://example.com/a~\" />",
+            "<meta\n  http-equiv=\"Content-Security-Policy\"\n  content='default-src &apos;self&apos;; connect-src ws:;'\n/>",
+            "<meta http-equiv=\"Content-Security-Policy\" content=\"img-src ???; script-src https://x.example/?q=a&amp;r=&quot;s&quot;\"\t>",
+            "<meta http-equiv='Content-Security-Policy' content='default-src &#39;none&#39;'><meta http-equiv=\"Content-Security-Policy\" content=\"script-src 'self'\">",
+        ];
+        for csp in cases {
+            let html =
+                format!("<!DOCTYPE html>\r\n<html><head>{csp}</head><body>\r\n</body></html>\r\n");
+            let patched = patch_csp_meta(&html, 9797);
+            assert_ne!(patched, html, "nothing patched: {csp}");
+            assert!(!browser_policy(&patched).is_empty());
+            assert_eq!(revert_csp_meta(&patched), html, "revert: {csp}");
+            // The full inject/remove cycle a live session runs.
+            let injected = patch_csp_meta(
+                &insert_tag(&html, "html", Some("</body>"), None, 9797, Some("t"), ""),
+                9797,
+            );
+            assert_eq!(unpatch_tag_file(&injected), html, "unpatch: {csp}");
+        }
     }
 }
