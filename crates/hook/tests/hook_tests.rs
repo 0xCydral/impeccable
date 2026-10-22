@@ -2770,6 +2770,31 @@ fn stop_from_a_subfolder_shipped_build_marks_the_build_folder_cache() {
 }
 
 #[test]
+fn stop_from_an_umbrella_cwd_finds_the_child_cache() {
+    // #1101: the per-edit pass keys the cache to the edited file's project root
+    // below a non-project session cwd; Stop from that cwd must search down.
+    let t = Tmp::new();
+    let cwd = t.path();
+    t.write("site/package.json", "{}");
+    t.write("mono/.git/HEAD", "ref: refs/heads/main");
+    t.write("mono/packages/a/package.json", "{}");
+    for (session, file, root) in [("s1", "site/src/a.css", "site"), ("s2", "mono/packages/a/src/a.css", "mono/packages/a")] {
+        let css = t.write(file, SIDE_TAB_CSS);
+        hook::run_hook(&rt(&cwd), &edit_event(&cwd, &css, session));
+        let res = hook::run_stop_hook(&rt(&cwd), &stop_event(&cwd, session));
+        assert!(res.stdout.contains("[side-tab]"), "{session}: {}", res.stdout);
+        assert_eq!(audit_str(&res.audit, "cwd"), Some(jsp::join(&[&cwd, root]).as_str()));
+    }
+    // A cwd at or above the home dir is never searched below.
+    let site = jsp::join(&[&cwd, "site"]);
+    hook::run_hook(&rt(&cwd), &edit_event(&cwd, &jsp::join(&[&site, "src/a.css"]), "s3"));
+    let above_home = rt_with(&cwd, env(&[("HOME", &site), ("USERPROFILE", &site)]));
+    let res = hook::run_stop_hook(&above_home, &stop_event(&cwd, "s3"));
+    assert_eq!(audit_str(&res.audit, "cwd"), Some(cwd.as_str()));
+    assert!(!t.exists(".impeccable"));
+}
+
+#[test]
 fn codex_stop_emits_decision_block() {
     // #603: Codex Stop rejects Claude's hookSpecificOutput shape; findings
     // that should continue the turn are a top-level blocking decision.

@@ -339,10 +339,15 @@ pub fn resolve_cache_cwd(rt: &Runtime, primary_file: Option<&str>, session_cwd: 
     }
 }
 
+/// Levels below a non-project session cwd that Stop searches for a cache (#1101).
+const STOP_SEARCH_DEPTH: usize = 3;
+
 /// The Stop event names no file, so the per-edit pass may have keyed this
 /// session's cache to a project root above the session cwd (#1088). Use the
 /// nearest directory, from the session cwd up to (not including) the home
-/// dir, whose cache lists files this session touched; else the session cwd.
+/// dir, whose cache lists files this session touched. Failing that, from a
+/// non-project cwd that is not the home dir or above it, take the cache
+/// under it this session updated most recently (#1101); else the session cwd.
 pub fn resolve_stop_cwd(rt: &Runtime, session_cwd: &str, session_id: &str) -> String {
     let mut dir = session_cwd.to_string();
     let home = rt.resolve(&[&rt.homedir()]);
@@ -356,7 +361,43 @@ pub fn resolve_stop_cwd(rt: &Runtime, session_cwd: &str, session_id: &str) -> St
         }
         dir = parent;
     }
+    if !std::path::Path::new(&home).starts_with(session_cwd) && !looks_like_project_root(session_cwd) {
+        let mut best = (0.0, None);
+        newest_cache_below(session_cwd, session_id, STOP_SEARCH_DEPTH, &mut best);
+        if let Some(found) = best.1 {
+            return found;
+        }
+    }
     session_cwd.to_string()
+}
+
+/// Walks `dir`'s real subdirectories (no dot dirs, `node_modules` or symlinks)
+/// through project markers, keeping the cache with the latest session `updatedAt`.
+fn newest_cache_below(dir: &str, session_id: &str, depth: usize, best: &mut (f64, Option<String>)) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || name == "node_modules" || !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let sub = jsp::join(&[dir, &name]);
+        let cache = read_cache(&sub);
+        if !touched_files(&cache, session_id).is_empty() {
+            let at = sessions(&cache)
+                .and_then(|s| obj_field(s, session_id))
+                .and_then(|s| s.get("updatedAt"))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0);
+            if best.1.is_none() || at > best.0 {
+                *best = (at, Some(sub.clone()));
+            }
+        }
+        if depth > 1 {
+            newest_cache_below(&sub, session_id, depth - 1, best);
+        }
+    }
 }
 
 /// JS: resolveProjectPlatform(cwd) — `extractPlatform(loadContext(cwd).product)`.
