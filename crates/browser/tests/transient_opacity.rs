@@ -100,9 +100,11 @@ fn the_url_engine_blends_only_the_opacity_at_rest() {
 
 /// Text faded by a box a visitor's action changes. A stepper's inactive
 /// item beside the active one at 1, with an opacity transition, is dim at
-/// rest and reports as advisory (r13-t1); links all faded alike, a tab with
-/// no transition, an inactive tab button and a number written inline keep
-/// their severity; a box a
+/// rest and reports as advisory (r13-t1), as does a checkout stepper's next
+/// step; links all faded alike, a tab with no transition, an inactive tab
+/// button, a clickable option, a faint modifier, identical class lists, a
+/// lone parked badge, parked nav links, an inline design token and a number
+/// written inline keep their severity; a box a
 /// script parked in its `style` attribute at the start of a reveal is not
 /// at rest and passes at its declared colour.
 #[test]
@@ -123,6 +125,13 @@ fn the_url_engine_demotes_a_state_and_skips_a_parked_reveal() {
         ("inactive tab with no transition", "text #b3b5b6 on #ffffff", false),
         ("inactive tab button beside the selected one", "text #9fa2a4 on #ffffff", false),
         ("a number written inline", "text #d2d4d5 on #ffffff", false),
+        ("a lone badge parked inline", "text #b4b5b5 on #ffffff", false),
+        ("nav links parked inline alike", "text #aaabab on #ffffff", false),
+        ("a design token written inline", "text #ababab on #ffffff", false),
+        ("a faint modifier on the dimmed box", "text #ababac on #ffffff", false),
+        ("a clickable plan option", "text #abacac on #ffffff", false),
+        ("identical classes, one dimmed inline", "text #acacad on #ffffff", false),
+        ("a checkout stepper's next step", "text #adadad on #ffffff", true),
     ] {
         assert!(
             contrast.iter().any(|(s, a)| s.contains(expected) && *a == advisory),
@@ -131,7 +140,7 @@ fn the_url_engine_demotes_a_state_and_skips_a_parked_reveal() {
     }
     assert_eq!(
         contrast.len(),
-        5,
+        12,
         "the three parked reveals should not report, got {contrast:?}"
     );
 }

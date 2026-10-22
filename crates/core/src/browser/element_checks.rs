@@ -1275,16 +1275,18 @@ fn inline_value(dom: &dyn Dom, el: ElId, property: &str) -> Option<String> {
         .map(|(_, value)| js::trim(value).to_string())
 }
 
-/// Whether two class lists name one component in two states: they share a
-/// token, and each carries at most one the other lacks (`feature` and
-/// `feature is-active`, `key` and `key glowing`).
-fn state_peer_classes(own: &[String], theirs: &[String]) -> bool {
-    let shared = own.iter().filter(|t| theirs.contains(*t)).count();
-    shared > 0 && own.len() - shared <= 1 && theirs.len() - shared <= 1
+/// Whether a dimmed box's class list and a bright one's name one component
+/// in its resting and its lit state: the bright box carries every token of
+/// the dimmed one plus exactly one more (`feature` and `feature is-active`,
+/// `key` and `key glowing`). A dimmed box that carries the extra token
+/// (`note` beside `note faint`) is a style modifier, and two identical lists
+/// name no state; neither counts.
+fn bright_state_classes(dim: &[String], bright: &[String]) -> bool {
+    !dim.is_empty() && dim.iter().all(|t| bright.contains(t)) && bright.len() == dim.len() + 1
 }
 
 /// Whether a sibling of `el`, the same tag with its class list in another
-/// state ([`state_peer_classes`]), sits at full opacity: the active item of
+/// state ([`bright_state_classes`]), sits at full opacity: the active item of
 /// a stepper or a tab row beside the dimmed ones. A box with no class has
 /// no component to name, and has no such sibling.
 fn has_bright_sibling_state(dom: &dyn Dom, el: ElId) -> bool {
@@ -1298,13 +1300,14 @@ fn has_bright_sibling_state(dom: &dyn Dom, el: ElId) -> bool {
         other != el
             && dom.tag_name(other) == tag
             && opacity_of(dom, other) >= 0.999
-            && state_peer_classes(&own, &crate::browser::painted::class_tokens(dom, other))
+            && bright_state_classes(&own, &crate::browser::painted::class_tokens(dom, other))
     })
 }
 
 /// Whether the page shows another box of `el`'s component already
-/// revealed: the same tag, the class list with exactly one token added or
-/// swapped, at full opacity, with an opacity transition of its own.
+/// revealed: the same tag, `el`'s class list with exactly one token added
+/// ([`bright_state_classes`]), at full opacity, with an opacity transition of
+/// its own.
 /// raycast.com parks every key of a keyboard at `opacity: 0.2` in its
 /// `style` attribute and lights them as the visitor scrolls; a keyboard
 /// further down, already lit, carries `key glowing` at 1. The same evidence
@@ -1319,10 +1322,7 @@ fn has_revealed_peer_on_page(dom: &dyn Dom, el: ElId) -> bool {
         if other == el || opacity_of(dom, other) < 0.999 {
             return false;
         }
-        let theirs = crate::browser::painted::class_tokens(dom, other);
-        let new = theirs.iter().filter(|t| !own.contains(*t)).count();
-        new == 1
-            && state_peer_classes(&own, &theirs)
+        bright_state_classes(&own, &crate::browser::painted::class_tokens(dom, other))
             && crate::browser::painted::declares_transition_of(dom, other, "opacity")
     })
 }
@@ -1335,15 +1335,19 @@ fn has_revealed_peer_on_page(dom: &dyn Dom, el: ElId) -> bool {
 ///   animation library holding a card at its start values (framer.com's
 ///   `will-change: transform; opacity: 0.2; transform: translateX(-20px)`);
 /// - the box sits under [`STATE_DIM_OPACITY`], declares an `opacity`
-///   transition, has no sibling of its component at full opacity (that is a
-///   state, [`dimmed_by_a_state`]), and either the attribute's opacity reads
-///   a custom property a script scrubs (ramp.com's `opacity: max(.2,
-///   var(--card-animation-1))`, held at its floor until the visitor scrolls)
-///   or the page shows the same component already revealed
-///   ([`has_revealed_peer_on_page`]).
+///   transition, is no control and holds or sits in none
+///   ([`touches_a_control`]), has no sibling of its component at full
+///   opacity (that is a state, [`dimmed_by_a_state`]), and either the
+///   attribute's opacity is a value a script scrubs ([`scrubbed_opacity`],
+///   ramp.com's `opacity: max(.2, var(--card-animation-1))`, held at its
+///   floor until the visitor scrolls), or the box is one of a set parked
+///   alike ([`parked_alike`]) while the page shows the same component
+///   already revealed ([`has_revealed_peer_on_page`]; raycast.com's keyboard).
 ///
-/// A number written inline with nothing else to show it moves, a faded box
-/// set by a stylesheet, and one with no opacity transition stay at rest.
+/// A number written inline with nothing else to show it moves, a design
+/// token written inline (`opacity: var(--muted)`), a lone parked box with a
+/// lit namesake elsewhere, a faded box set by a stylesheet, a dimmed link,
+/// and one with no opacity transition stay at rest.
 fn parked_inline_for_a_reveal(dom: &dyn Dom, el: ElId, opacity: f64) -> bool {
     if !(opacity < 0.999) {
         return false;
@@ -1364,19 +1368,128 @@ fn parked_inline_for_a_reveal(dom: &dyn Dom, el: ElId, opacity: f64) -> bool {
     }
     opacity < STATE_DIM_OPACITY
         && crate::browser::painted::declares_transition_of(dom, el, "opacity")
+        && !touches_a_control(dom, el)
         && !has_bright_sibling_state(dom, el)
-        && (js::to_lower_case(&inline_opacity).contains("var(") || has_revealed_peer_on_page(dom, el))
+        && (scrubbed_opacity(dom, el, &inline_opacity)
+            || (parked_alike(dom, el, &inline_opacity) && has_revealed_peer_on_page(dom, el)))
 }
 
+/// Whether an inline `opacity` value is one a script scrubs: it reads a
+/// custom property inside a math function (`max(`, `min(`, `clamp(`,
+/// `calc(`), or it reads one that a `style` attribute on the box or an
+/// ancestor sets (what a script writes as the visitor scrolls). A design
+/// token from a stylesheet, `opacity: var(--muted)`, is neither.
+fn scrubbed_opacity(dom: &dyn Dom, el: ElId, value: &str) -> bool {
+    let lower = js::to_lower_case(value);
+    if !lower.contains("var(") {
+        return false;
+    }
+    if ["max(", "min(", "clamp(", "calc("].iter().any(|f| lower.contains(f)) {
+        return true;
+    }
+    let names: Vec<String> = lower
+        .split("var(")
+        .skip(1)
+        .filter_map(|rest| {
+            let name = js::trim(rest.split(|c| c == ',' || c == ')').next().unwrap_or(""));
+            name.starts_with("--").then(|| name.to_string())
+        })
+        .collect();
+    const MAX_ANCESTORS: usize = 64;
+    let mut cur = Some(el);
+    for _ in 0..MAX_ANCESTORS {
+        let Some(c) = cur else { return false };
+        if names.iter().any(|n| inline_value(dom, c, n).is_some()) {
+            return true;
+        }
+        cur = dom.parent(c);
+    }
+    false
+}
+
+/// How many boxes, `el` included, a reveal parks alike before a set of them
+/// reads as a component waiting for it rather than one box styled faint.
+const PARKED_ALIKE_MIN: usize = 3;
+
+/// Whether `el` is one of at least [`PARKED_ALIKE_MIN`] boxes of its tag and
+/// class list whose `style` attribute parks them at the same opacity, among
+/// its siblings or among its parent's siblings' children (raycast.com parks
+/// all 78 keys of a keyboard, row by row, at `opacity: 0.2`).
+fn parked_alike(dom: &dyn Dom, el: ElId, inline_opacity: &str) -> bool {
+    let own = crate::browser::painted::class_tokens(dom, el);
+    if own.is_empty() {
+        return false;
+    }
+    let tag = dom.tag_name(el);
+    let alike = |other: ElId| {
+        dom.tag_name(other) == tag
+            && inline_value(dom, other, "opacity").as_deref() == Some(inline_opacity)
+            && {
+                let theirs = crate::browser::painted::class_tokens(dom, other);
+                theirs.len() == own.len() && own.iter().all(|t| theirs.contains(t))
+            }
+    };
+    let Some(parent) = dom.parent(el) else { return false };
+    let mut count = dom.children(parent).into_iter().filter(|&c| alike(c)).count();
+    if count >= PARKED_ALIKE_MIN {
+        return true;
+    }
+    if let Some(grand) = dom.parent(parent) {
+        count = dom
+            .children(grand)
+            .into_iter()
+            .flat_map(|p| dom.children(p))
+            .filter(|&c| alike(c))
+            .count();
+    }
+    count >= PARKED_ALIKE_MIN
+}
+
+/// Whether the box is a control ([`names_a_control`]), sits in one, or holds
+/// one: a parked link or button is a control a visitor reads to use, which
+/// keeps its verdict.
+fn touches_a_control(dom: &dyn Dom, el: ElId) -> bool {
+    const MAX_ANCESTORS: usize = 64;
+    let mut cur = Some(el);
+    for _ in 0..MAX_ANCESTORS {
+        let Some(c) = cur else { break };
+        if names_a_control(dom, c) {
+            return true;
+        }
+        cur = dom.parent(c);
+    }
+    dom.query_all(
+        Some(el),
+        "a[href], button, input, select, textarea, summary, [role], [aria-selected]",
+    )
+    .unwrap_or_default()
+    .into_iter()
+    .any(|c| c != el && names_a_control(dom, c))
+}
+
+/// The most text, in UTF-16 units, a box that sets `cursor: pointer` holds
+/// while it reads as one control with a label (a plan picker, a chip), the
+/// same cap the quality checks put on a focusable box. Past it the box is a
+/// clickable region (arc.net's stepper items hold a heading and a
+/// paragraph), and the text inside it is content.
+const POINTER_CONTROL_MAX_CHARS: usize = 80;
+
 /// Whether the box is a control whose text names it: a button, a field, a
-/// tab, a link, an option or a menu item, by tag or by role, or a box that
-/// carries `aria-selected`.
+/// tab, a link, an option or a menu item, by tag or by role, a box that
+/// carries `aria-selected`, or a box that sets `cursor: pointer` (its parent
+/// does not) around at most [`POINTER_CONTROL_MAX_CHARS`] of text.
 fn names_a_control(dom: &dyn Dom, el: ElId) -> bool {
     let tag = js::to_lower_case(&dom.tag_name(el));
     let role = dom.attr(el, "role");
     if crate::checks::embedded_content::control_of(&tag, dom.attr(el, "type").as_deref(), role.as_deref()).is_some()
         || (tag == "a" && dom.attr(el, "href").is_some())
         || dom.attr(el, "aria-selected").is_some()
+    {
+        return true;
+    }
+    if js::trim(&dom.style(el, "cursor")) == "pointer"
+        && dom.parent(el).map_or(true, |p| js::trim(&dom.style(p, "cursor")) != "pointer")
+        && crate::js_ext_b::utf16_len(js::trim(&collapse_ws(&dom.text_content(el)))) <= POINTER_CONTROL_MAX_CHARS
     {
         return true;
     }
@@ -6421,6 +6534,25 @@ mod tests {
         assert_eq!(advisory(&colors(&d, word)), vec![false]);
         let (d, _, word, _) = stepper("feature", "feature promo wide", "1");
         assert_eq!(advisory(&colors(&d, word)), vec![false]);
+        // A style modifier on the dimmed box (`note` beside `note faint`,
+        // review probe p3b) and identical class lists (p3d) name no state.
+        let (d, _, word, _) = stepper("note faint", "note", "1");
+        assert_eq!(advisory(&colors(&d, word)), vec![false]);
+        let (d, _, word, _) = stepper("size", "size", "1");
+        assert_eq!(advisory(&colors(&d, word)), vec![false]);
+        // A clickable box with a short label and no role (p3c) is a control;
+        // a clickable item that holds a heading and a paragraph (arc.net's)
+        // is content and stays advisory. `cursor` inherits, so only the box
+        // that sets it counts.
+        let (mut d, wrap, word, _) = stepper("plan-option", "plan-option selected", "1");
+        d.set_style(wrap, "cursor", "pointer");
+        d.set_style(word, "cursor", "pointer");
+        assert_eq!(advisory(&colors(&d, word)), vec![false]);
+        let (mut d, wrap, word, _) = stepper("feature", "feature is-active", "1");
+        d.set_style(wrap, "cursor", "pointer");
+        d.set_style(word, "cursor", "pointer");
+        d.add_text(wrap, " Choose Sidebar tabs for the familiar vertical layout. Keep your tabs where you left them.");
+        assert_eq!(advisory(&colors(&d, word)), vec![true]);
         // partner.co.il (10089911): an inactive tab beside the selected one.
         // Its label names the control a visitor picks, so it keeps its
         // severity, whether the tab is a role or the text sits in a link.
@@ -6493,6 +6625,15 @@ mod tests {
         d.set_style(wrap, "transitionDuration", "0.3s");
         d.set_attr(wrap, "style", "opacity:0.2");
         assert!(!low_contrast(&colors(&d, word)).is_empty());
+        // A design token written inline (review probe p2) is no scrub: at
+        // rest. The same variable set in an ancestor's `style` attribute,
+        // what a script writes, is one.
+        d.set_attr(wrap, "style", "opacity: var(--muted)");
+        assert!(!low_contrast(&colors(&d, word)).is_empty());
+        let body = d.parent(wrap).unwrap();
+        d.set_attr(body, "style", "--muted: 0");
+        assert!(low_contrast(&colors(&d, word)).is_empty(), "{:?}", colors(&d, word));
+        d.set_attr(body, "style", "");
         d.set_attr(wrap, "style", "opacity:max(.2, var(--card-animation-1))");
         d.set_style(wrap, "opacity", "0.6");
         d.set_style(word, "color", "rgb(150, 150, 150)");
@@ -6520,8 +6661,36 @@ mod tests {
         d.set_attr(lit, "class", "key glowing");
         d.set_attr(lit, "style", "width:138.5px;--delay:0s");
         d.set_styles(lit, &[("transitionProperty", "opacity"), ("transitionDuration", "1.5s")]);
+        // A lone parked key with a lit namesake elsewhere on the page is one
+        // box styled faint (review probe p1): at rest, and it fades.
+        assert!(!low_contrast(&colors(&d, word)).is_empty(), "{:?}", colors(&d, word));
+        // The keyboard parks its keys alike.
+        let mut parked = Vec::new();
+        for _ in 0..2 {
+            let key = d.add(Some(body), "div");
+            visible(&mut d, key);
+            d.set_attr(key, "class", "key");
+            d.set_attr(key, "style", "opacity:0.2");
+            d.set_style(key, "opacity", "0.2");
+            parked.push(key);
+        }
         assert!(low_contrast(&colors(&d, word)).is_empty(), "{:?}", colors(&d, word));
         assert!(super::caught_mid_reveal(&d, word));
+        // A parked link is a control a visitor reads (review probe p1b): it
+        // stays at rest and fades.
+        d.set_attr(wrap, "href", "#pricing");
+        d.el_mut(wrap).tag = "a".into();
+        for &k in &parked {
+            d.el_mut(k).tag = "a".into();
+        }
+        d.el_mut(lit).tag = "a".into();
+        assert!(!low_contrast(&colors(&d, word)).is_empty(), "{:?}", colors(&d, word));
+        d.el_mut(wrap).tag = "div".into();
+        for &k in &parked {
+            d.el_mut(k).tag = "div".into();
+        }
+        d.el_mut(lit).tag = "div".into();
+        assert!(low_contrast(&colors(&d, word)).is_empty(), "{:?}", colors(&d, word));
         // Twins: a lit peer with no opacity transition, or one two class
         // tokens apart, shows no reveal; the key is at rest and fades.
         d.set_style(lit, "transitionDuration", "0s");

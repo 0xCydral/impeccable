@@ -10,10 +10,13 @@
        A stepper's inactive items held at 0.3 by a stylesheet, beside the
        `is-active` item at 1, with an opacity transition (arc.net), are dim
        at rest: low-contrast reports them at the faded colour, as advisory
-       (r13-t1). Items all faded alike, an item faded with no transition, an
-       inactive tab (its label names the control a visitor picks), and a
-       number written inline with nothing to show it moves keep their
-       severity.
+       (r13-t1), and so does a checkout stepper's next step, which has the
+       same shape. Items all faded alike, an item faded with no transition, an
+       inactive tab or clickable option (its label names the control a
+       visitor picks), a faint modifier on the dimmed box, identical class
+       lists, a lone box parked inline with a lit namesake elsewhere, parked
+       nav links, a design token written inline, and a number written inline
+       with nothing to show it moves keep their severity.
 
        A box a script parked in its `style` attribute at the start of a
        reveal it has not played is not at rest, and its text is scored at
@@ -23,8 +26,9 @@
          animation library's start values, framer.com);
        - `opacity` that reads a custom property a script scrubs, with an
          opacity transition (ramp.com);
-       - `opacity: 0.2` with an opacity transition, while the same component
-         elsewhere on the page is already revealed at 1 (raycast.com).
+       - `opacity: 0.2` with an opacity transition on a set of boxes parked
+         alike, while the same component elsewhere on the page is already
+         revealed at 1 (raycast.com).
 
        The static HTML engine reads no transition, transform or
        `will-change`, so it reports the stepper item at full severity and
@@ -57,6 +61,27 @@
     .pick.selected { opacity: 1; color: #111111; }
     .inline-dim { transition: opacity 0.3s; }
     .inline-dim-copy { color: #20262c; }
+    .badge { display: inline-block; transition: all 0.2s; }
+    .badge-copy { color: #2a2b2c; }
+    .nav-link { transition: opacity 0.2s; text-decoration: none; }
+    .nav-link-dim { color: #2b2c2d; }
+    .nav-link-current { color: #111111; }
+    .meta { transition: opacity 0.2s; color: #2c2d2e; }
+    :root { --muted: 0.4; }
+    .note { transition: opacity 0.2s; }
+    .note.faint { opacity: 0.4; color: #2d2e2f; }
+    .note-plain { color: #111111; }
+    .plan-option { cursor: pointer; opacity: 0.4; transition: opacity 0.2s; }
+    .plan-option.selected { opacity: 1; }
+    .plan-copy { color: #2e2f30; }
+    .plan-selected-copy { color: #111111; }
+    .size { display: inline-block; transition: opacity 0.2s; }
+    .size-copy { color: #2f3031; }
+    .size-full-copy { color: #111111; }
+    .checkout-step { display: inline-block; opacity: 0.4; transition: opacity 0.3s; }
+    .checkout-step.current { opacity: 1; }
+    .checkout-copy { color: #313233; }
+    .checkout-current-copy { color: #111111; }
 
     /* Parked for a reveal: not at rest. */
     .parked-card-copy { color: #050a0f; }
@@ -99,6 +124,44 @@
 
       <h3>A number written inline, with nothing to show it moves</h3>
       <div class="case"><div class="inline-dim" style="opacity: 0.2"><p class="inline-dim-copy">Archived projects</p></div></div>
+
+      <h3>A lone badge parked inline, a lit namesake in another section</h3>
+      <div class="case"><section><div class="badge" style="opacity: .35"><span class="badge-copy">Planned for 2027</span></div></section></div>
+
+      <h3>Nav links parked inline alike, the current one lit (a control)</h3>
+      <div class="case"><nav><ul>
+        <li><a class="nav-link active" href="#o"><span class="nav-link-current">Overview</span></a></li>
+        <li><a class="nav-link" href="#p" style="opacity: .4"><span class="nav-link-dim">Pricing</span></a></li>
+        <li><a class="nav-link" href="#d" style="opacity: .4"><span class="nav-link-dim">Docs</span></a></li>
+        <li><a class="nav-link" href="#c" style="opacity: .4"><span class="nav-link-dim">Changelog</span></a></li>
+      </ul></nav></div>
+
+      <h3>A design token written inline, with a transition</h3>
+      <div class="case"><p class="meta" style="opacity: var(--muted)">Last updated three days ago</p></div>
+
+      <h3>A faint modifier on the dimmed box, not a state</h3>
+      <div class="case">
+        <p class="note"><span class="note-plain">Your plan renews on 1 November.</span></p>
+        <p class="note faint">Cancel any time before that date.</p>
+      </div>
+
+      <h3>A clickable plan option beside the selected one (a control)</h3>
+      <div class="case">
+        <div class="plan-option selected"><span class="plan-selected-copy">Monthly, 12 EUR</span></div>
+        <div class="plan-option"><span class="plan-copy">Yearly, 120 EUR</span></div>
+      </div>
+
+      <h3>Identical classes, one dimmed inline</h3>
+      <div class="case">
+        <div class="size" style="opacity: 1"><span class="size-full-copy">S</span></div>
+        <div class="size" style="opacity: .4"><span class="size-copy">M, back in stock on 3 Dec</span></div>
+      </div>
+
+      <h3>Checkout stepper's next step beside the current one (advisory)</h3>
+      <div class="case"><ol>
+        <li class="checkout-step current"><span class="checkout-current-copy">1. Cart</span></li>
+        <li class="checkout-step"><span class="checkout-copy">2. Shipping</span></li>
+      </ol></div>
     </section>
 
     <section class="col" data-col="pass">
@@ -113,6 +176,8 @@
       <h3>Key parked for a reveal the page plays below (URL engine)</h3>
       <div class="case">
         <div class="key" style="opacity: 0.2"><span class="key-label">esc</span></div>
+        <div class="key" style="opacity: 0.2"><span class="key-label">tab</span></div>
+        <div class="key" style="opacity: 0.2"><span class="key-label">caps</span></div>
       </div>
       <div class="case">
         <div class="key glowing"><span class="key-lit-label">cmd</span></div>
