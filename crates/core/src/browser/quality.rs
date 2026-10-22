@@ -25,7 +25,7 @@ use crate::checks::text_rules::{
     is_line_clamp, is_under_ui_text_floor, justifies_without_word_spaces_text,
     tracking_is_crushed, ALL_CAPS_LONG_RUN, LEADING_BOLD_TITLE_WEIGHT, SMALLPRINT_TEXT_FLOOR_PX,
     UI_TEXT_FLOOR_PX,
-    JUSTIFY_NARROW_CHARS_PER_LINE, LEADING_DISPLAY_TYPE_PX, LEADING_HEADING_CONTEXT, LEADING_LEAD_TEXT_MAX_LINES, LEADING_LEAD_TEXT_PX,
+    JUSTIFY_NARROW_CHARS_PER_LINE, LEADING_DISPLAY_TYPE_PX, LEADING_HEADING_CONTEXT, LEADING_LEAD_TEXT_MAX_LINES, LEADING_LEAD_TEXT_MIN_RATIO, LEADING_LEAD_TEXT_PX,
     LEADING_MIN_LINE_BOXES, NON_RENDERED_TAGS, QUALITY_TEXT_TAGS,
     SR_ONLY_SELECTOR, TEXT_EDGE_TAGS,
 };
@@ -917,11 +917,16 @@ fn rendered_line_widths(dom: &dyn Dom, el: ElId) -> Option<Vec<f64>> {
 /// they hold. A list item whose own words head a nested list (github.com's
 /// release notes: "Fast Refresh Fixes" over seven one-line items) does not
 /// own the nested list's lines: each nested item is measured on its own.
-/// So the lines whose middle lies inside a child that sets its own lines,
-/// and that child's characters, are left out. With no such child this is
+/// So the lines whose middle lies inside a nested list laid out as a block,
+/// and that list's characters, are left out. With no such child this is
 /// every line and every character, as before.
 fn own_line_widths(dom: &dyn Dom, el: ElId) -> Option<(Vec<f64>, f64)> {
-    let blocks = super::text_geometry::block_children(dom, el);
+    // Only a nested list: its items are each measured, while a block note
+    // under a definition (a `<p>` in a `<dd>`) is read with it, as before.
+    let blocks: Vec<ElId> = super::text_geometry::block_children(dom, el)
+        .into_iter()
+        .filter(|&b| matches!(tag_lower(dom, b).as_str(), "ul" | "ol" | "dl" | "menu"))
+        .collect();
     if blocks.is_empty() {
         return Some((rendered_line_widths(dom, el)?, rendered_text_len(dom, el) as f64));
     }
@@ -2632,10 +2637,11 @@ pub fn check_quality(dom: &dyn Dom, q: &QualityInput) -> Vec<RuleHit> {
                             || direct_text(dom, el).chars().any(|c| ('\u{2500}'..='\u{257F}').contains(&c)))
                 };
                 // Lead text (taste call r13-t3): 20px and up over three
-                // rendered lines or fewer sets its own leading, as display
-                // type does. Lines a clipping box cuts off do not render.
+                // rendered lines or fewer, at 1.15 or more, sets its own
+                // leading, as display type does. Lines a clipping box cuts
+                // off do not render.
                 let lead_text = || {
-                    if font_size < LEADING_LEAD_TEXT_PX {
+                    if font_size < LEADING_LEAD_TEXT_PX || shown < LEADING_LEAD_TEXT_MIN_RATIO {
                         return false;
                     }
                     let (_, bottom) = rendered_lines(dom, el, &text_rect);
@@ -5463,6 +5469,8 @@ mod tests {
         // own leading; four lines of it are reading copy.
         let lead = wrapped(&mut d, body, "p", "22px", 26.0);
         assert!(leading(&d, lead).is_empty(), "two lines of 22px lead text");
+        let crowded = wrapped(&mut d, body, "p", "20px", 20.0);
+        assert_eq!(leading(&d, crowded), vec!["line-height 1.00x (need >=1.3)"], "lead text set solid crowds");
         let boundary = wrapped(&mut d, body, "p", "22px", 26.0);
         d.set_rect(boundary, 40.0, 100.0, 240.0, 104.0);
         d.el_mut(boundary).direct_text_rect = Some(Rect::from_xywh(40.0, 100.0, 240.0, 104.0));

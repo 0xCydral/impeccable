@@ -63,6 +63,13 @@ pub const LEADING_LEAD_TEXT_PX: f64 = 20.0;
 /// keep the exemption.
 pub const LEADING_LEAD_TEXT_MAX_LINES: f64 = 3.0;
 
+/// The tightest ratio lead text ([`LEADING_LEAD_TEXT_PX`]) can set and keep
+/// the exemption. The harmless lead text r13-t3 read ran 1.19 to 1.25;
+/// under this the lines crowd at any size, and both judges called them
+/// harmful: klimaschutz-niedersachsen.de's 20px accordion title over three
+/// lines at 1.0 (finding 10046656), stripe.com's 22px intro at 1.10.
+pub const LEADING_LEAD_TEXT_MIN_RATIO: f64 = 1.15;
+
 /// How much of a second line box the tight-leading floor needs to see before
 /// it judges leading. Text that renders as one line has no gap between lines
 /// to crowd; wrapped text is two line boxes or more, so the midpoint

@@ -1580,7 +1580,7 @@ fn clip_outcome(
     {
         return Err(Unpainted::ClippedOut);
     }
-    if script_frame || scrolls(&oy) {
+    if script_frame || scrolls(&oy) || moves_on_y_inside(dom, el, p) {
         vis.stop_y();
     } else if hides_y && !is_viewport_layer(dom, p, &cr, viewport_w, viewport_h) && vis.cut_y(cr.top, cr.bottom) {
         return Err(Unpainted::ClippedOut);
@@ -1597,6 +1597,40 @@ fn clip_outcome(
         height = cr.height;
     }
     Ok(Rect::from_xywh(left, top, width, height))
+}
+
+/// Whether `el` or a box between it and the clip `p` is translated on y (or
+/// transformed in a way that is not a plain translation): a vertical
+/// marquee or carousel track the page moves by script, caught somewhere
+/// along its run (juskoe.vercel.app's testimonial columns, translated
+/// -167px with no CSS animation to read). Where the text sits against the
+/// clip's edge at capture is not where it rests, so the y floor is not
+/// applied above such a box.
+fn moves_on_y_inside(dom: &dyn Dom, el: ElId, p: ElId) -> bool {
+    let mut cur = Some(el);
+    while let Some(c) = cur {
+        if c == p {
+            return false;
+        }
+        let t = dom.style(c, "transform");
+        let moved = match js::trim(&t) {
+            "" | "none" => false,
+            m => match m.strip_prefix("matrix(").and_then(|r| r.strip_suffix(')')) {
+                Some(args) => {
+                    let v: Vec<f64> = args.split(',').map(|a| js::parse_float(a.trim())).collect();
+                    v.len() != 6 || !v.iter().all(|x| x.is_finite()) || v[5].abs() > 0.5
+                }
+                None => true,
+            },
+        };
+        let translate = dom.style(c, "translate");
+        let translated = !matches!(js::trim(&translate), "" | "none") && js::trim(&translate).split_whitespace().nth(1).is_some_and(|y| js::parse_float(y) != 0.0);
+        if moved || translated {
+            return true;
+        }
+        cur = dom.parent(c);
+    }
+    false
 }
 
 /// Whether a box that hides its vertical overflow may be scrolled by script:
@@ -5475,6 +5509,18 @@ mod tests {
         d.set_text_rect(row, 220.0, 3400.4, 364.8, 17.0);
         assert_eq!(unpainted_for(&d, row, PaintGate::Text), Some(Unpainted::ClippedOut));
         assert_eq!(unpainted_for(&d, row, PaintGate::Box), None, "the box rules keep the x floor only");
+        // Twin: on a track the page translates on y (juskoe.vercel.app's
+        // testimonial column, -167px by script), the capture caught the
+        // row mid-run, and it keeps its findings.
+        let column = d.add(Some(window), "div");
+        d.set_style(column, "transform", "matrix(1, 0, 0, 1, 0, -167.277)");
+        d.set_rect(column, 25.0, 3000.0, 340.0, 600.0);
+        let moving = d.add(Some(column), "span");
+        d.add_text(moving, "Juskoe made our launch painless");
+        d.set_styles(moving, &[("display", "inline"), ("fontSize", "16px"), ("lineHeight", "24px")]);
+        d.set_rect(moving, 30.0, 3400.4, 300.0, 17.0);
+        d.set_text_rect(moving, 30.0, 3400.4, 300.0, 17.0);
+        assert_eq!(unpainted_for(&d, moving, PaintGate::Text), None);
         // Twin: two thirds of the em box shows, and the row reads.
         d.set_rect(row, 220.0, 3394.4, 364.8, 17.0);
         d.set_text_rect(row, 220.0, 3394.4, 364.8, 17.0);
