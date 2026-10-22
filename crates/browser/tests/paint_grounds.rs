@@ -116,7 +116,18 @@ fn grounds_painted_by_halves_faces_clips_and_echoes() {
     let front = low("#flag-pale-green-opaque-copy");
     assert_eq!(front.len(), 1, "{flagged:#?}");
     assert!(front[0].0.contains("text #a9d46b on #ffffff"), "{front:?}");
+    // A tint, a parked hover fill and a band skewed about its corner leave
+    // the copy's failure standing (from the element pass or the pixels).
     for selector in [
+        "#flag-grey-under-15-tint",
+        "#flag-grey-under-12-tint",
+        "#flag-grey-over-parked-fill",
+        "#flag-pale-below-skewed-edge",
+    ] {
+        assert!(!low(selector).is_empty(), "missing low-contrast on {selector} in {flagged:#?}");
+    }
+    for selector in [
+        "#pass-pale-on-skewed-band",
         "#pass-white-across-slate-seam",
         "#pass-label-over-parked-face",
         "#pass-stat-clipped-on-two-layers",

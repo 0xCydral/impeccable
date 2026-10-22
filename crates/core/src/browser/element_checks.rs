@@ -11696,12 +11696,6 @@ mod tests {
         assert!(run(strip, "auto", "rgb(225, 121, 121)"), "ink in another colour keeps its verdict");
     }
 
-    /// observations-47 row 12, ardainc.com 322246: the CTA paints a conic
-    /// ring on itself (white at one stop) and, inside it, a dark
-    /// `linear-gradient` face under a 14% white highlight on an `::after` at
-    /// `z-index: -1` that its `isolation: isolate` keeps over the ring. The
-    /// near-white label was scored against the ring's white, "#f4f4f6 on
-    /// #ffffff". The face is what the label sits on.
     /// family.co's `ButtonSecondary`: a hover face in the label's own colour
     /// parked at `opacity: 0` is not the ground at rest; the same face shown
     /// is, and a failing label on it still reports.
@@ -11749,6 +11743,12 @@ mod tests {
         assert_eq!(run("rgb(200, 200, 200)", "").len(), 1);
     }
 
+    /// observations-47 row 12, ardainc.com 322246: the CTA paints a conic
+    /// ring on itself (white at one stop) and, inside it, a dark
+    /// `linear-gradient` face under a 14% white highlight on an `::after` at
+    /// `z-index: -1` that its `isolation: isolate` keeps over the ring. The
+    /// near-white label was scored against the ring's white, "#f4f4f6 on
+    /// #ffffff". The face is what the label sits on.
     #[test]
     fn an_opaque_gradient_face_on_a_pseudo_is_the_surface() {
         let run_with = |face: &str, isolation: &str, extra: &[(&str, &str)]| {

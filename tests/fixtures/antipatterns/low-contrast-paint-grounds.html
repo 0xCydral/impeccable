@@ -18,6 +18,11 @@
          takes no verdict on its `color`, and neither does text whose fill is
          transparent inside a clipped heading. Pale stops on a white ground
          still fail by the stop that reads best.
+       - A pseudo's fill counts as a solid ground only at alpha times
+         opacity 0.9 or more, and a pseudo moved by `scale` or `rotate` is
+         not placed: a tint or a parked hover fill leaves the copy's failure
+         on white standing. A skewed band is placed for certain only where
+         it covers the copy whatever its `transform-origin`.
        - A run with a blended, translucent copy of itself over it is handed
          to the pixels, which give the verdict; an opaque copy at `normal`
          over another run is scored as itself.
@@ -79,6 +84,27 @@
       -webkit-background-clip: text, text; background-clip: text, text;
     }
 
+    /* A band whose `::before` is a tint, or a hover fill parked at rest,
+       over white: the copy is on (nearly) white, and fails there. */
+    .band { position: relative; width: 560px; height: 80px; background: #ffffff; }
+    .band::before { content: ""; position: absolute; left: 0; top: 0; width: 560px; height: 80px; background-color: #000000; }
+    .band.tint15::before { opacity: .15; }
+    .band.tint12::before { opacity: .12; }
+    .band.parked::before { scale: 0 1; }
+    .band p { position: relative; margin: 0; padding: 28px 16px; font: 400 16px/24px system-ui, sans-serif; }
+    #flag-grey-under-15-tint { color: #a9a9a9; }
+    #flag-grey-under-12-tint { color: #a8a8a8; }
+    #flag-grey-over-parked-fill { color: #a7a7a7; }
+
+    /* A dark band skewed about its top-left corner: the copy at its right
+       end sits below the band's real edge, on the white page. */
+    .diagonal { position: relative; isolation: isolate; width: 560px; height: 200px; margin-top: 60px; }
+    .diagonal::before { content: ""; position: absolute; left: 0; top: 0; width: 560px; height: 200px; background-color: #222222;
+      transform: skewY(-12deg); transform-origin: 0 0; z-index: -1; }
+    .diagonal p { position: absolute; margin: 0; width: 120px; font: 400 16px/20px system-ui, sans-serif; }
+    #flag-pale-below-skewed-edge { left: 300px; top: 140px; color: #cdcdcd; }
+    #pass-pale-on-skewed-band { left: 40px; top: 140px; color: #cccccc; }
+
     /* A headline and a copy of it in the same place. */
     .echo { position: relative; width: 560px; height: 72px; }
     .echo .copy { position: absolute; left: 0; top: 0; width: 560px; margin: 0; font: 700 40px/72px system-ui, sans-serif; }
@@ -103,6 +129,10 @@
       <div class="case">
         <p class="stat" id="flag-pale-stops-clipped-on-white">99.999%</p>
       </div>
+      <div class="case band tint15"><p id="flag-grey-under-15-tint">Grey copy under a 15 percent tint</p></div>
+      <div class="case band tint12"><p id="flag-grey-under-12-tint">Grey copy under a 12 percent tint</p></div>
+      <div class="case band parked"><p id="flag-grey-over-parked-fill">Grey copy over a parked hover fill</p></div>
+      <div class="case diagonal"><p id="flag-pale-below-skewed-edge">Pale copy off the band</p></div>
       <div class="case echo">
         <p class="copy under-plain" aria-hidden="true">Ship it today</p>
         <p class="copy over" id="flag-pale-green-opaque-copy">Ship it today</p>
@@ -116,6 +146,7 @@
       <div class="case">
         <span class="button parked" id="pass-label-over-parked-face">Download</span>
       </div>
+      <div class="case diagonal"><p id="pass-pale-on-skewed-band">Pale copy on the band</p></div>
       <div class="case">
         <p class="stat" id="pass-stat-clipped-on-two-layers">135+</p>
       </div>

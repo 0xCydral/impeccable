@@ -84,7 +84,14 @@ fn verdicts_the_pixels_could_not_read_are_advisory() {
             )
         })
         .collect();
-    assert_eq!(low, vec![("#flag-outlined-copy-under-backdrop-filter", "advisory", Some(true))], "{findings:#?}");
+    assert_eq!(
+        low,
+        vec![
+            ("#flag-outlined-copy-under-backdrop-filter", "advisory", Some(true)),
+            ("#flag-white-under-light-wash", "advisory", Some(true)),
+        ],
+        "{findings:#?}"
+    );
     let snippet = &findings
         .iter()
         .find(|f| f.antipattern == "low-contrast")
@@ -93,4 +100,30 @@ fn verdicts_the_pixels_could_not_read_are_advisory() {
     // The outlined copy keeps the element pass's ratio; the plain copy over
     // the same photo, whose ratio measured nothing, reports nothing.
     assert!(snippet.contains(":1 (need 4.5:1) — text #ffffff on #"), "{snippet}");
+}
+
+/// smartbi.ca's backdrop: a fixed scrim over the whole page dims the teal
+/// eyebrow and its ground alike, so the eyebrow's failing ratio is measured
+/// through it and stands as advisory where the pixels give none.
+#[test]
+fn a_verdict_under_a_scrim_is_measured_through_it() {
+    let Some(engine) = engine() else { return };
+    let port = serve();
+    let url = format!("http://127.0.0.1:{port}/low-contrast-unread-scrim.html");
+    let findings = engine.detect_url(&url, &ScanOptions::default()).expect("scan");
+    let low: Vec<(&str, &str, &str)> = findings
+        .iter()
+        .filter(|f| f.antipattern == "low-contrast")
+        .map(|f| {
+            (
+                f.extras.get("selector").and_then(|v| v.as_str()).unwrap_or(""),
+                f.severity.as_str(),
+                f.snippet.as_str(),
+            )
+        })
+        .collect();
+    assert_eq!(low.len(), 1, "{findings:#?}");
+    assert_eq!(low[0].0, "#flag-eyebrow-under-scrim");
+    assert_eq!(low[0].1, "advisory");
+    assert!(low[0].2.contains("text #4dc7cc on #ffffff"), "{}", low[0].2);
 }
