@@ -169,6 +169,16 @@ const STATE_LAYER_OPACITY: f64 = 0.15;
 /// text rects of the lines it hides run past its bottom edge.
 pub const TEXT_MIN_VISIBLE_SHARE: f64 = 0.25;
 
+/// The share of a single line's glyph band ([`super::quality::glyph_band`],
+/// its em box) that has to show inside the boxes that hide their vertical
+/// overflow for a text rule to score it. A line cut through the middle of
+/// its em box shows the tops of its capitals and none of its x-height:
+/// resend.com's log row parked at the bottom edge of an `overflow: hidden`
+/// demo window, 28% of its em box above the edge (finding 10134392). Only a
+/// single line: a line clamp or a collapsed "read more" box shows its first
+/// lines whole, and the lines it hides run past its bottom edge.
+pub const TEXT_MIN_VISIBLE_SHARE_Y: f64 = 0.5;
+
 /// The rules about an element's own box. A box that shows nothing at rest (a
 /// collapsed tray at height 0, the volume panel of a player whose control bar
 /// is not rendered, a seek bar parked off the canvas, a loader at
@@ -251,7 +261,7 @@ pub fn unpainted_for(dom: &dyn Dom, el: ElId, gate: PaintGate) -> Option<Unpaint
         PaintGate::Raster => unpainted_at_capture(dom, el, OwnOpacity::Measured).or_else(|| no_area(dom, el)),
         PaintGate::Box => unpainted_at_capture(dom, el, OwnOpacity::Counts).or_else(|| no_area(dom, el)),
         PaintGate::Toggle => unpainted_at_capture(dom, el, OwnOpacity::Toggled).or_else(|| no_area(dom, el)),
-        PaintGate::Text => unpainted_walk(dom, el, OwnOpacity::Counts, None, &mut Visible::floored(TEXT_MIN_VISIBLE_SHARE))
+        PaintGate::Text => unpainted_walk(dom, el, OwnOpacity::Counts, None, &mut Visible::floored_text())
             .or_else(|| no_text(dom, el))
             .or_else(|| no_font_size(dom, el))
             .or_else(|| no_area(dom, el)),
@@ -342,12 +352,35 @@ struct Visible {
     measured: bool,
     extent: (f64, f64),
     shown: (f64, f64),
+    /// Whether a single line's glyph band is floored on the y axis too
+    /// ([`TEXT_MIN_VISIBLE_SHARE_Y`]).
+    floor_y: bool,
+    /// The glyph band of a single line, top and bottom, once measured; `None`
+    /// for text of more lines, unmeasured text, or a walk past a box that
+    /// scrolls on y (whose scrolling can bring the rest into view).
+    extent_y: Option<(f64, f64)>,
+    shown_y: (f64, f64),
 }
 
 impl Visible {
     /// No floor at 0, which leaves every decision to the overlap tests.
     fn floored(min_share: f64) -> Visible {
-        Visible { min_share, track: false, measured: false, extent: (0.0, 0.0), shown: (0.0, 0.0) }
+        Visible {
+            min_share,
+            track: false,
+            measured: false,
+            extent: (0.0, 0.0),
+            shown: (0.0, 0.0),
+            floor_y: false,
+            extent_y: None,
+            shown_y: (0.0, 0.0),
+        }
+    }
+
+    /// The Text gate's floor: [`TEXT_MIN_VISIBLE_SHARE`] on x, and on y for
+    /// a single line ([`TEXT_MIN_VISIBLE_SHARE_Y`]).
+    fn floored_text() -> Visible {
+        Visible { floor_y: true, ..Visible::floored(TEXT_MIN_VISIBLE_SHARE) }
     }
 
     /// No floor, but the shown part is tracked.
@@ -366,6 +399,26 @@ impl Visible {
         self.measured = r.width > 0.0;
         self.extent = (r.left, r.right);
         self.shown = self.extent;
+        if self.floor_y {
+            self.extent_y = text.and_then(|t| super::quality::single_line_glyph_band(dom, el, &t)).map(|b| (b.top, b.bottom));
+            if let Some(e) = self.extent_y {
+                self.shown_y = e;
+            }
+        }
+    }
+
+    /// Cut a single line's glyph band to `[lo, hi]` on y: true when less
+    /// than [`TEXT_MIN_VISIBLE_SHARE_Y`] of it is left.
+    fn cut_y(&mut self, lo: f64, hi: f64) -> bool {
+        let Some((top, bottom)) = self.extent_y else { return false };
+        self.shown_y = (js::math_max(self.shown_y.0, lo), js::math_min(self.shown_y.1, hi));
+        let height = bottom - top;
+        height > 0.0 && js::math_max(0.0, self.shown_y.1 - self.shown_y.0) / height < TEXT_MIN_VISIBLE_SHARE_Y
+    }
+
+    /// A box that scrolls on y can bring the rest of the line into view.
+    fn stop_y(&mut self) {
+        self.extent_y = None;
     }
 
     /// Cut the shown part to `[lo, hi]`; true when what is left falls under
@@ -1350,6 +1403,11 @@ fn clip_outcome(
         && misses_axis(band.top, band.bottom, band.height, cr.top, cr.bottom)
         && !(script_frame && band.bottom > cr.bottom)
     {
+        return Err(Unpainted::ClippedOut);
+    }
+    if script_frame || scrolls(&oy) {
+        vis.stop_y();
+    } else if hides_y && !is_viewport_layer(dom, p, &cr, viewport_w, viewport_h) && vis.cut_y(cr.top, cr.bottom) {
         return Err(Unpainted::ClippedOut);
     }
     let (mut left, mut width) = (band.left, band.width);
@@ -5188,6 +5246,48 @@ mod tests {
     /// with a sliver in view, and a slick clone 79% past its track. A text
     /// measurement with less than a quarter of its width inside its clip is
     /// not painted for the text rules; the other gates keep the overlap test.
+    #[test]
+    fn a_single_line_cut_through_its_em_box_is_not_painted_for_text_rules() {
+        // resend.com's log row at the bottom edge of an `overflow: hidden`
+        // demo window: 4.5 of its em box's 16px above the edge.
+        let (mut d, body) = page();
+        let window = d.add(Some(body), "div");
+        d.set_styles(window, &[("overflowX", "hidden"), ("overflowY", "hidden")]);
+        d.set_rect(window, 25.0, 3205.4, 340.0, 200.0);
+        let row = d.add(Some(window), "span");
+        d.add_text(row, "4ea2f827-c3a1-4f0e-9b1a-2d1f0c8e7a55");
+        d.set_styles(row, &[("display", "inline"), ("fontSize", "16px"), ("lineHeight", "24px")]);
+        d.set_rect(row, 220.0, 3400.4, 364.8, 17.0);
+        d.set_text_rect(row, 220.0, 3400.4, 364.8, 17.0);
+        assert_eq!(unpainted_for(&d, row, PaintGate::Text), Some(Unpainted::ClippedOut));
+        assert_eq!(unpainted_for(&d, row, PaintGate::Box), None, "the box rules keep the x floor only");
+        // Twin: two thirds of the em box shows, and the row reads.
+        d.set_rect(row, 220.0, 3394.4, 364.8, 17.0);
+        d.set_text_rect(row, 220.0, 3394.4, 364.8, 17.0);
+        assert_eq!(unpainted_for(&d, row, PaintGate::Text), None);
+        // Twin: a `-webkit-line-clamp: 3` paragraph whose hidden lines run
+        // past the box's bottom keeps its findings.
+        let clamp = d.add(Some(body), "div");
+        d.set_styles(clamp, &[("overflowX", "hidden"), ("overflowY", "hidden")]);
+        d.set_rect(clamp, 40.0, 900.0, 400.0, 72.0);
+        let p = d.add(Some(clamp), "p");
+        d.add_text(p, "A summary clamped to three lines of a much longer paragraph of prose");
+        d.set_styles(p, &[("fontSize", "16px"), ("lineHeight", "24px")]);
+        d.set_rect(p, 40.0, 900.0, 400.0, 144.0);
+        d.set_text_rect(p, 40.0, 902.0, 400.0, 140.0);
+        assert_eq!(unpainted_for(&d, p, PaintGate::Text), None);
+        // A box that scrolls on y brings the rest of the line into view.
+        let feed = d.add(Some(body), "div");
+        d.set_styles(feed, &[("overflowX", "hidden"), ("overflowY", "auto")]);
+        d.set_rect(feed, 25.0, 1205.4, 340.0, 200.0);
+        let item = d.add(Some(feed), "span");
+        d.add_text(item, "A row at the bottom of a scrolling feed");
+        d.set_styles(item, &[("display", "inline"), ("fontSize", "16px"), ("lineHeight", "24px")]);
+        d.set_rect(item, 30.0, 1400.4, 300.0, 17.0);
+        d.set_text_rect(item, 30.0, 1400.4, 300.0, 17.0);
+        assert_eq!(unpainted_for(&d, item, PaintGate::Text), None);
+    }
+
     #[test]
     fn a_text_copy_mostly_past_its_clip_is_not_painted_for_text_rules() {
         let (mut d, body) = page();

@@ -2779,19 +2779,11 @@ fn analyze_monotonous_spacing(content: &str, file_path: &str) -> Vec<Finding> {
             vals.push(v);
         }
     }
-    // A zero is a reset (`p-0`, `gap: 0px`), not a spacing choice; the px
-    // and rem pushes already skip it.
     for m in GAP_RE.captures_iter(content) {
-        let v = num(&m[1]);
-        if v > 0.0 {
-            vals.push(v);
-        }
+        vals.push(num(&m[1]));
     }
     for m in TW_SPACING_RE.captures_iter(content) {
-        let v = num(&m[1]) * 4.0;
-        if v > 0.0 {
-            vals.push(v);
-        }
+        vals.push(num(&m[1]) * 4.0);
     }
     let rounded: Vec<f64> = vals.iter().map(|v| math_round(v / 4.0) * 4.0).collect();
     if rounded.len() < 10 {
@@ -2841,6 +2833,11 @@ fn analyze_monotonous_spacing(content: &str, file_path: &str) -> Vec<Finding> {
     );
     ordered.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     let dominant = ordered[0].0.clone();
+    // A most common value of zero is resetting spacing (`p-0`, `gap: 0px`),
+    // not repeating one gap.
+    if dominant == "0" {
+        return vec![];
+    }
     vec![finding(
         "monotonous-spacing",
         file_path,

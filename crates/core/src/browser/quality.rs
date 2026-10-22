@@ -670,6 +670,20 @@ pub fn glyph_band(dom: &dyn Dom, node: ElId, t: &Rect) -> Rect {
     glyph_band_at(dom, node, t, 1.0)
 }
 
+/// [`glyph_band`] of `t` when it is a single line, `None` for more lines or
+/// a node whose font size or line height the capture did not record.
+pub fn single_line_glyph_band(dom: &dyn Dom, node: ElId, t: &Rect) -> Option<Rect> {
+    let font_size = parse_float(&dom.style(node, "fontSize"));
+    if !(font_size.is_finite() && font_size > 0.0) {
+        return None;
+    }
+    let own = resolve_length_px(Some(&dom.style(node, "lineHeight")), font_size)
+        .filter(|lh| lh.is_finite() && *lh > 0.0)
+        .unwrap_or(font_size * NORMAL_LINE_HEIGHT_EM);
+    let pitch = line_pitch_px(dom, node, own);
+    (text_line_count(t.height, pitch, font_size) <= 1.0).then(|| glyph_band(dom, node, t))
+}
+
 /// [`glyph_band`] for text drawn at `scale` times its layout size: a
 /// transform that shrinks a whole column (people.com.cn lays its desktop
 /// page into a phone at about 0.3) shrinks the rects but not the computed

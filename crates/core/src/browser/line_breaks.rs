@@ -52,6 +52,10 @@ const HEADING_MIN_COLUMN_CHARS: f64 = 20.0;
 /// and `pretty` move words between lines, and two words have nowhere to go.
 const MIN_WORDS: usize = 3;
 
+/// How far up from a block [`lines_run_past_a_clip`] looks for the box
+/// that clips its lines, as the tight-leading floor looks for a line clamp.
+const CLIP_SEARCH_DEPTH: usize = 4;
+
 /// The widths of the lines `el`'s text rendered on, top to bottom.
 ///
 /// `None` when the lines do not stack in one column. Lines come back sorted
@@ -65,6 +69,9 @@ fn line_widths(dom: &dyn Dom, el: ElId) -> Option<Vec<f64>> {
         .into_iter()
         .filter(|r| r.width > 0.0 && r.height > 0.0)
         .collect();
+    if lines_run_past_a_clip(dom, el, &rects) {
+        return None;
+    }
     let widest = rects.iter().copied().reduce(|a, b| if b.width > a.width { b } else { a });
     if let Some(w) = widest {
         if rects.iter().any(|r| r.right <= w.left || r.left >= w.right) {
@@ -131,6 +138,67 @@ fn push_rendered_text(dom: &dyn Dom, el: ElId, out: &mut String) {
     }
 }
 
+/// Whether the last text `el` sets on its lines sits in a `sup` or `sub`: a
+/// footnote marker glued to the last word (apple.com's
+/// `reliability.<sup>22</sup>`). The words are read with no boundary
+/// between text nodes, so the marker lengthens the last word, and a raised
+/// marker's width is not the characters it holds: the last line's share of
+/// the characters cannot be read. The line is not judged.
+fn ends_in_a_marker(dom: &dyn Dom, el: ElId) -> bool {
+    fn last_text(dom: &dyn Dom, el: ElId, in_marker: bool) -> Option<bool> {
+        for child in dom.child_nodes(el).into_iter().rev() {
+            match child {
+                DomChild::Text(text) if !text.trim().is_empty() => return Some(in_marker),
+                DomChild::Text(_) => {}
+                DomChild::Element(c) => {
+                    if renders_no_text(dom, c) {
+                        continue;
+                    }
+                    let marker = in_marker || matches!(tag_lower(dom, c).as_str(), "sup" | "sub");
+                    if let Some(found) = last_text(dom, c, marker) {
+                        return Some(found);
+                    }
+                }
+            }
+        }
+        None
+    }
+    last_text(dom, el, false).unwrap_or(false)
+}
+
+/// Whether `el`'s lines run past a box that clips them: a `-webkit-line-clamp`
+/// box (vercel.com's `p.line-clamp-2`, impeccable.style's release summaries)
+/// or one whose `overflow` clips on y, on `el` or within
+/// [`CLIP_SEARCH_DEPTH`] ancestors. Chromium lays out the lines a clamp
+/// hides below the box, and `Dom::text_line_rects` still returns them, so
+/// the last line measured is not the last line shown. A line whose middle
+/// lies below the clip box's content edge is hidden. Clips that hide nothing
+/// leave the lines as they are.
+fn lines_run_past_a_clip(dom: &dyn Dom, el: ElId, lines: &[super::dom::Rect]) -> bool {
+    let Some(lowest) = lines.iter().map(|r| r.top + r.height / 2.0).reduce(f64::max) else {
+        return false;
+    };
+    let mut cur = Some(el);
+    for _ in 0..=CLIP_SEARCH_DEPTH {
+        let Some(c) = cur else { break };
+        let clamp = crate::checks::text_rules::is_line_clamp(&dom.style(c, "display"), &dom.style(c, "webkitLineClamp"));
+        let clips = |k: &str| matches!(dom.style(c, k).as_str(), "hidden" | "clip");
+        if clamp || clips("overflowY") || clips("overflow") {
+            let r = dom.rect(c);
+            let px = |k: &str| {
+                let v = js::parse_float(&dom.style(c, k));
+                if v.is_finite() { v } else { 0.0 }
+            };
+            let bottom = r.bottom - px("borderBottomWidth") - px("paddingBottom");
+            if bottom.is_finite() && lowest > bottom {
+                return true;
+            }
+        }
+        cur = dom.parent(c);
+    }
+    false
+}
+
 /// Whether any of the text `el` sets on its lines does not paint: text in a
 /// box whose computed `visibility` is `hidden` or `collapse`. Such text still
 /// takes its room on a line box, so `Dom::text_line_rects` measures it and
@@ -180,7 +248,7 @@ fn chars_per_px(dom: &dyn Dom, el: ElId, widths: &[f64]) -> Option<f64> {
 /// them, and the last line holds one word when its share of the characters
 /// is nearer the last word's length than the last two words'.
 fn check_straggler(dom: &dyn Dom, el: ElId) -> Option<RuleHit> {
-    if wraps_with(dom, el, "pretty") || breaks_are_authored(dom, el) {
+    if wraps_with(dom, el, "pretty") || breaks_are_authored(dom, el) || ends_in_a_marker(dom, el) {
         return None;
     }
     let widths = line_widths(dom, el)?;
@@ -310,6 +378,56 @@ mod tests {
         assert_eq!(hits.len(), 1, "{hits:?}");
         assert_eq!(hits[0].id, "straggler");
         assert_eq!(hits[0].snippet, "\"text.\" alone on the last of 3 lines (7% of the measure)");
+    }
+
+    /// vercel.com's template cards: `-webkit-line-clamp: 2` on a paragraph
+    /// whose third line Chromium lays out below the box. The visitor reads
+    /// two lines ending in an ellipsis, not a lone last word. Twin: the same
+    /// paragraph unclamped, and a clamp that hides nothing, still report.
+    #[test]
+    fn lines_a_clamp_hides_are_not_judged() {
+        let mut d = FakeDom::new();
+        let (_h, body) = d.with_page();
+        let clamped = block(&mut d, body, "p", PROSE, &[560.0, 560.0, 40.0]);
+        d.set_styles(clamped, &[("display", "-webkit-box"), ("webkitLineClamp", "2"), ("overflow", "hidden")]);
+        d.set_rect(clamped, 0.0, 100.0, 600.0, 48.0);
+        assert!(ids(&d, clamped).is_empty());
+        // In a clipping wrapper two levels up.
+        let card = d.add(Some(body), "div");
+        d.set_styles(card, &[("overflowY", "hidden"), ("paddingBottom", "0px"), ("borderBottomWidth", "0px")]);
+        d.set_rect(card, 0.0, 100.0, 600.0, 48.0);
+        let inner = d.add(Some(card), "div");
+        let wrapped = block(&mut d, inner, "p", PROSE, &[560.0, 560.0, 40.0]);
+        assert!(ids(&d, wrapped).is_empty());
+
+        let free = block(&mut d, body, "p", PROSE, &[560.0, 560.0, 40.0]);
+        d.set_rect(free, 0.0, 100.0, 600.0, 72.0);
+        assert_eq!(ids(&d, free), vec!["straggler"]);
+        let roomy = block(&mut d, body, "p", PROSE, &[560.0, 560.0, 40.0]);
+        d.set_styles(roomy, &[("display", "-webkit-box"), ("webkitLineClamp", "3"), ("overflow", "hidden")]);
+        d.set_rect(roomy, 0.0, 100.0, 600.0, 72.0);
+        assert_eq!(ids(&d, roomy), vec!["straggler"], "a clamp of three shows all three lines");
+    }
+
+    /// apple.com: `and reliability.<sup>22</sup>` on the last line. The
+    /// marker glues onto the last word and its raised width is not the
+    /// characters it holds. Twin: a marker earlier in the paragraph leaves
+    /// the last line judged.
+    #[test]
+    fn a_footnote_marker_at_the_end_leaves_the_last_line_unjudged() {
+        let mut d = FakeDom::new();
+        let (_h, body) = d.with_page();
+        let p = block(&mut d, body, "p", "Line breaks decide how a block of text sits on the page, and one word alone on the last line leaves a hole under the", &[560.0, 560.0, 40.0]);
+        inline(&mut d, p, "sup", "22", &[]);
+        assert!(ids(&d, p).is_empty());
+
+        let q = d.add(Some(body), "p");
+        d.add_text(q, "Line breaks decide how a block");
+        inline(&mut d, q, "sup", "1", &[]);
+        d.add_text(q, " of text sits on the page, and one word alone on the last line leaves a hole under the text.");
+        d.set_styles(q, &[("fontSize", "16px"), ("display", "block"), ("whiteSpace", "normal")]);
+        d.set_text_lines(q, &[(0.0, 100.0, 560.0, 19.0), (0.0, 124.0, 560.0, 19.0), (0.0, 148.0, 40.0, 19.0)]);
+        assert_eq!(ids(&d, q), vec!["straggler"]);
     }
 
     /// A soft hyphen paints nothing, so the snippet names the word a reader
