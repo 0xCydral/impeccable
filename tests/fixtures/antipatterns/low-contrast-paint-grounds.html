@@ -23,8 +23,10 @@
          over another run is scored as itself.
 
        The static HTML engine reads no pseudo boxes and no layers: it scores
-       the seam text on the page, reads no hover face, and scores the echoed
-       headline as itself. The URL behavior is pinned by
+       both seam texts on the grey page, reads no hover face (missing the
+       shown one), scores no clipped stop, scores the echoed green headline
+       as itself, and reports `gradient-text` on the clipped heading and on
+       one clipped stat. The URL behavior is pinned by
        crates/browser/tests/paint_grounds.rs. Every case uses its own text
        colour or id so a finding names the case. */
     * { box-sizing: border-box; }
@@ -37,7 +39,7 @@
 
     /* Two sheared halves, each the full width, moved apart so each paints
        one half, at z-index -1 inside the section's own stacking context. */
-    .chevron-ground { background: #abafb4; padding: 24px 0; }
+    .chevron-ground { background: #abafb4; padding: 24px 32px; width: 624px; margin-left: -32px; }
     .chevron { position: relative; isolation: isolate; width: 560px; height: 240px; }
     .chevron::before, .chevron::after {
       content: ""; position: absolute; top: 0; left: 0; width: 560px; height: 240px; z-index: -1;
