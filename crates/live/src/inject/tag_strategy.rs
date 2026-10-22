@@ -286,7 +286,7 @@ fn reference_len(s: &str) -> Option<usize> {
 /// reference (`&copy;`) or literal text (`&bogus;`), and telling them apart
 /// takes the full HTML table. Treating it as text inside a source means an
 /// insertion never lands between its name and its `;`.
-const ASCII_NAMED_REFERENCES: [(&str, char); 31] = [
+const ASCII_NAMED_REFERENCES: [(&str, char); 29] = [
     ("amp", '&'),
     ("quot", '"'),
     ("apos", '\''),
@@ -302,8 +302,6 @@ const ASCII_NAMED_REFERENCES: [(&str, char); 31] = [
     ("NewLine", '\n'),
     ("ast", '*'),
     ("plus", '+'),
-    ("hyphen", '-'),
-    ("dash", '-'),
     ("lowbar", '_'),
     ("equals", '='),
     ("quest", '?'),
@@ -417,19 +415,23 @@ fn encode_html_attr_value(value: &str, quote: &str) -> String {
 /// names, separators and sources are read on the decoded value, the way the
 /// browser reads them, but the edit is made on the raw text: the existing text
 /// and its character references are copied through byte for byte, and only
-/// the inserted text is encoded for `quote`.
+/// the inserted text is encoded for `quote`. Whitespace is CSP's ASCII
+/// whitespace, so a decoded `&#160;` does not separate a name from a source.
 fn append_origin_to_directive(raw: &str, directive: &str, source: &str, quote: &str) -> String {
     let encoded = encode_html_attr_value(source, quote);
     let units = decode_units(raw);
     let name: Vec<char> = directive.chars().collect();
     for seg in units.split(|u| u.ch == ';') {
-        let body: Vec<&Unit> = seg.iter().skip_while(|u| u.ch.is_whitespace()).collect();
+        let body: Vec<&Unit> = seg
+            .iter()
+            .skip_while(|u| u.ch.is_ascii_whitespace())
+            .collect();
         let named = body.len() > name.len()
             && body
                 .iter()
                 .zip(&name)
                 .all(|(u, c)| u.ch.eq_ignore_ascii_case(c))
-            && body[name.len()].ch.is_whitespace();
+            && body[name.len()].ch.is_ascii_whitespace();
         if !named {
             continue;
         }
@@ -437,21 +439,24 @@ fn append_origin_to_directive(raw: &str, directive: &str, source: &str, quote: &
             .iter()
             .map(|u| if u.opaque { '\u{FFFD}' } else { u.ch })
             .collect();
-        if rest.split_whitespace().any(|t| t == source) {
+        if rest
+            .split(|c: char| c.is_ascii_whitespace())
+            .any(|t| t == source)
+        {
             return raw.to_string();
         }
         // After the last source, or after the name when there is none.
         let at = body
             .iter()
             .rev()
-            .find(|u| !u.ch.is_whitespace())
+            .find(|u| !u.ch.is_ascii_whitespace())
             .map(|u| u.end)
             .unwrap_or(raw.len());
         return format!("{} {}{}", &raw[..at], encoded, &raw[at..]);
     }
     // JS: csp.trim().replace(/;?\s*$/, ''), on decoded characters.
-    let first = units.iter().position(|u| !u.ch.is_whitespace());
-    let last = units.iter().rposition(|u| !u.ch.is_whitespace());
+    let first = units.iter().position(|u| !u.ch.is_ascii_whitespace());
+    let last = units.iter().rposition(|u| !u.ch.is_ascii_whitespace());
     let base = match (first, last) {
         (Some(f), Some(l)) => {
             let end = if units[l].ch == ';' {
@@ -779,6 +784,26 @@ mod tests {
             assert!(
                 patched.contains(&format!(
                     "content=\"{base}; script-src 'self' http://localhost:9797 'wasm-unsafe-eval';"
+                )),
+                "{patched}"
+            );
+            assert_eq!(revert_csp_meta(&patched), html);
+        }
+    }
+
+    #[test]
+    fn only_ascii_whitespace_and_exact_names_match_a_directive() {
+        // `&#160;` is not CSP whitespace and `&hyphen;` is U+2010, so neither
+        // value names script-src; the patch adds a real one.
+        for csp in [
+            "default-src 'self'; script-src&#160;'self'",
+            "default-src 'self'; script&hyphen;src 'self'",
+        ] {
+            let html = format!("<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">");
+            let patched = patch_csp_meta(&html, 9797);
+            assert!(
+                patched.contains(&format!(
+                    "content=\"{csp}; script-src 'self' http://localhost:9797 'wasm-unsafe-eval';"
                 )),
                 "{patched}"
             );
