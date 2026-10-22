@@ -690,14 +690,15 @@ fn an_element_shot_keeps_a_fixed_backdrop_under_the_element() {
 /// developer.apple.com folds its navigator when the beyond-viewport capture
 /// resizes the page, and slides its column back after). That resize is
 /// Chromium's to give or not, so this page moves its column on its own: a
-/// slow `margin-left` animation, which shifts every box the probe samples.
+/// `margin-left` animation that never stops (about 570px a second), which
+/// shifts every box the probe samples by far more than 2px in any capture.
 /// A section bar under a header that scrolls away sticks at the top of every
 /// tile after the first; the stitched image shows it once, where it sits.
 const RELAYOUT_PAGE: &str = r#"<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>Relayout</title>
 <style>
   body { margin: 0; background: #ffffff; }
-  .main { margin-left: 400px; animation: fold 20s linear forwards; }
+  .main { margin-left: 400px; animation: fold 0.7s linear infinite; }
   @keyframes fold { from { margin-left: 400px; } to { margin-left: 0px; } }
   .block { width: 300px; height: 300px; background: #0a7d3b; }
   .row { height: 200px; background: #e8e8e8; margin-top: 20px; }
