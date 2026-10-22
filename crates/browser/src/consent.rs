@@ -677,6 +677,9 @@ fn cookie_notice_js() -> String {
       for (let n = w.nextNode(), i = 0; n && i < 4000; n = w.nextNode(), i++) {{
         const p = n.parentElement;
         if (!p || p.closest('a, button, [role=button], script, style, noscript, template')) continue;
+        // Rendered text only: a hidden cookie-policy panel inside a welcome
+        // wrapper does not make the wrapper a notice.
+        if (!p.getClientRects().length || (p.checkVisibility && !p.checkVisibility({{ visibilityProperty: true, checkVisibilityCSS: true }}))) continue;
         t += ' ' + n.data;
       }}
       return t;

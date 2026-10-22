@@ -290,9 +290,11 @@ pub fn preloader_js() -> String {
       if (el.querySelector('a[href], button, input:not([type=hidden]), select, textarea, iframe, [role=button], [role=dialog], [role=alertdialog], [aria-modal=true], dialog, [contenteditable=""], [contenteditable=true]')) continue;
       const shown = (el.innerText || '').replace(/\s+/g, ' ').trim();
       if (shown.length > (loader ? {max_text} : {intro_max_text})) continue;
-      // A layer that asks to be entered is a splash gate: it never goes on
-      // its own, so it is not waited for (`splashes`).
-      if (enterText(shown) && shown.length <= {splash_max_text}) continue;
+      // A layer that asks to be entered and has a way through is a splash
+      // gate: it never goes on its own, so it is not waited for
+      // (`splashes`). A loader that only mentions entering ("Preparing to
+      // enter the site") has none and is still a loader.
+      if (enterText(shown) && shown.length <= {splash_max_text} && (cs.cursor === 'pointer' || el.hasAttribute('onclick'))) continue;
       // A long enter-worded layer is still an intro, unless it is an answer
       // (an age gate or a consent choice), which stays.
       if (!loader && enterText(shown) && /\b(18|21)\b|\+18|\bage\b|\bâge\b|\balter\b|\bedad\b|\bidade\b|cookie|accept|agree/i.test(shown)) continue;

@@ -626,7 +626,7 @@ fn tealium_and_transcend_banners_are_hidden() {
 fn page_parts_that_look_like_a_notice_stay() {
     let Some(engine) = engine() else { return };
     let port = serve();
-    for page in ["stay-announce.html", "stay-header.html", "stay-cart.html", "stay-gdpr-modal.html"] {
+    for page in ["stay-announce.html", "stay-header.html", "stay-cart.html", "stay-gdpr-modal.html", "stay-hidden-policy.html"] {
         let url = format!("http://127.0.0.1:{port}/{page}");
         let scan = engine.detect_url_scan(&url, &ScanOptions::default()).expect("scan");
         assert!(has(&flagged(&scan.findings), "low-contrast", "#own"), "{page}: {:#?}", flagged(&scan.findings));

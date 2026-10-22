@@ -189,6 +189,23 @@ fn a_stuck_preloader_is_waited_for_then_hidden() {
     assert!(!has(&flagged(&kept), "low-contrast", "#covered-copy"), "{kept:#?}");
 }
 
+/// A loader whose short message mentions entering but offers no way
+/// through is still a loader: waited for, then hidden (review on #1106).
+#[test]
+fn a_stuck_preloader_that_mentions_entering_is_hidden() {
+    let Some(engine) = engine() else { return };
+    let port = serve();
+    let url = format!("http://127.0.0.1:{port}/preloader-enter-text.html");
+    let mut browser = engine.launch().expect("launch");
+    let (findings, evidence) =
+        detect_url_evidence(&mut browser, &url, &ScanOptions::default(), "load", 100, &EvidenceRequest::default())
+            .expect("scan");
+    browser.close();
+    assert!(has(&flagged(&findings), "low-contrast", "#covered-copy"), "{findings:#?}");
+    let report = evidence.overlays.as_ref().expect("overlay report");
+    assert_eq!(report.hidden, vec![hidden("preloader", "div#preloader")]);
+}
+
 #[test]
 fn a_stuck_preloader_clicks_pass_through_is_hidden_too() {
     let Some(engine) = engine() else { return };
