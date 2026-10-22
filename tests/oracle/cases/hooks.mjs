@@ -174,6 +174,20 @@ export default [
       { stdin: stop({ session_id: 's2' }) },
     ],
   },
+  // Umbrella cwd (#1101): the per-edit pass keys the cache to the child
+  // project, and Stop from the plain folder above it finds that cache.
+  {
+    id: 'hook-session-umbrella-stop', verb: 'hook', workspace: 'hook-project', files: ['umbrella/**/.impeccable/**'],
+    setup: (ws) => {
+      fs.mkdirSync(`${ws}/umbrella/site/src`, { recursive: true });
+      fs.writeFileSync(`${ws}/umbrella/site/package.json`, '{}\n');
+      fs.writeFileSync(`${ws}/umbrella/site/src/a.css`, '.card { border-left: 4px solid #6366f1; border-radius: 8px; }\n');
+    },
+    steps: [
+      { stdin: claudeEdit('umbrella/site/src/a.css', { cwd: `${WS}/umbrella` }) },
+      { stdin: stop({ cwd: `${WS}/umbrella` }) },
+    ],
+  },
   // Grok Build camelCase envelope (#646): the per-edit pass scans and warms
   // the session cache without remembering findings (Grok drops PostToolUse
   // stdout), the end_turn Stop reports the full set, the observe-only
