@@ -7214,5 +7214,5 @@ review: the only change is that the reverted file keeps the newline before
 `/>`, which makes it byte-identical to the file before inject. They are
 ordinary goldens again, not accepted deltas. The new cases
 `live-inject-csp-meta-quote-styles` and `live-inject-csp-meta-quote-styles-remove`
-pin the decode and quote-style re-encode of the content value and the round
-trip.
+pin the in-place patch of the raw content value (references kept, inserted
+sources encoded for the quote style) and the round trip.

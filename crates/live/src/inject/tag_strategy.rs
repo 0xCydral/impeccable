@@ -244,51 +244,72 @@ fn get_attr(attrs: &str, name: &str) -> Option<Attr> {
     best.map(|(_, a)| a)
 }
 
-fn append_origin_to_directive(csp: &str, directive: &str, origin: &str) -> String {
-    let re = RegexBuilder::new(&format!("(^|;)(\\s*)({})\\s+([^;]*)", directive))
-        .case_insensitive(true)
-        .build()
-        .unwrap();
-    if let Some(m) = re.captures(csp) {
-        let tokens_str = m.get(4).map(|t| t.as_str()).unwrap_or("");
-        let tokens: Vec<&str> = tokens_str.trim().split_whitespace().collect();
-        // JS: `m[4].trim().split(/\s+/)`; an empty trimmed string yields ['']
-        let tokens: Vec<&str> = if tokens_str.trim().is_empty() {
-            vec![""]
-        } else {
-            tokens
-        };
-        if tokens.contains(&origin) {
-            return csp.to_string();
+/// Length of the HTML character reference at the start of `s` (which starts
+/// with `&`), if one starts there. A numeric reference may omit its `;`, as
+/// browsers read it; a named one counts only with its `;`.
+fn reference_len(s: &str) -> Option<usize> {
+    let b = s.as_bytes();
+    if b.get(1) == Some(&b'#') {
+        let hex = matches!(b.get(2), Some(b'x' | b'X'));
+        let start = if hex { 3 } else { 2 };
+        let mut i = start;
+        while i < b.len()
+            && (if hex {
+                b[i].is_ascii_hexdigit()
+            } else {
+                b[i].is_ascii_digit()
+            })
+        {
+            i += 1;
         }
-        let mut joined: Vec<&str> = tokens.clone();
-        joined.push(origin);
-        let replacement = format!(
-            "{}{}{} {}",
-            m.get(1).map(|x| x.as_str()).unwrap_or(""),
-            m.get(2).map(|x| x.as_str()).unwrap_or(""),
-            m.get(3).map(|x| x.as_str()).unwrap_or(""),
-            joined.join(" ")
-        );
-        let whole = m.get(0).unwrap();
-        return format!(
-            "{}{}{}",
-            &csp[..whole.start()],
-            replacement,
-            &csp[whole.end()..]
-        );
+        if i == start {
+            return None;
+        }
+        if b.get(i) == Some(&b';') {
+            i += 1;
+        }
+        Some(i)
+    } else {
+        let mut i = 1;
+        while i < b.len() && b[i].is_ascii_alphanumeric() {
+            i += 1;
+        }
+        if i == 1 || b.get(i) != Some(&b';') {
+            return None;
+        }
+        Some(i + 1)
     }
-    let trimmed = csp.trim();
-    // JS: .replace(/;?\s*$/, '')
-    let trailing_re = Regex::new(r";?\s*$").unwrap();
-    let base = trailing_re.replacen(trimmed, 1, "").into_owned();
-    format!("{}; {} 'self' {}", base, directive, origin)
 }
 
-/// Decode the HTML character references a CSP attribute value can carry:
-/// decimal and hex numeric references and the named `amp`, `quot`, `apos`,
-/// `lt` and `gt`, each terminated by `;`. Anything else, including a bare
-/// `&`, passes through unchanged.
+/// `tail` starts with `&`. Returns the decoded char and the reference length
+/// for numeric references and the named `amp`, `quot`, `apos`, `lt` and `gt`.
+fn decode_reference(tail: &str) -> Option<(char, usize)> {
+    let len = reference_len(tail)?;
+    let body = tail[1..len].trim_end_matches(';');
+    let ch = if let Some(num) = body.strip_prefix('#') {
+        let code = match num.strip_prefix(['x', 'X']) {
+            Some(hex) => u32::from_str_radix(hex, 16).ok(),
+            None => num.parse::<u32>().ok(),
+        };
+        code.filter(|c| *c != 0)
+            .and_then(char::from_u32)
+            .unwrap_or('\u{FFFD}')
+    } else {
+        match body {
+            "amp" => '&',
+            "quot" => '"',
+            "apos" => '\'',
+            "lt" => '<',
+            "gt" => '>',
+            _ => return None,
+        }
+    };
+    Some((ch, len))
+}
+
+/// Decode the character references `decode_reference` knows. Anything else,
+/// including a bare `&`, passes through unchanged. Used to compare sources,
+/// never to rewrite the attribute.
 fn decode_html_attr_value(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     let mut rest = value;
@@ -310,52 +331,92 @@ fn decode_html_attr_value(value: &str) -> String {
     out
 }
 
-/// `tail` starts with `&`. Returns the decoded char and the reference length.
-fn decode_reference(tail: &str) -> Option<(char, usize)> {
-    let semi = tail.find(';')?;
-    let body = &tail[1..semi];
-    let ch = if let Some(num) = body.strip_prefix('#') {
-        let code = if let Some(hex) = num.strip_prefix(['x', 'X']) {
-            if hex.is_empty() || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-                return None;
+/// Byte offsets of the `;` directive separators in a raw attribute value. A
+/// `;` that ends a character reference such as `&#39;` is not a separator.
+fn directive_separators(raw: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    let b = raw.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        match b[i] {
+            b'&' => i += reference_len(&raw[i..]).unwrap_or(1),
+            b';' => {
+                out.push(i);
+                i += 1;
             }
-            u32::from_str_radix(hex, 16).ok()?
-        } else {
-            if num.is_empty() || !num.bytes().all(|b| b.is_ascii_digit()) {
-                return None;
-            }
-            num.parse::<u32>().ok()?
-        };
-        if code == 0 {
-            return None;
+            _ => i += 1,
         }
-        char::from_u32(code)?
-    } else {
-        match body {
-            "amp" => '&',
-            "quot" => '"',
-            "apos" => '\'',
-            "lt" => '<',
-            "gt" => '>',
-            _ => return None,
-        }
-    };
-    Some((ch, semi + 1))
+    }
+    out
 }
 
-/// Encode a decoded value for an attribute delimited by `quote`: `&` and the
-/// delimiting quote are the only characters that must be escaped there.
+/// Encode a source for an attribute delimited by `quote`, so the quotes in
+/// `'self'` and `'wasm-unsafe-eval'` cannot end a single-quoted value.
 fn encode_html_attr_value(value: &str, quote: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for c in value.chars() {
         match c {
             '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
             '"' if quote == "\"" => out.push_str("&quot;"),
             '\'' if quote == "'" => out.push_str("&#39;"),
             _ => out.push(c),
         }
     }
     out
+}
+
+/// Append `source` to `directive` in the raw attribute value `raw`, or add the
+/// directive as `; <directive> 'self' <source>` when it is missing. The value
+/// is never decoded and re-encoded as a whole: directives are found on the raw
+/// text with character references kept intact, the existing text is copied
+/// through, and only the inserted source is encoded for `quote`.
+fn append_origin_to_directive(raw: &str, directive: &str, source: &str, quote: &str) -> String {
+    let encoded = encode_html_attr_value(source, quote);
+    let seps = directive_separators(raw);
+    let mut start = 0;
+    for end in seps.iter().copied().chain(std::iter::once(raw.len())) {
+        let seg = &raw[start..end];
+        let body = seg.trim_start();
+        let lead = &seg[..seg.len() - body.len()];
+        let name = body.get(..directive.len());
+        let after = body.get(directive.len()..).unwrap_or("");
+        if name.is_some_and(|n| n.eq_ignore_ascii_case(directive))
+            && after.starts_with(char::is_whitespace)
+        {
+            let tokens: Vec<&str> = after.split_whitespace().collect();
+            if tokens.iter().any(|t| decode_html_attr_value(t) == source) {
+                return raw.to_string();
+            }
+            // JS: `m[4].trim().split(/\s+/)`; an empty trimmed string yields ['']
+            let mut joined: Vec<&str> = if tokens.is_empty() { vec![""] } else { tokens };
+            joined.push(&encoded);
+            return format!(
+                "{}{}{} {}{}",
+                &raw[..start],
+                lead,
+                name.unwrap_or(directive),
+                joined.join(" "),
+                &raw[end..]
+            );
+        }
+        start = end + 1;
+    }
+    let trimmed = raw.trim();
+    // JS: .replace(/;?\s*$/, ''), but only for a `;` that separates directives.
+    let lead_ws = raw.len() - raw.trim_start().len();
+    let base = match trimmed.strip_suffix(';') {
+        Some(b) if seps.contains(&(lead_ws + trimmed.len() - 1)) => b,
+        _ => trimmed,
+    };
+    format!(
+        "{}; {} {} {}",
+        base,
+        directive,
+        encode_html_attr_value("'self'", quote),
+        encoded
+    )
 }
 
 /// JS: patchCspMeta(content, port)
@@ -374,34 +435,26 @@ pub fn patch_csp_meta(content: &str, port: i64) -> String {
         let Some(content_attr) = get_attr(attrs, "content") else {
             continue;
         };
-        // The marker keeps the raw attribute text so revert restores the
-        // original bytes whatever quote style and character references it used.
+        // The value is patched in place on its raw text (character references
+        // kept, only the inserted sources encoded for the quote style), and
+        // the marker keeps the raw original so revert restores its bytes.
         let original = content_attr.value.clone();
-        // Directives are parsed on the decoded value: a `;` that ends a
-        // character reference such as `&#39;` is not a directive separator.
-        let decoded = decode_html_attr_value(&original);
-        let mut patched = decoded.clone();
-        patched = append_origin_to_directive(&patched, "script-src", &origin);
+        let q = content_attr.quote.as_str();
+        let mut patched = original.clone();
+        patched = append_origin_to_directive(&patched, "script-src", &origin, q);
         // The detector the overlay loads from that origin is a WebAssembly
         // module (WASM-BUNDLE.md in the detector repo); a script-src that names the origin
         // but not 'wasm-unsafe-eval' still refuses to compile it. Not in the
         // JS patchCspMeta: goldens live-inject-vite-csp-meta,
         // live-inject-csp-meta-no-connect-src and live-inject-next-jsx carry
         // the pre-wasm form (see tests/oracle/DELTAS.md in the public repo).
-        patched = append_origin_to_directive(&patched, "script-src", "'wasm-unsafe-eval'");
-        patched = append_origin_to_directive(&patched, "connect-src", &origin);
-        patched = append_origin_to_directive(&patched, "img-src", "blob:");
-        if patched == decoded {
+        patched = append_origin_to_directive(&patched, "script-src", "'wasm-unsafe-eval'", q);
+        patched = append_origin_to_directive(&patched, "connect-src", &origin, q);
+        patched = append_origin_to_directive(&patched, "img-src", "blob:", q);
+        if patched == original {
             continue;
         }
-        // Re-encode for the attribute's own quote style, so the quotes in
-        // `'self'` and `'wasm-unsafe-eval'` cannot close a single-quoted value.
-        let new_content_attr = format!(
-            "content={}{}{}",
-            content_attr.quote,
-            encode_html_attr_value(&patched, &content_attr.quote),
-            content_attr.quote
-        );
+        let new_content_attr = format!("content={q}{patched}{q}");
         let marker = format!(
             "{}=\"{}\"",
             CSP_MARKER_ATTR,
@@ -553,9 +606,10 @@ mod tests {
             browser_policy(&patched),
             "script-src 'self' https://a.example/?a=1&b=\"2\" http://localhost:8412 'wasm-unsafe-eval'; connect-src 'self' http://localhost:8412; img-src 'self' blob:"
         );
-        // Raw `'` is fine inside double quotes; `&` and `"` stay escaped.
+        // The existing text keeps its own references; only the inserted
+        // sources are new, and raw `'` is fine inside double quotes.
         assert!(
-            patched.contains("content=\"script-src 'self' https://a.example/?a=1&amp;b=&quot;2&quot; http://localhost:8412 'wasm-unsafe-eval';"),
+            patched.contains("content=\"script-src &#39;self&#39; https://a.example/?a=1&amp;b=&quot;2&quot; http://localhost:8412 'wasm-unsafe-eval';"),
             "{patched}"
         );
         assert_eq!(revert_csp_meta(&patched), html);
@@ -588,12 +642,38 @@ mod tests {
     #[test]
     fn decode_leaves_unknown_and_bare_ampersands_alone() {
         assert_eq!(
-            decode_html_attr_value("a & b &copy; &#0; &#xZZ; &#"),
-            "a & b &copy; &#0; &#xZZ; &#"
+            decode_html_attr_value("a & b &copy; &#xZZ; &#"),
+            "a & b &copy; &#xZZ; &#"
         );
+        // Numeric references without `;`, and NUL as U+FFFD, as browsers read them.
+        assert_eq!(decode_html_attr_value("sr&#99 &#0;"), "src \u{FFFD}");
         assert_eq!(
             decode_html_attr_value("&#39;&#x27;&#X27;&apos;&quot;&amp;&lt;&gt;"),
             "''''\"&<>"
+        );
+    }
+
+    #[test]
+    fn existing_references_are_copied_through_unchanged() {
+        // `&#99` (no `;`) is `c` to a browser, and `&gt;` must stay escaped so
+        // the tag reader still finds the end of the tag after the patch.
+        let html = "<meta http-equiv=\"Content-Security-Policy\" content=\"object-sr&#99 'none'; img-src https://example.com/a&gt;b &copy; x; default-src *\">";
+        let patched = patch_csp_meta(html, 9797);
+        assert!(patched.contains("object-sr&#99 'none'; img-src https://example.com/a&gt;b &copy; x blob:; default-src *; script-src 'self' http://localhost:9797 'wasm-unsafe-eval'; connect-src 'self' http://localhost:9797\""), "{patched}");
+        assert!(patched.contains(CSP_MARKER_ATTR));
+        assert_eq!(revert_csp_meta(&patched), html);
+        // Re-inject after remove patches the same way again.
+        assert_eq!(patch_csp_meta(&revert_csp_meta(&patched), 9797), patched);
+    }
+
+    #[test]
+    fn trailing_reference_semicolon_is_not_stripped() {
+        let html =
+            "<meta http-equiv=\"Content-Security-Policy\" content='default-src &#39;none&#39;'>";
+        let patched = patch_csp_meta(html, 9797);
+        assert_eq!(
+            browser_policy(&patched),
+            "default-src 'none'; script-src 'self' http://localhost:9797 'wasm-unsafe-eval'; connect-src 'self' http://localhost:9797; img-src 'self' blob:"
         );
     }
 
@@ -606,6 +686,7 @@ mod tests {
             "<meta http-equiv=\"Content-Security-Policy\" content=\"script-src https://example.com/a~\" />",
             "<meta\n  http-equiv=\"Content-Security-Policy\"\n  content='default-src &apos;self&apos;; connect-src ws:;'\n/>",
             "<meta http-equiv=\"Content-Security-Policy\" content=\"img-src ???; script-src https://x.example/?q=a&amp;r=&quot;s&quot;\"\t>",
+            "<meta http-equiv=\"Content-Security-Policy\" content=\"object-sr&#99 'none'; img-src https://e.example/a&gt;b; default-src *\">",
             "<meta http-equiv='Content-Security-Policy' content='default-src &#39;none&#39;'><meta http-equiv=\"Content-Security-Policy\" content=\"script-src 'self'\">",
         ];
         for csp in cases {
