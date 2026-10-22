@@ -671,6 +671,7 @@ fn cookie_notice_js() -> String {
     const consentSentence = t => /\b(?:we|this (?:web)?site|site|our site|uses?|using|used|use of|wir|verwende[nt]?|nutzen|nous|utilise[sz]?|utilisons|usamos|utilizamos|utilizziamo|usiamo|gebruik(?:en|t)?)\b[^.!?]{{0,80}}cookie|cookie[^.!?]{{0,80}}\b(?:polic|setting|preference|richtlinie|einstellung|politique|param|pol[ií]tica|impostazion)|使用[^。]{{0,20}}cookie|cookie[^。]{{0,20}}(?:使用|政策|偏好)|쿠키/i.test(t);
     const labelOf = c => (c.innerText || c.value || c.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().toLowerCase().replace(/[.!…→›»>]+$/u, '').trim();
     const shownText = el => (el.innerText || '').replace(/\s+/g, ' ').trim();
+    const range = document.createRange();
     const ownText = root => {{
       let t = '';
       const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -678,8 +679,13 @@ fn cookie_notice_js() -> String {
         const p = n.parentElement;
         if (!p || p.closest('a, button, [role=button], script, style, noscript, template')) continue;
         // Rendered text only: a hidden cookie-policy panel inside a welcome
-        // wrapper does not make the wrapper a notice.
-        if (!p.getClientRects().length || (p.checkVisibility && !p.checkVisibility({{ visibilityProperty: true, checkVisibilityCSS: true }}))) continue;
+        // wrapper does not make the wrapper a notice. The text's own boxes
+        // decide, not its parent's: a `display: contents` parent has none.
+        range.selectNodeContents(n);
+        if (!range.getClientRects().length) continue;
+        let vis = 'visible';
+        try {{ vis = getComputedStyle(p).visibility; }} catch (e) {{}}
+        if (vis !== 'visible') continue;
         t += ' ' + n.data;
       }}
       return t;

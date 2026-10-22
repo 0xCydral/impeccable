@@ -216,6 +216,23 @@ fn a_cookie_notice_the_site_wrote_itself_is_hidden() {
     assert!(has(&flagged(&kept), "low-contrast", "#notice-text"), "{kept:#?}");
 }
 
+/// The same notice with its sentence in a `display: contents` span, which
+/// has no box of its own: the text still renders, so it is still a notice.
+#[test]
+fn a_site_notice_whose_text_has_no_box_of_its_own_is_hidden() {
+    let Some(engine) = engine() else { return };
+    let port = serve();
+    let url = format!("http://127.0.0.1:{port}/site-notice-contents.html");
+    let mut browser = engine.launch().expect("launch");
+    let (findings, evidence) =
+        detect_url_evidence(&mut browser, &url, &ScanOptions::default(), "load", 100, &EvidenceRequest::default())
+            .expect("scan");
+    browser.close();
+    assert!(has(&flagged(&findings), "low-contrast", "#covered-copy"), "{findings:#?}");
+    let consent = evidence.consent.as_ref().expect("consent report");
+    assert_eq!(consent.hidden, vec!["cookie notice"]);
+}
+
 /// The site's own notices that are not cookie notices, and one over a page
 /// too short to be more than its notice, stay on the page.
 #[test]
