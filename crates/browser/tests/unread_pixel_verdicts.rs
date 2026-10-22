@@ -6,8 +6,10 @@
 //! against the grey fill under the photo and handed to the pixel pass. Where
 //! the pixels read it, their verdict replaces the element pass's (the copy
 //! passes); where they refuse to (a backdrop filter over the photo), the
-//! element pass's verdict stands as advisory, and says the copy over the
-//! photo was not measured.
+//! element pass's ratio measured nothing and is dropped (round 13 decision
+//! 2). Outlined copy under the same filter is handed over for its outline,
+//! and where the pixels refuse it, its verdict stands as advisory with its
+//! ratio.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -82,14 +84,13 @@ fn verdicts_the_pixels_could_not_read_are_advisory() {
             )
         })
         .collect();
-    assert_eq!(low, vec![("#flag-copy-under-backdrop-filter", "advisory", Some(true))], "{findings:#?}");
+    assert_eq!(low, vec![("#flag-outlined-copy-under-backdrop-filter", "advisory", Some(true))], "{findings:#?}");
     let snippet = &findings
         .iter()
         .find(|f| f.antipattern == "low-contrast")
         .expect("finding")
         .snippet;
-    // The ratio against the grey fill under the photo measured nothing a
-    // reader sees, so it is not printed.
-    assert_eq!(snippet, "text #ffffff over an image, not measured (need 4.5:1)");
+    // The outlined copy keeps the element pass's ratio; the plain copy over
+    // the same photo, whose ratio measured nothing, reports nothing.
+    assert!(snippet.contains(":1 (need 4.5:1) — text #ffffff on #"), "{snippet}");
 }
-

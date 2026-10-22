@@ -446,6 +446,44 @@ enum Paint {
     Gradient { lo: Rgba, hi: Rgba },
 }
 
+impl Paint {
+    /// What this paint reads as where the capture does not place it for
+    /// certain ([`pseudo_paint_placed`]): a gradient it would score stop by
+    /// stop is paint the walk cannot read, as it always was.
+    fn unplaced(self) -> Paint {
+        match self {
+            Paint::Gradient { .. } => Paint::Unmodelled,
+            other => other,
+        }
+    }
+
+    /// The paint two layers side by side put under one run: a picture or
+    /// unread paint in either decides; two colours make the span between
+    /// them.
+    fn union(self, other: Paint) -> Paint {
+        let span = |p: Paint| match p {
+            Paint::Fill(c) | Paint::PseudoFill(c) => Some((c, c)),
+            Paint::Gradient { lo, hi } => Some((lo, hi)),
+            _ => None,
+        };
+        match (self, other) {
+            (Paint::Picture, _) | (_, Paint::Picture) => Paint::Picture,
+            (Paint::PseudoFill(a), Paint::PseudoFill(b))
+                if crate::color::color_to_hex(Some(&a)) == crate::color::color_to_hex(Some(&b)) =>
+            {
+                Paint::PseudoFill(a)
+            }
+            (a, b) => match (span(a), span(b)) {
+                (Some((l1, h1)), Some((l2, h2))) => Paint::Gradient {
+                    lo: Rgba { r: l1.r.min(l2.r), g: l1.g.min(l2.g), b: l1.b.min(l2.b), a: Some(1.0) },
+                    hi: Rgba { r: h1.r.max(h2.r), g: h1.g.max(h2.g), b: h1.b.max(h2.b), a: Some(1.0) },
+                },
+                _ => Paint::Unmodelled,
+            },
+        }
+    }
+}
+
 /// SVG elements that paint where they are drawn. The capture records no
 /// `fill`, so a shape under the text is paint the walk cannot read.
 const SVG_SHAPES: &[&str] = &[
@@ -641,14 +679,31 @@ fn px_length(raw: &str) -> Option<f64> {
     v.is_finite().then_some(v)
 }
 
-/// Where a computed `transform` (with the `translate` property, where
-/// recorded) puts a box of `rect`: the box itself for a translation, or,
-/// for a rotation, a scale or a skew, the bounds of the transformed box about
-/// its centre (the default `transform-origin`, which the capture does not
-/// record for a pseudo-element), with `false` for "not exact": the box paints
-/// inside those bounds but may not fill them. `None` for a transform this
-/// cannot read (a 3D matrix).
-fn transformed_box(rect: Rect, transform: &str, translate: &str) -> Option<(Rect, bool)> {
+/// Where a transform `m` ([`box_matrix`]) puts a box of `rect`: the box
+/// itself for a translation, or, for a rotation, a scale or a skew, the
+/// bounds of the transformed box about its centre (the default
+/// `transform-origin`, which the capture does not record for a
+/// pseudo-element), with `false` for "not exact": the box paints inside
+/// those bounds but may not fill them ([`Quad`] says where).
+fn matrix_bounds(rect: Rect, m: [f64; 6]) -> (Rect, bool) {
+    let (w, h) = (rect.width, rect.height);
+    let near = |a: f64, b: f64| (a - b).abs() < 1e-3;
+    let exact = near(m[0], 1.0) && near(m[1], 0.0) && near(m[2], 0.0) && near(m[3], 1.0);
+    let (cx, cy) = (rect.left + w / 2.0, rect.top + h / 2.0);
+    let corners = [(-w / 2.0, -h / 2.0), (w / 2.0, -h / 2.0), (-w / 2.0, h / 2.0), (w / 2.0, h / 2.0)];
+    let placed: Vec<(f64, f64)> = corners
+        .iter()
+        .map(|&(x, y)| (cx + m[0] * x + m[2] * y + m[4], cy + m[1] * x + m[3] * y + m[5]))
+        .collect();
+    let (l, r) = placed.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, r), p| (l.min(p.0), r.max(p.0)));
+    let (t, b) = placed.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(t, b), p| (t.min(p.1), b.max(p.1)));
+    (Rect::from_xywh(l, t, r - l, b - t), exact)
+}
+
+/// The 2D matrix a computed `transform` (with the `translate` property,
+/// where recorded) applies to a box of `rect` about its centre. `None` for a
+/// transform this cannot read (a 3D matrix).
+fn box_matrix(rect: Rect, transform: &str, translate: &str) -> Option<[f64; 6]> {
     let (w, h) = (rect.width, rect.height);
     let mut m = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     let transform = js::trim(transform);
@@ -676,17 +731,67 @@ fn transformed_box(rect: Rect, transform: &str, translate: &str) -> Option<(Rect
             m[5] += axis(t, h)?;
         }
     }
-    let near = |a: f64, b: f64| (a - b).abs() < 1e-3;
-    let exact = near(m[0], 1.0) && near(m[1], 0.0) && near(m[2], 0.0) && near(m[3], 1.0);
-    let (cx, cy) = (rect.left + w / 2.0, rect.top + h / 2.0);
-    let corners = [(-w / 2.0, -h / 2.0), (w / 2.0, -h / 2.0), (-w / 2.0, h / 2.0), (w / 2.0, h / 2.0)];
-    let placed: Vec<(f64, f64)> = corners
-        .iter()
-        .map(|&(x, y)| (cx + m[0] * x + m[2] * y + m[4], cy + m[1] * x + m[3] * y + m[5]))
-        .collect();
-    let (l, r) = placed.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, r), p| (l.min(p.0), r.max(p.0)));
-    let (t, b) = placed.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(t, b), p| (t.min(p.1), b.max(p.1)));
-    Some((Rect::from_xywh(l, t, r - l, b - t), exact))
+    Some(m)
+}
+
+/// A box as it paints: laid out at `laid`, then transformed about its
+/// centre by `m` ([`box_matrix`]). A skewed or turned box paints a
+/// parallelogram, not the bounds [`matrix_bounds`] gives.
+#[derive(Debug, Clone, Copy)]
+struct Quad {
+    laid: Rect,
+    m: [f64; 6],
+}
+
+impl Quad {
+    /// Whether the box paints at `(x, y)`, give or take a pixel.
+    fn contains(&self, x: f64, y: f64) -> bool {
+        const SLACK: f64 = 1.0;
+        let m = self.m;
+        let det = m[0] * m[3] - m[1] * m[2];
+        if !(det.abs() > 1e-9) {
+            return false;
+        }
+        let (w, h) = (self.laid.width, self.laid.height);
+        let dx = x - (self.laid.left + w / 2.0) - m[4];
+        let dy = y - (self.laid.top + h / 2.0) - m[5];
+        let u = (m[3] * dx - m[2] * dy) / det;
+        let v = (-m[1] * dx + m[0] * dy) / det;
+        u.abs() <= w / 2.0 + SLACK && v.abs() <= h / 2.0 + SLACK
+    }
+}
+
+/// How many columns [`quads_cover`] samples across a run at most.
+const QUAD_COVER_MAX_COLUMNS: usize = 256;
+
+/// Whether the boxes in `quads` together paint over every part of `text`:
+/// its top, middle and bottom edges sampled at least every 4px across. Each
+/// box paints a parallelogram, whose edges are straight, so a run the
+/// samples find covered is covered to within a sample's step.
+fn quads_cover(quads: &[Quad], text: &Rect) -> bool {
+    if quads.is_empty() || !(text.width > 0.0 && text.height > 0.0) {
+        return false;
+    }
+    let columns = ((text.width / 4.0).ceil() as usize).clamp(1, QUAD_COVER_MAX_COLUMNS);
+    let ys = [text.top, text.top + text.height / 2.0, text.top + text.height];
+    (0..=columns).all(|i| {
+        let x = text.left + text.width * i as f64 / columns as f64;
+        ys.iter().all(|&y| quads.iter().any(|q| q.contains(x, y)))
+    })
+}
+
+/// [`pseudo_box`] as the parallelogram the pseudo-element paints.
+fn pseudo_quad(dom: &dyn Dom, node: ElId, which: &str) -> Option<Quad> {
+    let get = |prop: &str| dom.pseudo_style(node, which, prop).unwrap_or_default();
+    if js::trim(&get("position")) != "absolute" {
+        return None;
+    }
+    let (w, h) = (px_length(&get("width"))?, px_length(&get("height"))?);
+    let cb = containing_block(dom, node)?;
+    let left = px_length(&get("left")).or_else(|| px_length(&get("right")).map(|r| cb.width - r - w))?;
+    let top = px_length(&get("top")).or_else(|| px_length(&get("bottom")).map(|b| cb.height - b - h))?;
+    let laid = Rect::from_xywh(cb.left + left, cb.top + top, w, h);
+    Some(Quad { laid, m: box_matrix(laid, &get("transform"), &get("translate"))? })
 }
 
 /// The padding box an absolutely positioned child of `host` is placed in:
@@ -729,21 +834,13 @@ fn containing_block(dom: &dyn Dom, host: ElId) -> Option<Rect> {
 
 /// The box an absolutely positioned `::before` / `::after` paints: its
 /// offsets and size in its containing block, moved by its transform
-/// ([`transformed_box`], whose `false` says the pseudo paints somewhere
+/// ([`matrix_bounds`], whose `false` says the pseudo paints somewhere
 /// inside the box but may not fill it). `None` where the capture does not
 /// place it (a fixed pseudo, a size or offsets it did not resolve to pixels,
 /// a 3D transform).
 pub(crate) fn pseudo_box(dom: &dyn Dom, node: ElId, which: &str) -> Option<(Rect, bool)> {
-    let get = |prop: &str| dom.pseudo_style(node, which, prop).unwrap_or_default();
-    if js::trim(&get("position")) != "absolute" {
-        return None;
-    }
-    let (w, h) = (px_length(&get("width"))?, px_length(&get("height"))?);
-    let cb = containing_block(dom, node)?;
-    let left = px_length(&get("left")).or_else(|| px_length(&get("right")).map(|r| cb.width - r - w))?;
-    let top = px_length(&get("top")).or_else(|| px_length(&get("bottom")).map(|b| cb.height - b - h))?;
-    let laid_out = Rect::from_xywh(cb.left + left, cb.top + top, w, h);
-    transformed_box(laid_out, &get("transform"), &get("translate"))
+    let q = pseudo_quad(dom, node, which)?;
+    Some(matrix_bounds(q.laid, q.m))
 }
 
 /// Where a positioned pseudo-element paints against its host's background
@@ -820,7 +917,18 @@ fn pseudo_paint(dom: &dyn Dom, node: ElId, text: &Rect) -> Option<Paint> {
 /// is known to cover the text, and its order against the fills around it is
 /// known. An uncertain one decides what it always did (the SAFE_TAGS path
 /// waives against it) but no verdict of its own ([`found_order`]).
+///
+/// A skewed or turned pseudo is placed for certain where the parallelogram
+/// it paints covers the run ([`quads_cover`]), not only its bounds. Where
+/// neither pseudo covers the run alone, the two together can: panic.com
+/// paints each chevron section with a `::before` and an `::after` skewed
+/// apart at `z-index: -1`, each over half the width, and text across the
+/// seam sits on both (observations-craft-1009 row 4). A gradient over an
+/// opaque fill is read as the colours it makes there ([`Paint::Gradient`]),
+/// but only where the pseudo is placed for certain; otherwise it stays
+/// paint the walk cannot read.
 fn pseudo_paint_placed(dom: &dyn Dom, node: ElId, text: &Rect) -> Option<(Paint, bool)> {
+    let mut parts: Vec<(Paint, Order, Quad)> = Vec::new();
     for which in ["::before", "::after"] {
         let get = |prop: &str| dom.pseudo_style(node, which, prop).unwrap_or_default();
         let content = get("content");
@@ -839,39 +947,101 @@ fn pseudo_paint_placed(dom: &dyn Dom, node: ElId, text: &Rect) -> Option<(Paint,
         if position != "absolute" && position != "fixed" {
             continue;
         }
-        let placed = match pseudo_box(dom, node, which) {
-            Some((b, _)) if !rect_covers(&b, text) => continue,
-            Some((_, exact)) => exact,
+        let quad = pseudo_quad(dom, node, which);
+        let (covers, placed) = match quad.map(|q| matrix_bounds(q.laid, q.m)) {
+            Some((b, exact)) => {
+                let covers = rect_covers(&b, text);
+                (covers, covers && (exact || quads_cover(&[quad.unwrap()], text)))
+            }
             None => {
                 let (w, h) = (parse_float(&get("width")), parse_float(&get("height")));
                 if !(w >= text.width - 4.0 && h >= text.height - 4.0) {
                     continue;
                 }
-                false
+                (true, false)
             }
         };
         let order = pseudo_order(dom, node, which);
         if order == Order::Under {
             continue;
         }
-        let certain = placed && order == Order::Over;
-        let image = get("backgroundImage");
-        if URL_RE.is_match(&image) {
-            return Some((Paint::Picture, certain));
+        let Some(paint) = pseudo_layer_paint(dom, node, which) else {
+            continue;
+        };
+        if covers {
+            let certain = placed && order == Order::Over;
+            return Some((if certain { paint } else { paint.unplaced() }, certain));
         }
-        if GRADIENT_RE.is_match(&image) {
-            return Some((Paint::Unmodelled, certain));
-        }
-        if let Some(c) = parse_rgb_or_any(&get("backgroundColor")) {
-            if c.alpha_or_one() >= 0.9 {
-                return Some((Paint::PseudoFill(c), certain));
-            }
-            if c.alpha_or_one() > 0.1 {
-                return Some((Paint::Unmodelled, certain));
-            }
+        if let Some(q) = quad {
+            parts.push((paint, order, q));
         }
     }
-    None
+    // Two halves that each paint part of the run: only where together they
+    // cover all of it, and the capture places both.
+    if parts.len() != 2 {
+        return None;
+    }
+    let quads: Vec<Quad> = parts.iter().map(|p| p.2).collect();
+    if !quads_cover(&quads, text) || quads.iter().any(|q| quads_cover(&[*q], text)) {
+        return None;
+    }
+    let certain = parts.iter().all(|p| p.1 == Order::Over);
+    let paint = parts[0].0.union(parts[1].0);
+    Some((if certain { paint } else { paint.unplaced() }, certain))
+}
+
+/// What a positioned `::before` or `::after` paints, read from its own
+/// style: a picture for a raster image; for a gradient over an opaque fill
+/// (`opacity` 1), the colours its stops make over that fill, as a gradient;
+/// any other gradient, and a translucent fill, as paint the walk cannot
+/// read; an opaque fill as its colour. `None` where it paints nothing (no
+/// image and a fill at alpha 0.1 or less).
+fn pseudo_layer_paint(dom: &dyn Dom, node: ElId, which: &str) -> Option<Paint> {
+    let get = |prop: &str| dom.pseudo_style(node, which, prop).unwrap_or_default();
+    let image = get("backgroundImage");
+    if URL_RE.is_match(&image) {
+        return Some(Paint::Picture);
+    }
+    let fill = parse_rgb_or_any(&get("backgroundColor"));
+    if GRADIENT_RE.is_match(&image) {
+        let opacity = get("opacity");
+        let opaque = js::trim(&opacity).is_empty() || parse_float(&opacity) >= 0.999;
+        return Some(
+            match fill.filter(|c| opaque && c.alpha_or_one() >= 0.999) {
+                Some(ground) => gradient_over(&image, ground).unwrap_or(Paint::Unmodelled),
+                None => Paint::Unmodelled,
+            },
+        );
+    }
+    let c = fill?;
+    if c.alpha_or_one() >= 0.9 {
+        return Some(Paint::PseudoFill(c));
+    }
+    (c.alpha_or_one() > 0.1).then_some(Paint::Unmodelled)
+}
+
+/// The colours one gradient layer `image` makes over an opaque `ground`, as
+/// the channel-wise least and greatest of its stops composited there. `None`
+/// for a stack of layers, or stops the capture's text does not give.
+fn gradient_over(image: &str, ground: Rgba) -> Option<Paint> {
+    if image.matches("gradient(").count() != 1 {
+        return None;
+    }
+    let stops = parse_gradient_colors(Some(image));
+    if stops.is_empty() {
+        return None;
+    }
+    let shown: Vec<Rgba> = stops.iter().map(|c| mix(c, &ground, c.alpha_or_one())).collect();
+    let fold = |pick: fn(f64, f64) -> f64, start: f64| Rgba {
+        r: shown.iter().map(|c| c.r).fold(start, pick),
+        g: shown.iter().map(|c| c.g).fold(start, pick),
+        b: shown.iter().map(|c| c.b).fold(start, pick),
+        a: Some(1.0),
+    };
+    Some(Paint::Gradient {
+        lo: fold(f64::min, f64::INFINITY),
+        hi: fold(f64::max, f64::NEG_INFINITY),
+    })
 }
 
 /// Whether a gradient background is drawn larger than its box, so the part
@@ -2170,32 +2340,116 @@ pub fn routed_reason(dom: &dyn Dom, el: ElId) -> Option<&'static str> {
         .then_some("unread layer")
 }
 
-re!(HANDED_VERDICT_RE, r"^[0-9.]+:1 \(need ([0-9.]+):1\) — text (#[0-9a-fA-F]{3,8}) on #[0-9a-fA-F]{3,8}(?: \([^()]*\))?$".to_string());
+re!(HANDED_VERDICT_RE, r"^[0-9.]+:1 \(need [0-9.]+:1\) — text #[0-9a-fA-F]{3,8} on #[0-9a-fA-F]{3,8}(?: \([^()]*\))?$".to_string());
 
-/// The text a handed-over `low-contrast` verdict on `el` keeps when the
-/// pixels give it none (`settle_handed_over` in the URL engine), where the
-/// structural climb found a picture, or paint it cannot model, under the
-/// run. The element pass's ratio there is against the walk's ground, which
-/// the picture covers, so it measured nothing a reader sees: printed, it
-/// gave white copy over product photos `1.1:1 — text #fcfcfc on #efefef`
-/// (v0-amber-flax.vercel.app). The ink and the bar stay; the ratio and the
-/// ground go. `None` keeps the verdict's text: outlined text, any other
-/// layer, or a verdict not in the element pass's plain form.
-pub fn unmeasured_handed_over_snippet(dom: &dyn Dom, el: ElId, snippet: &str) -> Option<String> {
-    let caps = HANDED_VERDICT_RE.captures(snippet)?;
+/// Whether a handed-over `low-contrast` verdict on `el` measured nothing a
+/// reader sees: the structural climb found a picture under the run, or
+/// paint it cannot model that hides what is under it, so the element pass's
+/// ratio is against the walk's ground, which that paint covers (white copy
+/// over product photos printed `1.1:1 — text #fcfcfc on #efefef`,
+/// v0-amber-flax.vercel.app). Where the pixels give it no verdict, the URL
+/// engine drops it (`settle_handed_over`, round 13 decision 2: only a
+/// measured failing ratio reports).
+///
+/// False keeps the verdict, as advisory: outlined text, a verdict already
+/// printed against a layer, a verdict not in the element pass's plain form,
+/// any other layer, and a wash ([`lets_ground_through`]): a translucent
+/// layer over the ground the walk read leaves that ground the larger part
+/// of what the reader sees, so the ratio against it measured something
+/// (opencodex.me's faint fixed glow over its white page, which both judges
+/// called harmful at 3.2:1; decision r13-t7 keeps those).
+pub fn handed_over_unmeasured(dom: &dyn Dom, el: ElId, snippet: &str) -> bool {
+    if !HANDED_VERDICT_RE.is_match(snippet) {
+        return false;
+    }
     if snippet.ends_with(')') && snippet.contains(" (layer on ") {
-        return None;
+        return false;
     }
     let ink = dom.text_slot(el).unwrap_or(el);
     if text_outlined(dom, ink) {
-        return None;
+        return false;
     }
-    let over = match layer_under_text_found(dom, el).0 {
-        LayerUnder::Picture => "over an image",
-        LayerUnder::Unmodelled => "over paint the scan could not read",
-        _ => return None,
+    match layer_under_text_found(dom, el) {
+        (LayerUnder::Picture, _) => true,
+        (LayerUnder::Unmodelled, Some(found)) => {
+            let text = dom.direct_text_rect(el).unwrap_or_else(|| dom.rect(el));
+            !lets_ground_through(dom, found, &text)
+        }
+        (LayerUnder::Unmodelled, None) => true,
+        _ => false,
+    }
+}
+
+/// The most a wash may cover what is under it: at this alpha or less, the
+/// ground shows through at least as strongly as the wash.
+const WASH_MAX_ALPHA: f64 = 0.5;
+
+/// Whether the paint `found` puts under `text`, which the walk cannot model,
+/// is a wash: every colour it paints, at the opacity it paints it, is at
+/// most [`WASH_MAX_ALPHA`]. Read from the pseudo-elements that paint over
+/// the run, else from the box's own gradient over no opaque fill of its own.
+/// Anything else (an SVG shape, a raster, an opaque fill under a gradient)
+/// is not a wash.
+fn lets_ground_through(dom: &dyn Dom, found: ElId, text: &Rect) -> bool {
+    let most = |colours: &[Rgba], opacity: f64| {
+        colours.iter().map(|c| c.alpha_or_one()).fold(0.0, f64::max) * opacity
     };
-    Some(format!("text {} {over}, not measured (need {}:1)", &caps[2], &caps[1]))
+    let opacity_of = |raw: String| {
+        let v = parse_float(&raw);
+        if js::trim(&raw).is_empty() || !v.is_finite() {
+            1.0
+        } else {
+            v.clamp(0.0, 1.0)
+        }
+    };
+    if pseudo_paint(dom, found, text).is_some() {
+        let mut seen = false;
+        for which in ["::before", "::after"] {
+            let get = |prop: &str| dom.pseudo_style(found, which, prop).unwrap_or_default();
+            let content = get("content");
+            let content = js::trim(&content);
+            if content.is_empty() || content == "none" || content == "normal" || get("display") == "none" {
+                continue;
+            }
+            let position = get("position");
+            if position != "absolute" && position != "fixed" {
+                continue;
+            }
+            if pseudo_box(dom, found, which).is_some_and(|(b, _)| !rects_overlap(&b, text)) {
+                continue;
+            }
+            let image = get("backgroundImage");
+            if URL_RE.is_match(&image) {
+                return false;
+            }
+            let mut colours = parse_gradient_colors(Some(&image));
+            if let Some(c) = parse_rgb_or_any(&get("backgroundColor")) {
+                colours.push(c);
+            }
+            if most(&colours, opacity_of(get("opacity"))) > WASH_MAX_ALPHA {
+                return false;
+            }
+            seen = true;
+        }
+        return seen;
+    }
+    let image = dom.style(found, "backgroundImage");
+    if URL_RE.is_match(&image) || !GRADIENT_RE.is_match(&image) {
+        return false;
+    }
+    let mut colours = parse_gradient_colors(Some(&image));
+    if colours.is_empty() {
+        return false;
+    }
+    if let Some(c) = parse_rgb_or_any(&dom.style(found, "backgroundColor")) {
+        colours.push(c);
+    }
+    most(&colours, own_opacity(dom, found)) <= WASH_MAX_ALPHA
+}
+
+/// Whether two rects share any area.
+fn rects_overlap(a: &Rect, b: &Rect) -> bool {
+    a.left < b.left + b.width && b.left < a.left + a.width && a.top < b.top + b.height && b.top < a.top + a.height
 }
 
 /// The second budget's candidate for `el` ([`routed_reason`]), past the
@@ -4693,6 +4947,164 @@ mod tests {
         assert_eq!(layer_under_text(&d, p), LayerUnder::Ancestor, "a rotated corner decoration");
     }
 
+    /// panic.com/transmit: a chevron section painted by a `::before` and an
+    /// `::after` at `z-index: -1`, each 1280px wide, sheared apart so each
+    /// paints half the width, over a grey page. `fill` and `gradient` are
+    /// what both halves paint.
+    fn chevron_section(fill: &str, gradient: &str) -> (FakeDom, ElId) {
+        let mut d = FakeDom::new();
+        let (html, body) = d.with_page();
+        d.set_rect(html, 0.0, 0.0, 1280.0, 4000.0);
+        d.set_rect(body, 0.0, 0.0, 1280.0, 4000.0);
+        d.set_style(body, "backgroundColor", "rgb(171, 175, 180)");
+        let section = d.add(Some(body), "section");
+        d.set_rect(section, 0.0, 1000.0, 1280.0, 978.0);
+        d.set_styles(
+            section,
+            &[
+                ("position", "relative"),
+                ("zIndex", "auto"),
+                ("backgroundColor", "rgba(0, 0, 0, 0)"),
+                ("backgroundImage", "none"),
+                ("opacity", "1"),
+                ("isolation", "auto"),
+                ("color", "rgb(255, 255, 255)"),
+            ],
+        );
+        for (which, transform) in [
+            ("::before", "matrix(1, 0.176327, 0, 1, -638.72, -112.624)"),
+            ("::after", "matrix(1, -0.176327, 0, 1, 640, -112.849)"),
+        ] {
+            for (prop, value) in [
+                ("content", "\"\""),
+                ("position", "absolute"),
+                ("display", "block"),
+                ("opacity", "1"),
+                ("visibility", "visible"),
+                ("width", "1280px"),
+                ("height", "978px"),
+                ("top", "0px"),
+                ("left", "0px"),
+                ("backgroundColor", fill),
+                ("backgroundImage", gradient),
+                ("transform", transform),
+                ("translate", "none"),
+                ("zIndex", "-1"),
+            ] {
+                d.set_pseudo_style(section, which, prop, value);
+            }
+        }
+        (d, section)
+    }
+
+    /// The run's verdict over the paint the climb found, as the element
+    /// pass reads it.
+    fn verdict_over_layer(d: &FakeDom, el: ElId) -> UnreadVerdict {
+        let text = d.direct_text_rect(el).unwrap_or_else(|| d.rect(el));
+        let surface = super::super::background::resolve_text_surface(
+            d,
+            el,
+            &|_| false,
+            crate::checks::gradient_geometry::Box2::new(text.left, text.top, text.width, text.height),
+            24.0,
+        );
+        let ink = parse_rgb_or_any(&d.style(el, "color"));
+        unread_verdict(d, el, layer_under_text_found(d, el), &surface, ink, 3.0)
+    }
+
+    #[test]
+    fn two_sheared_halves_paint_the_section_under_the_seam() {
+        let orange = "linear-gradient(rgba(254, 143, 24, 0) 0%, rgb(254, 143, 24) 100%)";
+        let (mut d, section) = chevron_section("rgb(253, 196, 43)", orange);
+        // Across the seam at x 640, neither half covers the run alone.
+        let seam = text_run(&mut d, section, "h2", "Servers", (560.0, 1450.0, 160.0, 30.0));
+        d.set_styles(seam, &[("color", "rgb(255, 255, 255)"), ("fontSize", "24px")]);
+        let (under, found) = layer_under_text_found(&d, seam);
+        assert_eq!(found, Some(section));
+        let LayerUnder::Gradient { lo, hi } = under else { panic!("{under:?}") };
+        assert_eq!((lo.r, lo.g, lo.b, hi.r, hi.g, hi.b), (253.0, 143.0, 24.0, 254.0, 196.0, 43.0));
+        assert_eq!(found_order(&d, seam, &d.rect(seam), section), Order::Over);
+        // White on the yellow-to-orange ground fails 3:1 everywhere on it:
+        // a verdict of the element pass's own, not one for the pixels.
+        assert_eq!(verdict_over_layer(&d, seam), UnreadVerdict::Fails);
+        assert_eq!(routed_reason(&d, seam), None);
+        // Inside one half, that half's parallelogram covers the run.
+        let left = text_run(&mut d, section, "p", "Faster", (100.0, 1450.0, 200.0, 24.0));
+        d.set_styles(left, &[("color", "rgb(255, 255, 255)"), ("fontSize", "24px")]);
+        assert!(matches!(layer_under_text(&d, left), LayerUnder::Gradient { .. }));
+        assert_eq!(verdict_over_layer(&d, left), UnreadVerdict::Fails);
+        // The slate sections white text passes on.
+        let slate = "linear-gradient(rgba(83, 107, 119, 0) 0%, rgb(86, 95, 103) 100%)";
+        let (mut d, section) = chevron_section("rgb(83, 107, 119)", slate);
+        let seam = text_run(&mut d, section, "h2", "What is Transmit?", (560.0, 1450.0, 160.0, 30.0));
+        d.set_styles(seam, &[("color", "rgb(255, 255, 255)"), ("fontSize", "24px")]);
+        assert_eq!(verdict_over_layer(&d, seam), UnreadVerdict::Passes);
+        assert_eq!(routed_reason(&d, seam), None);
+    }
+
+    #[test]
+    fn sheared_halves_decide_only_where_they_paint() {
+        let orange = "linear-gradient(rgba(254, 143, 24, 0) 0%, rgb(254, 143, 24) 100%)";
+        let (mut d, section) = chevron_section("rgb(253, 196, 43)", orange);
+        // The halves' top edges meet in a notch: at x 640 the section paints
+        // from y about 1000 down, at the outer edges from about 887. A run at
+        // the very top of the section's box across the seam is not all on
+        // the halves, and they decide nothing there.
+        let notch = text_run(&mut d, section, "p", "Top", (560.0, 960.0, 160.0, 20.0));
+        assert_eq!(layer_under_text(&d, notch), LayerUnder::Ancestor);
+        // A translucent fill under the gradient is not a ground: the
+        // gradient stays paint the walk cannot read.
+        let (mut d, section) = chevron_section("rgba(253, 196, 43, 0.5)", orange);
+        let seam = text_run(&mut d, section, "h2", "Servers", (560.0, 1450.0, 160.0, 30.0));
+        assert_eq!(layer_under_text(&d, seam), LayerUnder::Unmodelled);
+        // A half the capture cannot place (a 3D transform) keeps the old size
+        // test, and its gradient stays unread, as before.
+        let (mut d, section) = chevron_section("rgb(253, 196, 43)", orange);
+        d.set_pseudo_style(section, "::after", "transform", "matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)");
+        let seam = text_run(&mut d, section, "h2", "Servers", (560.0, 1450.0, 160.0, 30.0));
+        assert_eq!(layer_under_text(&d, seam), LayerUnder::Unmodelled);
+    }
+
+    #[test]
+    fn a_wash_over_the_ground_measured_something() {
+        // opencodex.me: a fixed glow of radial gradients at 0.42 alpha or
+        // less over the white page. The ratio against white stands.
+        let mut d = FakeDom::new();
+        let (html, body) = d.with_page();
+        d.set_rect(html, 0.0, 0.0, 1280.0, 4000.0);
+        d.set_rect(body, 0.0, 0.0, 1280.0, 4000.0);
+        d.set_style(html, "backgroundColor", "rgb(255, 255, 255)");
+        d.set_styles(body, &[("backgroundColor", "rgba(0, 0, 0, 0)"), ("backgroundImage", "none")]);
+        let glow = [
+            ("content", "\"\""),
+            ("position", "fixed"),
+            ("display", "block"),
+            ("opacity", "1"),
+            ("width", "1792px"),
+            ("height", "1120px"),
+            ("backgroundColor", "rgba(0, 0, 0, 0)"),
+            (
+                "backgroundImage",
+                "radial-gradient(42% 38% at 12% 6%, rgba(164, 196, 255, 0.42), rgba(0, 0, 0, 0) 70%), radial-gradient(46% 42% at 88% 18%, rgba(168, 226, 197, 0.38), rgba(0, 0, 0, 0) 70%)",
+            ),
+            ("zIndex", "auto"),
+        ];
+        for (prop, value) in glow {
+            d.set_pseudo_style(body, "::before", prop, value);
+        }
+        let p = text_run(&mut d, body, "p", "Updated 3 days ago", (20.0, 2100.0, 140.0, 20.0));
+        let verdict = "3.2:1 (need 4.5:1) — text #8f8f8f on #ffffff";
+        assert_eq!(layer_under_text(&d, p), LayerUnder::Unmodelled);
+        assert!(!handed_over_unmeasured(&d, p, verdict), "a wash");
+        // The same layer painting an opaque colour hides the white.
+        d.set_pseudo_style(body, "::before", "backgroundImage", "radial-gradient(rgba(20, 30, 60, 0.9), rgba(20, 30, 60, 0.6))");
+        assert!(handed_over_unmeasured(&d, p, verdict), "an opaque glow");
+        // As does the wash at full strength under a pseudo's own opacity.
+        d.set_pseudo_style(body, "::before", "backgroundImage", "radial-gradient(rgba(20, 30, 60, 1), rgba(20, 30, 60, 1))");
+        d.set_pseudo_style(body, "::before", "opacity", "0.4");
+        assert!(!handed_over_unmeasured(&d, p, verdict), "faded to 0.4");
+    }
+
     #[test]
     fn a_translated_pseudo_is_placed_where_it_moved() {
         let (mut d, card, _) = card_with_pseudo(BADGE);
@@ -4870,10 +5282,10 @@ mod tests {
     }
 
     /// v0-amber-flax.vercel.app: white copy on product photos, handed to the
-    /// pixels. Where they give no verdict, the ratio against the page ground
-    /// the walk read is not printed.
+    /// pixels. Its ratio against the page ground the walk read measured
+    /// nothing, so where they give no verdict it is dropped.
     #[test]
-    fn a_handed_over_verdict_over_a_picture_is_not_measured() {
+    fn a_handed_over_verdict_over_a_picture_measured_nothing() {
         let mut d = FakeDom::new();
         let (html, body) = d.with_page();
         d.set_rect(html, 0.0, 0.0, 1280.0, 4000.0);
@@ -4889,23 +5301,17 @@ mod tests {
         d.set_rect(content, 0.0, 1400.0, 1280.0, 100.0);
         d.set_styles(content, &[("position", "relative"), ("backgroundColor", "rgba(0, 0, 0, 0)"), ("opacity", "1")]);
         let p = text_run(&mut d, content, "p", "Shop the edit", (20.0, 1420.0, 140.0, 20.0));
-        assert_eq!(
-            unmeasured_handed_over_snippet(&d, p, "1.1:1 (need 4.5:1) — text #fcfcfc on #efefef").as_deref(),
-            Some("text #fcfcfc over an image, not measured (need 4.5:1)")
-        );
-        assert_eq!(
-            unmeasured_handed_over_snippet(&d, p, "3.4:1 (need 4.5:1) — text #ffffff on #8b8b8b (gradient on div.card)").as_deref(),
-            Some("text #ffffff over an image, not measured (need 4.5:1)")
-        );
+        assert!(handed_over_unmeasured(&d, p, "1.1:1 (need 4.5:1) — text #fcfcfc on #efefef"));
+        assert!(handed_over_unmeasured(&d, p, "3.4:1 (need 4.5:1) — text #ffffff on #8b8b8b (gradient on div.card)"));
         // A verdict already printed against the paint keeps its text.
-        assert!(unmeasured_handed_over_snippet(&d, p, "2.0:1 (need 4.5:1) — text #fcfcfc on #222222 (layer on img)").is_none());
-        assert!(unmeasured_handed_over_snippet(&d, p, "not a verdict").is_none());
+        assert!(!handed_over_unmeasured(&d, p, "2.0:1 (need 4.5:1) — text #fcfcfc on #222222 (layer on img)"));
+        assert!(!handed_over_unmeasured(&d, p, "not a verdict"));
         // Outlined text keeps its own verdict.
         d.set_styles(p, &[("webkitTextStrokeWidth", "2px"), ("webkitTextStrokeColor", "rgb(0, 0, 0)")]);
-        assert!(unmeasured_handed_over_snippet(&d, p, "1.1:1 (need 4.5:1) — text #fcfcfc on #efefef").is_none());
+        assert!(!handed_over_unmeasured(&d, p, "1.1:1 (need 4.5:1) — text #fcfcfc on #efefef"));
         // Text over its own section's fill was never over a picture.
         let plain = text_run(&mut d, body, "p", "Plain", (20.0, 100.0, 140.0, 20.0));
-        assert!(unmeasured_handed_over_snippet(&d, plain, "1.1:1 (need 4.5:1) — text #fcfcfc on #efefef").is_none());
+        assert!(!handed_over_unmeasured(&d, plain, "1.1:1 (need 4.5:1) — text #fcfcfc on #efefef"));
     }
 
     /// freesubtitlemaker.lovable.app: a gradient word inside a white h1.
