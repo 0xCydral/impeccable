@@ -1806,8 +1806,10 @@ fn radial_halo_page_form_stands(dom: &dyn Dom, item: &PatternItem, root_dark: Op
 
 /// The element a page-level stylesheet finding (reported on `body`) can be
 /// shown on: the first element painted at capture whose computed style
-/// carries the declaration the finding names, a radial-gradient halo or a
-/// glow in the finding's colour. Computed values have every `var()`
+/// carries the declaration the finding names: a radial-gradient halo or a
+/// glow in the finding's colour, a `polygon()` clip with the finding's
+/// vertex count, or the finding's overshooting timing function or bounce
+/// animation. Computed values have every `var()`
 /// resolved, so this finds the element a declaration spelled through a
 /// custom property paints on (`.g1 { background: radial-gradient(circle,
 /// var(--accent) 0%, transparent 70%) }`), which a reader of the stylesheet
@@ -1819,6 +1821,17 @@ pub fn page_form_anchor(dom: &dyn Dom, rule: &str, detail: &str) -> Option<ElId>
             .captures(detail)
             .map(|m| elements_painting_halo(dom, &crate::js::to_lower_case(&m[1])))?,
         "dark-glow" => glow_declaration(detail).map(|(prop, hex)| elements_casting_glow(dom, &prop, &hex))?,
+        "organic-clip-path" => ORGANIC_VERTICES_RE
+            .captures(detail)
+            .and_then(|m| m[1].parse::<usize>().ok())
+            .map(|n| elements_clipped_to_polygon(dom, n))?,
+        "bounce-easing" => {
+            let declared = bounce_declarations(detail);
+            if declared.is_empty() {
+                return None;
+            }
+            elements_easing_with(dom, &declared)
+        }
         _ => return None,
     };
     // A halo fades to transparent: an opaque radial fill in the same colour
@@ -1837,6 +1850,61 @@ pub fn page_form_anchor(dom: &dyn Dom, rule: &str, detail: &str) -> Option<ElId>
 static FADES_OUT_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
     regex::Regex::new(r"rgba\([^)]*,\s*0(?:\.0+)?\s*\)|transparent").expect("FADES_OUT_RE")
 });
+
+static ORGANIC_VERTICES_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+    regex::Regex::new(r"polygon\(\) with (\d+) vertices").expect("ORGANIC_VERTICES_RE")
+});
+
+/// The elements whose computed `clip-path` is a `polygon()` of `vertices`
+/// points.
+fn elements_clipped_to_polygon(dom: &dyn Dom, vertices: usize) -> Vec<ElId> {
+    dom.query_all(None, "*")
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|&el| {
+            let clip = dom.style(el, "clipPath");
+            let Some(body) = clip.trim().strip_prefix("polygon(").and_then(|b| b.strip_suffix(')')) else {
+                return false;
+            };
+            // A fill rule (`evenodd, ...`) leads with no coordinates.
+            let points = crate::js_ext_a::split_commas_outside_parens(body)
+                .into_iter()
+                .filter(|p| p.trim().chars().any(|c| c.is_ascii_digit()))
+                .count();
+            points == vertices
+        })
+        .collect()
+}
+
+/// The elements whose computed animation or transition timing function is
+/// one of the `declared` overshooting curves, or whose computed animation
+/// name is one of the `declared` names.
+fn elements_easing_with(dom: &dyn Dom, declared: &[BounceDeclaration]) -> Vec<ElId> {
+    dom.query_all(None, "*")
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|&el| {
+            let mut own: Vec<BounceDeclaration> = Vec::new();
+            for prop in ["animationTimingFunction", "transitionTimingFunction"] {
+                let value = dom.style(el, prop);
+                for m in crate::checks::rules::BEZIER_RE.captures_iter(&value) {
+                    let n = |i: usize| crate::js::parse_float(&m[i]);
+                    own.push(BounceDeclaration::Bezier([n(1), n(2), n(3), n(4)]));
+                }
+            }
+            let names = dom.style(el, "animationName");
+            if names != "none" {
+                own.extend(
+                    BOUNCE_NAME_SPLIT_RE
+                        .split(&names)
+                        .filter(|n| !n.is_empty() && *n != "none")
+                        .map(|n| BounceDeclaration::Name(crate::js::to_lower_case(n))),
+                );
+            }
+            own.iter().any(|o| declared.iter().any(|d| o.same_as(d)))
+        })
+        .collect()
+}
 
 static HALO_COLOR_RE: once_cell::sync::Lazy<regex::Regex> =
     once_cell::sync::Lazy::new(|| regex::Regex::new(r"halo \((#[0-9a-fA-F]+) ").expect("HALO_COLOR_RE"));
@@ -4805,6 +4873,47 @@ mod page_level_form_tests {
             page_form_anchor(&d, "dark-glow", "Zero-offset box-shadow glow (#7c6af7) on dark page"),
             Some(button)
         );
+    }
+
+    /// round 13 (apple.com/macbook-air, framer.com/community/gallery): an
+    /// organic clip and an overshooting curve are anchored on the painted
+    /// element whose computed style carries them.
+    #[test]
+    fn a_clip_or_an_easing_page_form_is_anchored_on_its_carrier() {
+        let organic = "clip-path: polygon() with 4 vertices approximating an organic contour";
+        let mut d = FakeDom::new();
+        let (_html, body) = d.with_page();
+        // Another vertex count, and a carrier with no box, are passed over.
+        let triangle = d.add(Some(body), "div");
+        d.set_rect(triangle, 0.0, 0.0, 200.0, 200.0);
+        d.set_style(triangle, "clipPath", "polygon(50% 0%, 100% 100%, 0% 100%)");
+        let closed = d.add(Some(body), "div");
+        d.set_style(closed, "clipPath", "polygon(3% 7%, 96% 2%, 91% 97%, 6% 92%)");
+        let blob = d.add(Some(body), "div");
+        d.set_rect(blob, 0.0, 300.0, 600.0, 400.0);
+        d.set_style(blob, "clipPath", "polygon(3% 7%, 96% 2%, 91% 97%, 6% 92%)");
+        assert_eq!(page_form_anchor(&d, "organic-clip-path", organic), Some(blob));
+        assert_eq!(
+            page_form_anchor(&d, "organic-clip-path", "clip-path: polygon() with 9 vertices approximating an organic contour"),
+            None
+        );
+
+        let bounce = "cubic-bezier(.175, .885, .32, 1.275)";
+        let mut d = FakeDom::new();
+        let (_html, body) = d.with_page();
+        let eased = d.add(Some(body), "a");
+        d.set_rect(eased, 20.0, 20.0, 120.0, 40.0);
+        d.set_style(eased, "transitionTimingFunction", "ease, cubic-bezier(0.25, 0.1, 0.25, 1)");
+        assert_eq!(page_form_anchor(&d, "bounce-easing", bounce), None);
+        let card = d.add(Some(body), "div");
+        d.set_rect(card, 20.0, 100.0, 300.0, 200.0);
+        d.set_style(card, "transitionTimingFunction", "ease, cubic-bezier(0.175, 0.885, 0.32, 1.275)");
+        assert_eq!(page_form_anchor(&d, "bounce-easing", bounce), Some(card));
+        let dot = d.add(Some(body), "span");
+        d.set_rect(dot, 400.0, 100.0, 16.0, 16.0);
+        d.set_style(dot, "animationName", "fade, Bounce");
+        assert_eq!(page_form_anchor(&d, "bounce-easing", "animation: bounce"), Some(dot));
+        assert_eq!(page_form_anchor(&d, "bounce-easing", "animation: wobble"), None);
     }
 
     #[test]
