@@ -110,6 +110,17 @@ export default [
       tool_output: '{}', duration: 12, tool_use_id: 't1',
     },
   },
+  // Two Impeccable hooks for one edit (a plugin's and the project's): the
+  // second invocation of the same tool call finds the claim and stays silent;
+  // the next tool call scans again.
+  {
+    id: 'hook-duplicate-event-scans-once', workspace: 'hook-project', files: CACHE_FILES,
+    steps: [
+      { verb: 'hook', stdin: claudeEdit('src/components/Card.module.css', { tool_use_id: 'toolu_dup' }), env: { IMPECCABLE_HOOK_HARNESS: 'claude' } },
+      { verb: 'hook', stdin: claudeEdit('src/components/Card.module.css', { tool_use_id: 'toolu_dup' }) },
+      { verb: 'hook', stdin: claudeEdit('src/components/Card.tsx', { tool_use_id: 'toolu_next' }) },
+    ],
+  },
   { id: 'hook-harness-forced-github', verb: 'hook', workspace: 'hook-project', stdin: claudeEdit('src/components/Card.module.css'), env: { IMPECCABLE_HOOK_HARNESS: 'github' }, files: CACHE_FILES },
   { id: 'hook-audit-log', verb: 'hook', workspace: 'hook-project', stdin: claudeEdit('src/components/Card.module.css'), env: { IMPECCABLE_HOOK_LOG: `${WS}/.impeccable/audit.ndjson` }, files: CACHE_FILES },
   {

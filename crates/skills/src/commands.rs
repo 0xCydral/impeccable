@@ -458,45 +458,17 @@ fn decide_hook_install(prompt: &mut Prompt, io: &mut Io, root: &str, targets: &[
 
 /// Update's hook self-heal (triage E8, and the retired Cursor gate): repairs
 /// the manifests at `hook_root` against the skill at `skill_root`. In user
-/// scope those differ (project manifests, home skill).
+/// scope those differ (project manifests, home skill), and the home manifests
+/// are repaired as well, since an older `update --user` wrote Cursor, Codex
+/// and Grok manifests there. They are repaired, never pruned: a home manifest
+/// is global, so removing its entry would drop the hook from every other
+/// project. A home and a project hook firing for one edit is settled inside
+/// the hook (`hook_claim`).
 fn repair_update_hook_manifests(sys: &crate::providers::Sys, hook_root: &str, skill_root: &str, providers: &[&'static str]) -> Result<(), String> {
-    hook_manifest::repair_stale_hook_manifests(sys, hook_root, providers, Some(skill_root)).map(|_| ())
-}
-
-/// Harnesses that load a home hook manifest next to the project's, so an
-/// Impeccable entry in both runs the design hook twice per edit: Cursor
-/// (`~/.cursor/hooks.json`) and Codex (`~/.codex/hooks.json`). Claude has its
-/// own user-scope placement and prune (`prune_duplicate_claude_hooks`).
-const HOME_LOADED_HOOK_PROVIDERS: &[&str] = &[".cursor", ".agents"];
-
-/// An older `update --user` wrote non-Claude hook manifests under home
-/// instead of the project. Once the project manifest carries the Impeccable
-/// hook, the home copy of a harness in `HOME_LOADED_HOOK_PROVIDERS` only makes
-/// it fire twice, so Impeccable's own entries are pruned from it (foreign
-/// entries and other keys stay; the file goes only when nothing but our
-/// scaffolding is left). Without a project hook the home one is the only
-/// coverage, so it is repaired in place instead. Other harnesses' home files
-/// are repaired, never pruned.
-fn settle_home_hook_manifests(sys: &crate::providers::Sys, hook_root: &str, home_root: &str, providers: &[&'static str]) -> Result<(), String> {
-    if hook_root == home_root || sys.is_home_dir(hook_root) {
-        return Ok(());
+    hook_manifest::repair_stale_hook_manifests(sys, hook_root, providers, Some(skill_root))?;
+    if hook_root != skill_root {
+        hook_manifest::repair_stale_hook_manifests(sys, skill_root, providers, None)?;
     }
-    let mut repair: Vec<&'static str> = Vec::new();
-    for provider in providers {
-        if *provider == ".claude" {
-            continue;
-        }
-        let project_has_hook = HOME_LOADED_HOOK_PROVIDERS.contains(provider) && hook_manifest::hook_installed_for_provider(hook_root, provider);
-        if !project_has_hook {
-            repair.push(*provider);
-            continue;
-        }
-        for spec in hook_manifest::provider_hook_artifacts(provider) {
-            let rel = spec.dest_rel.unwrap_or(spec.rel);
-            hook_manifest::prune_impeccable_hook_from_manifest(&impeccable_common::jsp::join(&[home_root, spec.dest_provider, rel]))?;
-        }
-    }
-    hook_manifest::repair_stale_hook_manifests(sys, home_root, &repair, None)?;
     Ok(())
 }
 
@@ -899,7 +871,6 @@ fn update(flags: &[String], io: &mut Io) -> R<()> {
             } else {
                 Vec::new()
             };
-            settle_home_hook_manifests(&sys, &hook_root, &root, &copy_providers).map_err(Flow::Throw)?;
             Ok(hook_targets)
         })();
         util::rm_rf(&tmp_dir);
@@ -956,7 +927,6 @@ fn update(flags: &[String], io: &mut Io) -> R<()> {
         } else {
             Vec::new()
         };
-        settle_home_hook_manifests(&sys, &hook_root, &root, &providers).map_err(Flow::Throw)?;
         util::rm_rf(&tmp_dir);
         let v = sys.get_skills_version(&root, scope);
         out(io, &format!("Updated {} skill(s){}.", refreshed.len(), to_version_suffix(&v)));

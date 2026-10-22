@@ -2990,3 +2990,131 @@ fn run_hook_stands_down_before_the_edit_cap_can_suppress_a_live_file() {
         assert!(out.audit.get("editCount").is_none(), "edit {i}: the cap is not bumped for a live wrap");
     }
 }
+
+// ─── One scan per edit event (hook_claim) ────────────────────────────────────
+
+fn claim_env(t: &Tmp, extra: &[(&str, &str)]) -> HashMap<String, String> {
+    let mut e = env(extra);
+    e.insert("IMPECCABLE_HOOK_CLAIM_DIR".into(), jsp::join(&[&t.path(), "claims"]));
+    e
+}
+
+fn codex_post_tool_use(cwd: &str, file: &str, call: &str) -> String {
+    json!({
+        "session_id": "codex-s", "turn_id": "turn-1", "cwd": cwd, "hook_event_name": "PostToolUse",
+        "model": "gpt-5", "tool_name": "apply_patch", "tool_use_id": call,
+        "tool_input": { "file_path": file },
+    })
+    .to_string()
+}
+
+fn claude_post_tool_use(cwd: &str, file: &str, call: &str) -> String {
+    json!({
+        "session_id": "claude-s", "cwd": cwd, "hook_event_name": "PostToolUse",
+        "tool_name": "Edit", "tool_use_id": call, "tool_input": { "file_path": file },
+    })
+    .to_string()
+}
+
+fn scanned(res: &hook::RunResult) -> bool {
+    res.audit.get("skipped") != Some(&json!("duplicate-event"))
+}
+
+#[test]
+fn concurrent_duplicate_invocations_of_one_event_scan_once() {
+    for (harness, payload) in [
+        ("cursor", cursor_post_tool_use as fn(&str, &str, &str) -> String),
+        ("codex", |cwd: &str, file: &str, _c: &str| codex_post_tool_use(cwd, file, "call-1")),
+        ("claude", |cwd: &str, file: &str, _c: &str| claude_post_tool_use(cwd, file, "toolu_1")),
+    ] {
+        let t = Tmp::new();
+        let cwd = t.path();
+        let file = t.write("src/card.css", SIDE_TAB_CSS);
+        let stdin = payload(&cwd, &file, SIDE_TAB_CSS);
+        let e = claim_env(&t, &[]);
+        let results: Vec<hook::RunResult> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| {
+                    let (cwd, e, stdin) = (cwd.clone(), e.clone(), stdin.clone());
+                    s.spawn(move || hook::run_hook(&rt_with(&cwd, e), &stdin))
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let scans: Vec<&hook::RunResult> = results.iter().filter(|r| scanned(r)).collect();
+        assert_eq!(scans.len(), 1, "{harness}: {:?}", results.iter().map(|r| &r.audit).collect::<Vec<_>>());
+        assert!(scans[0].audit.contains_key("findings") && !scans[0].stdout.is_empty(), "{harness}: {:?}", scans[0].audit);
+        for r in results.iter().filter(|r| !scanned(r)) {
+            assert!(r.stdout.is_empty(), "{harness}: a duplicate printed {}", r.stdout);
+        }
+    }
+}
+
+#[test]
+fn different_edit_events_each_scan() {
+    let t = Tmp::new();
+    let cwd = t.path();
+    let file = t.write("src/card.css", SIDE_TAB_CSS);
+    let other = t.write("src/other.css", SIDE_TAB_CSS);
+    let e = claim_env(&t, &[]);
+    let first = hook::run_hook(&rt_with(&cwd, e.clone()), &claude_post_tool_use(&cwd, &file, "toolu_1"));
+    let next_call = hook::run_hook(&rt_with(&cwd, e.clone()), &claude_post_tool_use(&cwd, &file, "toolu_2"));
+    let other_file = hook::run_hook(&rt_with(&cwd, e.clone()), &codex_post_tool_use(&cwd, &other, "toolu_1"));
+    for res in [&first, &next_call, &other_file] {
+        assert!(scanned(res) && res.audit.contains_key("findings"), "{:?}", res.audit);
+    }
+}
+
+/// A plugin's hook command sets the harness itself, the project manifest's
+/// does not; both receive the same event, so only one scans.
+#[test]
+fn plugin_and_project_hooks_for_one_codex_event_scan_once() {
+    let t = Tmp::new();
+    let cwd = t.path();
+    let file = t.write("src/card.css", SIDE_TAB_CSS);
+    let stdin = codex_post_tool_use(&cwd, &file, "call-7");
+    let plugin = hook::run_hook(&rt_with(&cwd, claim_env(&t, &[("IMPECCABLE_HOOK_HARNESS", "codex")])), &stdin);
+    let project = hook::run_hook(&rt_with(&cwd, claim_env(&t, &[])), &stdin);
+    assert!(scanned(&plugin) && plugin.audit.contains_key("findings"), "{:?}", plugin.audit);
+    assert!(!scanned(&project) && project.stdout.is_empty(), "{:?}", project.audit);
+}
+
+/// No tool-call id: nothing to tell a duplicate from a real second edit by,
+/// so every invocation scans, as before.
+#[test]
+fn events_without_a_tool_call_id_are_never_claimed() {
+    let t = Tmp::new();
+    let cwd = t.path();
+    let file = t.write("src/card.css", SIDE_TAB_CSS);
+    let e = claim_env(&t, &[]);
+    for _ in 0..2 {
+        let res = hook::run_hook(&rt_with(&cwd, e.clone()), &edit_event(&cwd, &file, "s-noid"));
+        assert!(scanned(&res), "{:?}", res.audit);
+    }
+}
+
+/// The claim fails open: an unusable claim dir means scan, never skip.
+#[test]
+fn an_unusable_claim_dir_still_scans() {
+    let t = Tmp::new();
+    let cwd = t.path();
+    let file = t.write("src/card.css", SIDE_TAB_CSS);
+    let blocker = t.write("claims-file", "not a dir");
+    let mut e = env(&[]);
+    e.insert("IMPECCABLE_HOOK_CLAIM_DIR".into(), jsp::join(&[&blocker, "nested"]));
+    let stdin = claude_post_tool_use(&cwd, &file, "toolu_9");
+    for _ in 0..2 {
+        let res = hook::run_hook(&rt_with(&cwd, e.clone()), &stdin);
+        assert!(scanned(&res) && res.audit.contains_key("findings"), "{:?}", res.audit);
+    }
+}
+
+#[test]
+fn claim_keys_are_path_safe_and_separator_independent_of_the_platform() {
+    let ev: Map<String, Value> = serde_json::from_value(json!({ "session_id": "s", "tool_use_id": "t" })).unwrap();
+    let key = impeccable_hook::hook_claim::event_key(&ev, r"C:\Users\dev\proj", &[r"C:\Users\dev\proj\src\a.css".into()]).unwrap();
+    assert_eq!(key.len(), 64);
+    assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+    let ev_none: Map<String, Value> = serde_json::from_value(json!({ "session_id": "s" })).unwrap();
+    assert!(impeccable_hook::hook_claim::event_key(&ev_none, "/p", &[]).is_none());
+}

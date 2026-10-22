@@ -116,6 +116,7 @@ pub fn run_hook(rt: &Runtime, stdin: &str) -> RunResult {
     };
 
     let harness = resolve_harness(rt, Some(&event));
+    let raw_event = event.clone();
     let event = normalize_hook_event(rt, &event, &rt.proc_cwd, harness);
     audit.insert("harness".into(), Value::from(harness));
 
@@ -172,6 +173,18 @@ pub fn run_hook(rt: &Runtime, stdin: &str) -> RunResult {
             vec![
                 ("skipped", Value::from("native-platform")),
                 ("platform", Value::String(platform.unwrap_or_default())),
+                ("durationMs", ms_since(started)),
+            ],
+        );
+    }
+
+    // Several Impeccable hooks can fire for one edit (home and project
+    // manifests, a plugin and a project hook): only the first scans.
+    if crate::hook_claim::claim_event(rt, &raw_event, &project_cwd, &primary_files) == crate::hook_claim::Claim::Duplicate {
+        return result(
+            &audit,
+            vec![
+                ("skipped", Value::from("duplicate-event")),
                 ("durationMs", ms_since(started)),
             ],
         );
