@@ -2779,11 +2779,19 @@ fn analyze_monotonous_spacing(content: &str, file_path: &str) -> Vec<Finding> {
             vals.push(v);
         }
     }
+    // A zero is a reset (`p-0`, `gap: 0px`), not a spacing choice; the px
+    // and rem pushes already skip it.
     for m in GAP_RE.captures_iter(content) {
-        vals.push(num(&m[1]));
+        let v = num(&m[1]);
+        if v > 0.0 {
+            vals.push(v);
+        }
     }
     for m in TW_SPACING_RE.captures_iter(content) {
-        vals.push(num(&m[1]) * 4.0);
+        let v = num(&m[1]) * 4.0;
+        if v > 0.0 {
+            vals.push(v);
+        }
     }
     let rounded: Vec<f64> = vals.iter().map(|v| math_round(v / 4.0) * 4.0).collect();
     if rounded.len() < 10 {

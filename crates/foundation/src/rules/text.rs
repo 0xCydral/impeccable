@@ -51,6 +51,18 @@ pub const QUALITY_TEXT_TAGS: &[&str] = &["p", "li", "td", "th", "dd", "blockquot
 /// builders) started at 24px and ran to 51px.
 pub const LEADING_DISPLAY_TYPE_PX: f64 = 24.0;
 
+/// Where lead text starts, for the tight-leading floor (taste call r13-t3):
+/// a standfirst or intro set at 20 to 23px over a few lines sets its own
+/// leading the way display type does, and 1.2 there read as harmless on
+/// culturedcode.com, mercury.com, stripe.com and apple.com (57 findings on
+/// craft run 1009). Only a short block: past
+/// [`LEADING_LEAD_TEXT_MAX_LINES`] it is reading copy and keeps the floor.
+pub const LEADING_LEAD_TEXT_PX: f64 = 20.0;
+
+/// The most rendered lines lead text ([`LEADING_LEAD_TEXT_PX`]) can run and
+/// keep the exemption.
+pub const LEADING_LEAD_TEXT_MAX_LINES: f64 = 3.0;
+
 /// How much of a second line box the tight-leading floor needs to see before
 /// it judges leading. Text that renders as one line has no gap between lines
 /// to crowd; wrapped text is two line boxes or more, so the midpoint

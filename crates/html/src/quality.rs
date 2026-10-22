@@ -924,8 +924,13 @@ pub fn check_quality(q: &QualityInput<'_, '_>) -> Vec<RuleHit> {
                 let family = sv(style, "fontFamily");
                 let is_code_run = el.closest("pre").is_some()
                     && (family.is_empty() || impeccable_core::checks::text_rules::is_monospace_family(family));
+                // Capitals have no descenders to crowd the line below
+                // (r13-t3), as the browser engine reads them. With no layout
+                // the lead-text exemption, which counts lines, is browser-only.
+                let caps = sv(style, "textTransform") == "uppercase";
                 if ratio > 0.0
                     && shown < 1.3
+                    && !caps
                     && !is_code_run
                     && !is_non_rendered_text(el, tag, Some(style))
                     && !is_visually_hidden(el, style)

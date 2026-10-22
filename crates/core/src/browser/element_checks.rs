@@ -1899,6 +1899,77 @@ pub(crate) fn gradient_text_paints_a_ramp(dom: &dyn Dom, el: ElId) -> bool {
     !crate::checks::rules::gradient_stops_are_one_colour(&image)
 }
 
+/// Whether two colours are one, within [`RAMP_MIN_CHANNEL_DELTA`] on every
+/// channel, alpha included.
+fn same_colour(a: &Rgba, b: &Rgba) -> bool {
+    (a.r - b.r).abs() < RAMP_MIN_CHANNEL_DELTA
+        && (a.g - b.g).abs() < RAMP_MIN_CHANNEL_DELTA
+        && (a.b - b.b).abs() < RAMP_MIN_CHANNEL_DELTA
+        && (a.alpha_or_one() - b.alpha_or_one()).abs() * 255.0 < RAMP_MIN_CHANNEL_DELTA
+}
+
+/// Whether the gradient clipped to `el`'s text is a loading shimmer: its
+/// first and last stops are the text's own colour, the layer is wider than
+/// the box (`background-size` over 100% on x), and an animation that runs
+/// forever moves its `background-position`. cursor.com's "Working" labels
+/// (`linear-gradient(90deg, ink 0%, ink 30%, highlight 55%, ink 70%, ink
+/// 100%)` at `200% 100%`, `shimmer` sweeping `background-position-x`): a
+/// highlight passing over plain type, a state of the label rather than a
+/// gradient treatment. Any part the capture did not record keeps the
+/// finding.
+pub(crate) fn gradient_text_is_a_shimmer(dom: &dyn Dom, el: ElId) -> bool {
+    let image = dom.style(el, "backgroundImage");
+    let stops = parse_gradient_colors(Some(&image));
+    let (Some(first), Some(last), Some(ink)) = (stops.first(), stops.last(), parse_any_color(Some(&dom.style(el, "color"))))
+    else {
+        return false;
+    };
+    if stops.len() < 3 || !same_colour(first, &ink) || !same_colour(last, &ink) {
+        return false;
+    }
+    let size = dom.style(el, "backgroundSize");
+    let width = size.split_whitespace().next().unwrap_or("");
+    let wider = width
+        .strip_suffix('%')
+        .map(parse_float)
+        .is_some_and(|w| w.is_finite() && w > 100.0);
+    if !wider {
+        return false;
+    }
+    let names = dom.style(el, "animationName");
+    let counts = dom.style(el, "animationIterationCount");
+    let counts: Vec<&str> = counts.split(',').map(str::trim).collect();
+    names.split(',').map(str::trim).enumerate().any(|(i, name)| {
+        let count = counts.get(i % counts.len().max(1)).copied().unwrap_or("");
+        name != "none"
+            && count == "infinite"
+            && dom.keyframes(name).is_some_and(|frames| {
+                frames
+                    .iter()
+                    .any(|f| f.decls.iter().any(|(p, _)| p.starts_with("background-position")))
+            })
+    })
+}
+
+/// Whether every stop of the gradient clipped to `el`'s text is one RGB at
+/// different alphas (resend.com's `#fff` to `rgba(255, 255, 255, .5)`): a
+/// sheen of one colour fading, not a ramp between colours. It still steps
+/// on a dark ground, so it reports, as advisory (taste call r13-t6).
+pub(crate) fn gradient_text_varies_only_in_alpha(dom: &dyn Dom, el: ElId) -> bool {
+    let image = dom.style(el, "backgroundImage");
+    if !crate::checks::rules::gradient_stops_all_readable(&image) {
+        return false;
+    }
+    let stops = parse_gradient_colors(Some(&image));
+    let Some(first) = stops.first() else { return false };
+    stops.len() >= 2
+        && stops.iter().all(|c| {
+            (c.r - first.r).abs() < RAMP_MIN_CHANNEL_DELTA
+                && (c.g - first.g).abs() < RAMP_MIN_CHANNEL_DELTA
+                && (c.b - first.b).abs() < RAMP_MIN_CHANNEL_DELTA
+        })
+}
+
 /// The smallest type [`box_holds_a_text_line`] reads as a line of text.
 const SHORT_LINE_MIN_FONT_PX: f64 = 8.0;
 
@@ -2434,8 +2505,14 @@ pub fn check_element_colors_dom(
             }
         }
     }
-    if findings.iter().any(|h| h.id == "gradient-text") && !gradient_text_paints_a_ramp(dom, el) {
-        findings.retain(|h| h.id != "gradient-text");
+    if findings.iter().any(|h| h.id == "gradient-text") {
+        if !gradient_text_paints_a_ramp(dom, el) || gradient_text_is_a_shimmer(dom, el) {
+            findings.retain(|h| h.id != "gradient-text");
+        } else if gradient_text_varies_only_in_alpha(dom, el) {
+            for h in findings.iter_mut().filter(|h| h.id == "gradient-text") {
+                h.severity = Some(crate::checks::rules::ADVISORY_SEVERITY.to_string());
+            }
+        }
     }
     if tag == "input" || tag == "textarea" {
         let placeholder = dom.attr(el, "placeholder").unwrap_or_default();
@@ -5537,6 +5614,68 @@ mod tests {
             );
         }
         (d, body)
+    }
+
+    /// cursor.com's "Working" label: a highlight sweeping over plain type
+    /// is a loading state, not gradient text (row 12). Twins: the same
+    /// shimmer at rest (no infinite animation), and a pink-to-violet ramp.
+    /// resend.com's one-colour sheen reports as advisory (r13-t6).
+    #[test]
+    fn gradient_text_reads_a_shimmer_and_a_one_colour_sheen() {
+        let (mut d, body) = page();
+        d.keyframes.insert(
+            "shimmer".to_string(),
+            vec![crate::browser::dom::KeyframeFrame {
+                decls: vec![("background-position-x".to_string(), "200%".to_string())],
+            }],
+        );
+        let label = |d: &mut FakeDom, ink: &str, gradient: &str, size: &str, count: &str, y: f64| {
+            let s = d.add(Some(body), "span");
+            visible(d, s);
+            d.add_text(s, "Working on it");
+            d.set_styles(
+                s,
+                &[
+                    ("color", ink),
+                    ("backgroundImage", gradient),
+                    ("backgroundClip", "text"),
+                    ("webkitBackgroundClip", "text"),
+                    ("backgroundSize", size),
+                    ("animationName", "shimmer"),
+                    ("animationIterationCount", count),
+                    ("fontSize", "16px"),
+                    ("fontWeight", "400"),
+                ],
+            );
+            d.set_rect(s, 12.0, y, 162.0, 24.0);
+            d.set_text_rect(s, 12.0, y, 120.0, 24.0);
+            s
+        };
+        let gradient = |hits: Vec<RuleHit>| hits.into_iter().filter(|h| h.id == "gradient-text").collect::<Vec<_>>();
+        let shimmer_bg = "linear-gradient(90deg, rgba(0, 0, 0, 0.38) 0%, rgba(0, 0, 0, 0.38) 30%, rgba(36, 35, 28, 0.91) 55%, rgba(0, 0, 0, 0.38) 70%, rgba(0, 0, 0, 0.38) 100%)";
+        let shimmer = label(&mut d, "rgba(0, 0, 0, 0.38)", shimmer_bg, "200% 100%", "infinite", 40.0);
+        assert!(gradient(colors(&d, shimmer)).is_empty(), "a running shimmer");
+        let once = label(&mut d, "rgba(0, 0, 0, 0.38)", shimmer_bg, "200% 100%", "1", 80.0);
+        assert_eq!(gradient(colors(&d, once)).len(), 1, "a sweep that ends is not a running state");
+        let fitted = label(&mut d, "rgba(0, 0, 0, 0.38)", shimmer_bg, "100% 100%", "infinite", 120.0);
+        assert_eq!(gradient(colors(&d, fitted)).len(), 1, "a layer the size of the box shows its whole ramp");
+        let ramp = label(&mut d, "rgba(0, 0, 0, 0)", "linear-gradient(90deg, #db2777, #7c3aed)", "200% 100%", "infinite", 160.0);
+        let hits = gradient(colors(&d, ramp));
+        assert_eq!(hits.len(), 1, "a pink-to-violet ramp");
+        assert_eq!(hits[0].severity, None);
+
+        let sheen = label(
+            &mut d,
+            "rgba(0, 0, 0, 0)",
+            "linear-gradient(to right bottom, rgb(255, 255, 255) 30%, rgba(255, 255, 255, 0.5))",
+            "auto",
+            "1",
+            200.0,
+        );
+        d.set_style(sheen, "animationName", "none");
+        let hits = gradient(colors(&d, sheen));
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].severity.as_deref(), Some(crate::checks::rules::ADVISORY_SEVERITY));
     }
 
     /// interplanetaryfund.base44.app's tagline on a solid ground: a pale

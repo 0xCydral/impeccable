@@ -2418,6 +2418,12 @@ pub fn check_heading_rhythm_dom(dom: &dyn Dom) -> Vec<ElFinding> {
         if closest_or_none(dom, h, "blockquote, q").is_some() {
             continue;
         }
+        // A run-in heading (stripe.com's `h2` computed `display: inline`
+        // beside an inline `p`) starts a line of the paragraph it leads:
+        // "below" would measure to the next block, not to its own text.
+        if dom.style(h, "display") == "inline" {
+            continue;
+        }
         // A heading nobody sees at rest (a slide parked past its track, a
         // carousel clone, a tab panel off to the side) sets no rhythm and
         // counts toward no page minimum.
@@ -5873,6 +5879,34 @@ mod tests {
             f[0].finding.detail,
             "h2 \"Heading number 0\" has 8px above vs 40px below — it reads as bound to the block above (2 headings on page)"
         );
+    }
+
+    /// stripe.com's run-in headings: an `h2` computed `display: inline`
+    /// leading an inline `p`. Its "below" would measure to the next block.
+    /// Twin: the same layout with block headings keeps both findings.
+    #[test]
+    fn heading_rhythm_skips_run_in_headings() {
+        let build = |display: &str| {
+            let mut d = FakeDom::new();
+            let (_h, body) = d.with_page();
+            let sec = d.add(Some(body), "section");
+            d.set_styles(sec, FLOW);
+            d.set_rect(sec, 0.0, 0.0, 800.0, 1000.0);
+            let mut y = 0.0;
+            for i in 0..2 {
+                let p0 = flow(&mut d, sec, "p", (0.0, y, 800.0, 20.0), "Intro paragraph text that runs well past forty characters");
+                d.set_style(p0, "fontSize", "20px");
+                y += 28.0;
+                let h = flow(&mut d, sec, "h2", (0.0, y, 800.0, 30.0), &format!("Heading number {i}"));
+                d.set_style(h, "display", display);
+                y += 70.0;
+                flow(&mut d, sec, "p", (0.0, y, 800.0, 20.0), "Body paragraph");
+                y += 60.0;
+            }
+            check_heading_rhythm_dom(&d).len()
+        };
+        assert_eq!(build("block"), 2);
+        assert_eq!(build("inline"), 0);
     }
 
     const FLOW: &[(&str, &str)] = &[

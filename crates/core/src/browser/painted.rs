@@ -246,7 +246,9 @@ pub fn retain_painted(dom: &dyn Dom, el: ElId, findings: &mut Vec<BrowserFinding
 /// Why `el` is not painted for a rule behind `gate`, or `None` when it is.
 pub fn unpainted_for(dom: &dyn Dom, el: ElId, gate: PaintGate) -> Option<Unpainted> {
     match gate {
-        PaintGate::Raster => unpainted_at_capture(dom, el, OwnOpacity::Measured),
+        // A 0x0 tracking pixel at opacity 0 (teenage.engineering's
+        // `/_api/mw/track/view` beacon) shows no picture to bury.
+        PaintGate::Raster => unpainted_at_capture(dom, el, OwnOpacity::Measured).or_else(|| no_area(dom, el)),
         PaintGate::Box => unpainted_at_capture(dom, el, OwnOpacity::Counts).or_else(|| no_area(dom, el)),
         PaintGate::Toggle => unpainted_at_capture(dom, el, OwnOpacity::Toggled).or_else(|| no_area(dom, el)),
         PaintGate::Text => unpainted_walk(dom, el, OwnOpacity::Counts, None, &mut Visible::floored(TEXT_MIN_VISIBLE_SHARE))
@@ -4371,6 +4373,27 @@ mod tests {
         d.set_style(pop, "position", "absolute");
         d.set_rect(pop, 40.0, 160.0, 200.0, 80.0);
         assert_eq!(why(&d, pop), None);
+    }
+
+    /// teenage.engineering's view beacon: `<img aria-hidden
+    /// src="/_api/mw/track/view…" style="opacity:0;height:0;width:0">`.
+    #[test]
+    fn a_zero_area_tracking_pixel_is_not_a_buried_raster() {
+        let (mut d, body) = page();
+        let pixel = d.add(Some(body), "img");
+        d.set_attr(pixel, "src", "/_api/mw/track/view?p=home");
+        d.set_style(pixel, "opacity", "0");
+        d.set_rect(pixel, 0.0, 0.0, 0.0, 0.0);
+        d.el_mut(pixel).scroll_width = 0.0;
+        d.el_mut(pixel).scroll_height = Some(0.0);
+        assert_eq!(unpainted_for(&d, pixel, PaintGate::Raster), Some(Unpainted::NoArea));
+
+        // Twin: a 600x400 photo held at opacity 0.05 is what the rule is for.
+        let photo = d.add(Some(body), "img");
+        d.set_attr(photo, "src", "/texture.png");
+        d.set_style(photo, "opacity", "0.05");
+        d.set_rect(photo, 0.0, 100.0, 600.0, 400.0);
+        assert_eq!(unpainted_for(&d, photo, PaintGate::Raster), None);
     }
 
     #[test]

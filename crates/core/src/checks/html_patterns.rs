@@ -707,11 +707,20 @@ pub fn check_html_patterns_picking(
             spacing_values.push(v);
         }
     }
+    // A zero is a reset, not a spacing choice: mercury.com's `p-0`,
+    // `md:p-0` and `pr-0` were 953 of 962 samples and made the page's
+    // rhythm read as "~0px used 99%". The px and rem pushes already skip it.
     for sm in GAP_PX_RE.captures_iter(style_text) {
-        spacing_values.push(parse_int(&sm[1], 10));
+        let v = parse_int(&sm[1], 10);
+        if v > 0.0 {
+            spacing_values.push(v);
+        }
     }
     for sm in TW_SPACE_RE.captures_iter(class_text) {
-        spacing_values.push(parse_int(&sm[1], 10) * 4.0);
+        let v = parse_int(&sm[1], 10) * 4.0;
+        if v > 0.0 {
+            spacing_values.push(v);
+        }
     }
     for sm in SPACING_REM_RE.captures_iter(style_text) {
         let v = math_round(parse_float(&sm[1]) * 16.0);
@@ -969,6 +978,19 @@ mod tests {
     use super::*;
 
     // Expected values come from running the JS functions in Node.
+
+    /// mercury.com: Tailwind resets (`p-0`, `md:p-0`, `pr-0`) are not a
+    /// spacing choice, so a page of them plus a varied scale is not
+    /// monotonous. Twin: a page that really uses one gap keeps the finding.
+    #[test]
+    fn monotonous_spacing_ignores_zero_resets() {
+        let mono = |html: &str| check_html_patterns(html, None).iter().any(|f| f.id == "monotonous-spacing");
+        let resets = "<div class=\"p-0 md:p-0 pr-0\"></div>".repeat(40);
+        let varied = "<div class=\"p-2\"></div><div class=\"p-4\"></div><div class=\"p-6\"></div>".repeat(4);
+        assert!(!mono(&format!("<html><body>{resets}{varied}</body></html>")));
+        let one = "<div class=\"p-4\"></div>".repeat(20);
+        assert!(mono(&format!("<html><body>{one}</body></html>")));
+    }
 
     /// The stylesheet form reads every gradient in the clip's window: a
     /// one-colour fill there is solid type, but a declaration whose own ramp

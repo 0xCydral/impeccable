@@ -25,7 +25,7 @@ use crate::checks::text_rules::{
     is_line_clamp, is_under_ui_text_floor, justifies_without_word_spaces_text,
     tracking_is_crushed, ALL_CAPS_LONG_RUN, LEADING_BOLD_TITLE_WEIGHT, SMALLPRINT_TEXT_FLOOR_PX,
     UI_TEXT_FLOOR_PX,
-    JUSTIFY_NARROW_CHARS_PER_LINE, LEADING_DISPLAY_TYPE_PX, LEADING_HEADING_CONTEXT,
+    JUSTIFY_NARROW_CHARS_PER_LINE, LEADING_DISPLAY_TYPE_PX, LEADING_HEADING_CONTEXT, LEADING_LEAD_TEXT_MAX_LINES, LEADING_LEAD_TEXT_PX,
     LEADING_MIN_LINE_BOXES, NON_RENDERED_TAGS, QUALITY_TEXT_TAGS,
     SR_ONLY_SELECTOR, TEXT_EDGE_TAGS,
 };
@@ -841,6 +841,35 @@ fn rendered_line_widths(dom: &dyn Dom, el: ElId) -> Option<Vec<f64>> {
             .map(|r| r.width)
             .collect(),
     )
+}
+
+/// The widths of the lines `el` sets itself, with the rendered characters
+/// they hold. A list item whose own words head a nested list (github.com's
+/// release notes: "Fast Refresh Fixes" over seven one-line items) does not
+/// own the nested list's lines: each nested item is measured on its own.
+/// So the lines whose middle lies inside a child that sets its own lines,
+/// and that child's characters, are left out. With no such child this is
+/// every line and every character, as before.
+fn own_line_widths(dom: &dyn Dom, el: ElId) -> Option<(Vec<f64>, f64)> {
+    let blocks = super::text_geometry::block_children(dom, el);
+    if blocks.is_empty() {
+        return Some((rendered_line_widths(dom, el)?, rendered_text_len(dom, el) as f64));
+    }
+    let boxes: Vec<Rect> = blocks.iter().map(|&b| dom.rect(b)).collect();
+    let inside = |r: &Rect| {
+        let (x, y) = (r.left + r.width / 2.0, r.top + r.height / 2.0);
+        boxes
+            .iter()
+            .any(|b| b.all_finite() && x >= b.left && x <= b.right && y >= b.top && y <= b.bottom)
+    };
+    let widths = dom
+        .text_line_rects(el)?
+        .into_iter()
+        .filter(|r| r.width > 0.0 && r.height > 0.0 && !inside(r))
+        .map(|r| r.width)
+        .collect();
+    let theirs: usize = blocks.iter().map(|&b| rendered_text_len(dom, b)).sum();
+    Some((widths, rendered_text_len(dom, el).saturating_sub(theirs) as f64))
 }
 
 pub(crate) static COMBINING_OR_FORMAT_RE: Lazy<Regex> =
@@ -1955,11 +1984,10 @@ pub fn check_quality(dom: &dyn Dom, q: &QualityInput) -> Vec<RuleHit> {
         && rect.width > 0.0
         && (text_len as f64) > line_max
     {
-        if let Some(widths) = rendered_line_widths(dom, el) {
+        if let Some((widths, rendered_len)) = own_line_widths(dom, el) {
             let total: f64 = widths.iter().sum();
             if total > 0.0 {
                 let over = line_max + 5.0;
-                let rendered_len = rendered_text_len(dom, el) as f64;
                 let chars = |w: f64| rendered_len * w / total;
                 let long = widths.iter().filter(|w| chars(**w) > over).count();
                 if long >= 2 {
@@ -2489,7 +2517,24 @@ pub fn check_quality(dom: &dyn Dom, q: &QualityInput) -> Vec<RuleHit> {
                         && (closest_or_none(dom, el, "pre, code, samp").is_some()
                             || direct_text(dom, el).chars().any(|c| ('\u{2500}'..='\u{257F}').contains(&c)))
                 };
+                // Lead text (taste call r13-t3): 20px and up over three
+                // rendered lines or fewer sets its own leading, as display
+                // type does. Lines a clipping box cuts off do not render.
+                let lead_text = || {
+                    if font_size < LEADING_LEAD_TEXT_PX {
+                        return false;
+                    }
+                    let (_, bottom) = rendered_lines(dom, el, &text_rect);
+                    text_line_count(bottom - text_rect.top, lh, font_size) <= LEADING_LEAD_TEXT_MAX_LINES
+                };
+                // Capitals have no descenders to crowd the line below, so a
+                // label set in them keeps the leading it is given, as
+                // tiny-text already lets it keep its size
+                // (teenage.engineering's uppercase spec labels).
+                let caps = || st("textTransform") == "uppercase" || typed_caps_text(dom, el);
                 if wraps
+                    && !lead_text()
+                    && !caps()
                     && !is_code_run()
                     && !is_non_rendered_text(dom, el, tag)
                     && !is_visually_hidden(dom, el)
@@ -3468,6 +3513,44 @@ mod tests {
         let hits = check_element_quality_dom(&d, wall, &BrowserConfig::default());
         assert_eq!(hits.len(), 1, "{hits:?}");
         assert_eq!(hits[0].snippet, "~139 chars on 3 of 4 rendered lines (aim for <80)");
+    }
+
+    /// github.com's release notes: a list item whose own words ("Fast
+    /// Refresh Fixes") head a nested list does not own the nested items'
+    /// lines, which are measured on their own. Twin: the same item whose own
+    /// words run three long lines above the nested list keeps its finding.
+    #[test]
+    fn line_length_leaves_a_nested_list_to_its_own_items() {
+        let build = |own: &str, own_lines: &[(f64, f64, f64, f64)]| {
+            let mut d = FakeDom::new();
+            let (_h, body) = d.with_page();
+            let li = text_el(&mut d, body, "li", own, "16px");
+            d.set_style(li, "display", "list-item");
+            let top = own_lines.len() as f64 * 24.0;
+            d.set_rect(li, 334.0, 0.0, 846.0, top + 168.0);
+            let ul = d.add(Some(li), "ul");
+            d.set_style(ul, "display", "block");
+            d.set_rect(ul, 334.0, top, 846.0, 168.0);
+            let mut lines = own_lines.to_vec();
+            for i in 0..7 {
+                let item = d.add(Some(ul), "li");
+                d.add_text(item, &"n".repeat(95));
+                d.set_style(item, "display", "list-item");
+                d.set_rect(item, 366.0, top + 24.0 * i as f64, 814.0, 24.0);
+                lines.push((366.0, top + 1.0 + 24.0 * i as f64, if i % 2 == 0 { 770.0 } else { 550.0 }, 22.0));
+            }
+            d.set_text_lines(li, &lines);
+            check_element_quality_dom(&d, li, &BrowserConfig::default())
+                .into_iter()
+                .filter(|h| h.id == "line-length")
+                .count()
+        };
+        assert_eq!(build("Fast Refresh Fixes", &[(334.0, 1.0, 133.7, 22.0)]), 0);
+        let long = "w".repeat(300);
+        assert_eq!(
+            build(&long, &[(334.0, 1.0, 840.0, 22.0), (334.0, 25.0, 840.0, 22.0), (334.0, 49.0, 840.0, 22.0)]),
+            1
+        );
     }
 
     /// A line box split across text nodes is still one line. An inline
@@ -5206,12 +5289,28 @@ mod tests {
         // Display type carries its own leading.
         let display = wrapped(&mut d, body, "p", "32px", 38.4);
         assert!(leading(&d, display).is_empty(), "32px display type");
+        // Lead text (r13-t3): 20px and up over three lines or fewer sets its
+        // own leading; four lines of it are reading copy.
+        let lead = wrapped(&mut d, body, "p", "22px", 26.0);
+        assert!(leading(&d, lead).is_empty(), "two lines of 22px lead text");
         let boundary = wrapped(&mut d, body, "p", "22px", 26.0);
+        d.set_rect(boundary, 40.0, 100.0, 240.0, 104.0);
+        d.el_mut(boundary).direct_text_rect = Some(Rect::from_xywh(40.0, 100.0, 240.0, 104.0));
         assert_eq!(
             leading(&d, boundary),
             vec!["line-height 1.18x (need >=1.3)"],
-            "22px is still reading copy"
+            "four lines of 22px are reading copy"
         );
+        let small = wrapped(&mut d, body, "p", "19px", 22.0);
+        assert_eq!(leading(&d, small), vec!["line-height 1.16x (need >=1.3)"], "19px is body copy");
+
+        // Capitals have no descenders to crowd the next line (r13-t3), as
+        // tiny-text already reads them; the same words in lower case keep it.
+        let caps = wrapped(&mut d, body, "p", "12px", 13.3);
+        d.set_style(caps, "textTransform", "uppercase");
+        assert!(leading(&d, caps).is_empty(), "uppercase label");
+        let lower = wrapped(&mut d, body, "p", "12px", 13.3);
+        assert_eq!(leading(&d, lower), vec!["line-height 1.11x (need >=1.3)"]);
 
         // One line box: there is no gap between lines to crowd.
         let one_line = wrapped(&mut d, body, "p", "16px", 20.0);
