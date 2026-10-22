@@ -3,6 +3,7 @@
 //! meta patch/revert.
 
 use crate::util::{base64_decode, base64_encode, encode_uri_component};
+use markup5ever::data::NAMED_ENTITIES;
 use once_cell::sync::Lazy;
 use regex::{Regex, RegexBuilder};
 
@@ -245,31 +246,34 @@ fn get_attr(attrs: &str, name: &str) -> Option<Attr> {
 }
 
 static CHAR_REF_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"&(?:#([0-9]+)|#[xX]([0-9a-fA-F]+)|(apos|quot|amp|lt|gt|semi));").unwrap()
+    Regex::new(r"&(?:#([0-9]+);|#[xX]([0-9a-fA-F]+);|([A-Za-z][A-Za-z0-9]*;))").unwrap()
 });
 
-/// The policy text a browser reads from an attribute value. Named references
-/// other than the six a policy can need are read as literal text.
+/// The policy text a browser reads from an attribute value.
 fn decode_attr_value(value: &str) -> String {
     CHAR_REF_RE
         .replace_all(value, |c: &regex::Captures| {
-            let ch = if let Some(d) = c.get(1) {
-                d.as_str().parse().ok().and_then(char::from_u32)
+            let decoded = if let Some(d) = c.get(1) {
+                d.as_str()
+                    .parse()
+                    .ok()
+                    .and_then(char::from_u32)
+                    .map(String::from)
             } else if let Some(h) = c.get(2) {
                 u32::from_str_radix(h.as_str(), 16)
                     .ok()
                     .and_then(char::from_u32)
+                    .map(String::from)
             } else {
-                Some(match &c[3] {
-                    "apos" => '\'',
-                    "quot" => '"',
-                    "amp" => '&',
-                    "lt" => '<',
-                    "gt" => '>',
-                    _ => ';',
+                NAMED_ENTITIES.get(&c[3]).map(|&(a, b)| {
+                    [a, b]
+                        .into_iter()
+                        .filter(|&cp| cp != 0)
+                        .filter_map(char::from_u32)
+                        .collect()
                 })
             };
-            ch.map_or_else(|| c[0].to_string(), String::from)
+            decoded.unwrap_or_else(|| c[0].to_string())
         })
         .into_owned()
 }
@@ -506,6 +510,14 @@ mod tests {
             patched.contains("?a&amp;b blob:; script-src 'self' http://localhost:8412"),
             "{patched}"
         );
+
+        let html = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src&Tab;'none'; script-src 'self'\">";
+        let patched = patch_csp_meta(html, 8412);
+        assert!(
+            patched.contains("default-src\t'none'; script-src 'self' http://localhost:8412"),
+            "{patched}"
+        );
+        assert_eq!(revert_csp_meta(&patched), html);
 
         let html = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self' &gt;&semi; script-src 'self'\">";
         let patched = patch_csp_meta(html, 8412);
