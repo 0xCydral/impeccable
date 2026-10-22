@@ -18,6 +18,12 @@
 //!   that opens with an asterisk or a footnote mark) as advisory under the
 //!   three rules. A consent or form label is not fine print and keeps
 //!   failing." The rules are `line-length`, `tiny-text` and `tight-leading`.
+//!   Decision 3 of round 13 (2026-10-22) moves part of it from advisory to
+//!   exempt: "Legal/footnote blocks are exempt from line-length and
+//!   tiny-text; links inside them keep undersized-ui-text." [`fine_print`]
+//!   tells the two tiers apart: a block under a legal or footnote marker
+//!   reports nothing under those two rules and stays advisory under
+//!   `tight-leading`.
 //! - **r5-p3, micro-labels** ([`is_micro_label`]): "Report text under the
 //!   floor as advisory when it is a label with no reading job: a tick or
 //!   axis label inside a chart, a unit or step marker beside a number, a
@@ -948,12 +954,30 @@ const FINE_PRINT_SKIP_TAGS: &[&str] = &["html", "body", "main", "article", "form
 /// A mark a footnote opens with.
 const FOOTNOTE_MARKS: &[char] = &['*', '†', '‡', '§', '¹', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'];
 
-/// Whether a class or id names fine print: a marker as a whole token
-/// (`legal`, `copyright-notice`, `fine-print`, `footnote_2`, plural
-/// `disclaimers`, camelCase `legalNotice`), never a part of a longer word
-/// (`illegal`, `testimonials`).
-fn has_fine_print_marker(class_or_id: &str) -> bool {
-    class_or_id.split_whitespace().any(|token| {
+/// The markers that name a legal or footnote block outright (decision 3,
+/// round 13): text under one of them is exempt from `line-length` and
+/// `tiny-text`. `copyright` and `terms` stay advisory: they also mark a
+/// photo credit, a timing note or a row of links.
+pub const LEGAL_BLOCK_MARKERS: &[&str] = &[
+    "legal",
+    "fineprint",
+    "fine-print",
+    "smallprint",
+    "small-print",
+    "disclaimer",
+    "disclosure",
+    "footnote",
+];
+
+/// Which markers a class or id carries: `None`, any of
+/// [`FINE_PRINT_MARKERS`] (`Advisory`), or one of [`LEGAL_BLOCK_MARKERS`]
+/// (`Exempt`). A marker counts as a whole token (`legal`,
+/// `copyright-notice`, `fine-print`, `footnote_2`, plural `disclaimers`,
+/// camelCase `legalNotice`), never as a part of a longer word (`illegal`,
+/// `testimonials`).
+fn fine_print_marker(class_or_id: &str) -> FinePrint {
+    let mut found = FinePrint::No;
+    for token in class_or_id.split_whitespace() {
         // Words split at `-`, `_` and a lowercase-to-uppercase step.
         let mut spaced = String::with_capacity(token.len() + 4);
         let mut prev_lower = false;
@@ -970,7 +994,7 @@ fn has_fine_print_marker(class_or_id: &str) -> bool {
             spaced.extend(ch.to_lowercase());
         }
         let words: Vec<&str> = spaced.split_whitespace().collect();
-        FINE_PRINT_MARKERS.iter().any(|m| {
+        let names = |m: &&str| {
             // A marker of two words (`fine-print`) is two words in a row.
             // The last word may be plural (`disclaimers`, `footnotes`).
             let parts: Vec<&str> = m.split('-').collect();
@@ -979,8 +1003,21 @@ fn has_fine_print_marker(class_or_id: &str) -> bool {
                 w[..last] == parts[..last]
                     && (w[last] == parts[last] || w[last].strip_suffix('s') == Some(parts[last]))
             })
-        })
-    })
+        };
+        if LEGAL_BLOCK_MARKERS.iter().any(names) {
+            return FinePrint::Exempt;
+        }
+        if FINE_PRINT_MARKERS.iter().any(names) {
+            found = FinePrint::Advisory;
+        }
+    }
+    found
+}
+
+/// Whether a class or id names fine print by any of [`FINE_PRINT_MARKERS`].
+#[cfg(test)]
+fn has_fine_print_marker(class_or_id: &str) -> bool {
+    fine_print_marker(class_or_id) != FinePrint::No
 }
 
 /// The shortest block, in characters, that reads as a footnote when it
@@ -1008,28 +1045,58 @@ fn opens_with_footnote_mark(el: &impl ContextNode) -> bool {
         && collapse(&el.direct_text()).chars().count() >= FOOTNOTE_MIN_CHARS / 2
 }
 
+/// How an element's text reads as fine print. Both tiers are set under
+/// [`FINE_PRINT_MAX_PX`] and are never a heading, a label or a control's
+/// text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FinePrint {
+    /// Not fine print.
+    No,
+    /// Fine print by weaker evidence: a `small` tag, a `copyright` or
+    /// `terms` marker, or a block that opens with a footnote mark. It reports
+    /// as advisory under `line-length`, `tiny-text` and `tight-leading`
+    /// (taste call r5-p27).
+    Advisory,
+    /// A legal or footnote block: one of [`LEGAL_BLOCK_MARKERS`] on the
+    /// element or up to [`FINE_PRINT_MARKER_DEPTH`] levels up. Exempt from
+    /// `line-length` and `tiny-text`, advisory under `tight-leading`
+    /// (decision 3, round 13). Links inside it keep `undersized-ui-text`,
+    /// which does not read this.
+    Exempt,
+}
+
+/// Whether an element's text is legal fine print, in either tier of
+/// [`fine_print`].
+pub fn is_fine_print<N: ContextNode>(el: &N) -> bool {
+    fine_print(el) != FinePrint::No
+}
+
 /// Whether an element's text is legal fine print: set under
 /// [`FINE_PRINT_MAX_PX`], and marked by a `small` tag, or by a class or id
 /// (on it or up to [`FINE_PRINT_MARKER_DEPTH`] levels up), or opening with
-/// an asterisk or a footnote mark.
+/// an asterisk or a footnote mark. A legal or footnote marker
+/// ([`LEGAL_BLOCK_MARKERS`]) in that reach makes it [`FinePrint::Exempt`];
+/// the rest is [`FinePrint::Advisory`]. A leading mark alone stays
+/// advisory: it counts as a footnote only inside such a block, which the
+/// marker already settles.
 ///
 /// Not fine print: text in a `label` (a consent line a visitor has to read
 /// to tick the box), a block holding a form control, and a heading.
-pub fn is_fine_print<N: ContextNode>(el: &N) -> bool {
+pub fn fine_print<N: ContextNode>(el: &N) -> FinePrint {
     if is_heading(el) {
-        return false;
+        return FinePrint::No;
     }
     // Fine print is set small. A rules page under a `legal` wrapper at body
     // size (agenticworldcup.ai/rules, 17px) is a document a visitor reads.
     let size = el.font_size();
     if !(size > 0.0 && size < FINE_PRINT_MAX_PX) {
-        return false;
+        return FinePrint::No;
     }
     let mut cur = Some(el.clone());
     while let Some(c) = cur {
         let tag = c.tag();
         if tag == "label" || is_heading(&c) {
-            return false;
+            return FinePrint::No;
         }
         if FRAME_STOP_TAGS.contains(&tag.as_str()) {
             break;
@@ -1058,8 +1125,11 @@ pub fn is_fine_print<N: ContextNode>(el: &N) -> bool {
         })
     });
     if el.children().iter().any(control) || beside {
-        return false;
+        return FinePrint::No;
     }
+    // The walk climbs past a `small` or a weaker marker: mercury.com sets
+    // its banner disclaimer in a `small` inside `#disclaimer-banner`.
+    let mut found = FinePrint::No;
     let mut cur = Some(el.clone());
     for _ in 0..=FINE_PRINT_MARKER_DEPTH {
         let Some(c) = cur else { break };
@@ -1067,12 +1137,19 @@ pub fn is_fine_print<N: ContextNode>(el: &N) -> bool {
         if FINE_PRINT_SKIP_TAGS.contains(&tag.as_str()) {
             break;
         }
-        if tag == "small" || has_fine_print_marker(&c.class_list()) || has_fine_print_marker(&c.id_attr()) {
-            return true;
+        let marker = fine_print_marker(&c.class_list()).max(fine_print_marker(&c.id_attr()));
+        if marker == FinePrint::Exempt {
+            return FinePrint::Exempt;
+        }
+        if tag == "small" || marker == FinePrint::Advisory {
+            found = FinePrint::Advisory;
         }
         cur = c.parent();
     }
-    opens_with_footnote_mark(el)
+    if found == FinePrint::No && opens_with_footnote_mark(el) {
+        found = FinePrint::Advisory;
+    }
+    found
 }
 
 // ─── r5-p3: micro-labels ────────────────────────────────────────────────────
@@ -2117,6 +2194,67 @@ mod tests {
             assert!(!in_framed_demo(&win.add("span").text("Ready")), "{props:?}");
             assert!(!is_demo_frame(&win), "{props:?}");
         }
+    }
+
+    #[test]
+    fn legal_block_markers_are_the_strict_tier() {
+        for name in [
+            "footnote-3",
+            "homepage-footnotes__item",
+            "LegalFooterSection__content",
+            "footer-disclaimers",
+            "disclaimers",
+            "disclaimer-banner",
+            "carrier-disclosure",
+            "fine-print",
+            "smallPrint",
+        ] {
+            assert_eq!(fine_print_marker(name), FinePrint::Exempt, "{name}");
+        }
+        for name in ["copyright", "offer-terms", "terms-links", "site-copyright_notice"] {
+            assert_eq!(fine_print_marker(name), FinePrint::Advisory, "{name}");
+        }
+        for name in ["illegal-moves", "testimonials", "footer", "notes"] {
+            assert_eq!(fine_print_marker(name), FinePrint::No, "{name}");
+        }
+        // One strict token among weaker ones settles it.
+        assert_eq!(fine_print_marker("terms legal"), FinePrint::Exempt);
+    }
+
+    #[test]
+    fn fine_print_tiers() {
+        let (_t, body) = Tree::new();
+        let body = body.font(12.0);
+        // A footnote list item two levels up (apple's `li#footnote-3 > p`).
+        let li = body.add("ol").add("li").with(|r| r.id = "footnote-3".into());
+        let p = li.add("p").text("Trade-in values vary based on the condition, year and configuration.");
+        assert_eq!(fine_print(&p), FinePrint::Exempt);
+        // A `small` inside a disclaimer banner: the walk climbs past the
+        // `small` to the marker (mercury's `#disclaimer-banner > small > p`).
+        let banner = body.add("div").with(|r| r.id = "disclaimer-banner".into());
+        let p = banner.add("small").add("p").text("Mercury is a fintech company, not an FDIC-insured bank.");
+        assert_eq!(fine_print(&p), FinePrint::Exempt);
+        // Weaker evidence stays advisory: a bare `small`, `terms`,
+        // `copyright` and a leading mark with no marker around it.
+        let small = body.add("div").add("small").text("Use 8 or more characters with a number and a symbol.");
+        assert_eq!(fine_print(&small), FinePrint::Advisory);
+        let terms = body.add("p").class("offer-terms").text("Monthly price reflects the net monthly payment.");
+        assert_eq!(fine_print(&terms), FinePrint::Advisory);
+        let credit = body.add("p").class("copyright").text("Photograph by the studio, used with permission.");
+        assert_eq!(fine_print(&credit), FinePrint::Advisory);
+        let star = body.add("p").text("* for free flu shot: select vaccines are no cost with most insurance.");
+        assert_eq!(fine_print(&star), FinePrint::Advisory);
+        // The strict tier keeps every gate of the advisory one: size,
+        // heading, label, a control.
+        let big = body.add("p").class("disclaimer-intro").font(16.0).text("Read these disclosures before you open an account.");
+        assert_eq!(fine_print(&big), FinePrint::No);
+        let h = body.add("h4").class("disclaimers").text("Disclaimers and footnotes");
+        assert_eq!(fine_print(&h), FinePrint::No);
+        let consent = body.add("div").class("disclaimer").add("label").text("I agree to receive the newsletter.");
+        assert_eq!(fine_print(&consent), FinePrint::No);
+        let far = body.add("div").class("legal-page");
+        let deep = far.add("div").add("div").add("div").add("p").text("You agree to the following terms of service.");
+        assert_eq!(fine_print(&deep), FinePrint::No);
     }
 
     #[test]
