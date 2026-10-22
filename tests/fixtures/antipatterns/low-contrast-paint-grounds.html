@@ -30,8 +30,9 @@
        The static HTML engine reads no pseudo boxes and no layers: it scores
        both seam texts on the grey page, reads no hover face (missing the
        shown one), scores no clipped stop, scores the echoed green headline
-       as itself, and reports `gradient-text` on the clipped heading and on
-       one clipped stat. The URL behavior is pinned by
+       as itself, reports `gradient-text` on the clipped heading and on
+       one clipped stat, and scores the tinted, parked and skewed rows on the
+       white page, the pale copy on the skewed band included. The URL behavior is pinned by
        crates/browser/tests/paint_grounds.rs. Every case uses its own text
        colour or id so a finding names the case. */
     * { box-sizing: border-box; }
