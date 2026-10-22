@@ -281,8 +281,47 @@ fn reference_len(s: &str) -> Option<usize> {
     }
 }
 
+/// The named references that decode to ASCII, the only characters a CSP is
+/// made of. Any other `&name;` is kept as one opaque unit: it may be a real
+/// reference (`&copy;`) or literal text (`&bogus;`), and telling them apart
+/// takes the full HTML table. Treating it as text inside a source means an
+/// insertion never lands between its name and its `;`.
+const ASCII_NAMED_REFERENCES: [(&str, char); 31] = [
+    ("amp", '&'),
+    ("quot", '"'),
+    ("apos", '\''),
+    ("lt", '<'),
+    ("gt", '>'),
+    ("semi", ';'),
+    ("colon", ':'),
+    ("comma", ','),
+    ("period", '.'),
+    ("sol", '/'),
+    ("bsol", '\\'),
+    ("Tab", '\t'),
+    ("NewLine", '\n'),
+    ("ast", '*'),
+    ("plus", '+'),
+    ("hyphen", '-'),
+    ("dash", '-'),
+    ("lowbar", '_'),
+    ("equals", '='),
+    ("quest", '?'),
+    ("num", '#'),
+    ("percnt", '%'),
+    ("excl", '!'),
+    ("commat", '@'),
+    ("dollar", '$'),
+    ("lpar", '('),
+    ("rpar", ')'),
+    ("lsqb", '['),
+    ("rsqb", ']'),
+    ("lcub", '{'),
+    ("rcub", '}'),
+];
+
 /// `tail` starts with `&`. Returns the decoded char and the reference length
-/// for numeric references and the named `amp`, `quot`, `apos`, `lt` and `gt`.
+/// for numeric references and the names in `ASCII_NAMED_REFERENCES`.
 fn decode_reference(tail: &str) -> Option<(char, usize)> {
     let len = reference_len(tail)?;
     let body = tail[1..len].trim_end_matches(';');
@@ -295,56 +334,62 @@ fn decode_reference(tail: &str) -> Option<(char, usize)> {
             .and_then(char::from_u32)
             .unwrap_or('\u{FFFD}')
     } else {
-        match body {
-            "amp" => '&',
-            "quot" => '"',
-            "apos" => '\'',
-            "lt" => '<',
-            "gt" => '>',
-            _ => return None,
-        }
+        ASCII_NAMED_REFERENCES
+            .iter()
+            .find(|(name, _)| *name == body)?
+            .1
     };
     Some((ch, len))
 }
 
-/// Decode the character references `decode_reference` knows. Anything else,
-/// including a bare `&`, passes through unchanged. Used to compare sources,
-/// never to rewrite the attribute.
-fn decode_html_attr_value(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    let mut rest = value;
-    while let Some(pos) = rest.find('&') {
-        out.push_str(&rest[..pos]);
-        let tail = &rest[pos..];
-        match decode_reference(tail) {
-            Some((ch, len)) => {
-                out.push(ch);
-                rest = &tail[len..];
+/// One decoded character of a raw attribute value and the raw bytes it came
+/// from (a single character, or a whole character reference).
+struct Unit {
+    ch: char,
+    start: usize,
+    end: usize,
+    /// An `&name;` outside `ASCII_NAMED_REFERENCES`, read as its raw text.
+    opaque: bool,
+}
+
+fn decode_units(raw: &str) -> Vec<Unit> {
+    let mut out = Vec::with_capacity(raw.len());
+    let mut i = 0;
+    while i < raw.len() {
+        let tail = &raw[i..];
+        let (ch, len, opaque) = if tail.starts_with('&') {
+            match decode_reference(tail) {
+                Some((ch, len)) => (ch, len, false),
+                None => match reference_len(tail) {
+                    Some(len) if tail.as_bytes()[1] != b'#' => ('\u{FFFD}', len, true),
+                    _ => ('&', 1, false),
+                },
             }
-            None => {
-                out.push('&');
-                rest = &tail[1..];
-            }
-        }
+        } else {
+            let c = tail.chars().next().unwrap();
+            (c, c.len_utf8(), false)
+        };
+        out.push(Unit {
+            ch,
+            start: i,
+            end: i + len,
+            opaque,
+        });
+        i += len;
     }
-    out.push_str(rest);
     out
 }
 
-/// Byte offsets of the `;` directive separators in a raw attribute value. A
-/// `;` that ends a character reference such as `&#39;` is not a separator.
-fn directive_separators(raw: &str) -> Vec<usize> {
-    let mut out = Vec::new();
-    let b = raw.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            b'&' => i += reference_len(&raw[i..]).unwrap_or(1),
-            b';' => {
-                out.push(i);
-                i += 1;
-            }
-            _ => i += 1,
+/// The value a browser hands the CSP parser, for the references
+/// `decode_reference` knows; anything else passes through unchanged.
+#[cfg(test)]
+fn decode_html_attr_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for u in decode_units(value) {
+        if u.opaque {
+            out.push_str(&value[u.start..u.end]);
+        } else {
+            out.push(u.ch);
         }
     }
     out
@@ -368,51 +413,68 @@ fn encode_html_attr_value(value: &str, quote: &str) -> String {
 }
 
 /// Append `source` to `directive` in the raw attribute value `raw`, or add the
-/// directive as `; <directive> 'self' <source>` when it is missing. The value
-/// is never decoded and re-encoded as a whole: directives are found on the raw
-/// text with character references kept intact, the existing text is copied
-/// through, and only the inserted source is encoded for `quote`.
+/// directive as `; <directive> 'self' <source>` when it is missing. Directive
+/// names, separators and sources are read on the decoded value, the way the
+/// browser reads them, but the edit is made on the raw text: the existing text
+/// and its character references are copied through byte for byte, and only
+/// the inserted text is encoded for `quote`.
 fn append_origin_to_directive(raw: &str, directive: &str, source: &str, quote: &str) -> String {
     let encoded = encode_html_attr_value(source, quote);
-    let seps = directive_separators(raw);
-    let mut start = 0;
-    for end in seps.iter().copied().chain(std::iter::once(raw.len())) {
-        let seg = &raw[start..end];
-        let body = seg.trim_start();
-        let lead = &seg[..seg.len() - body.len()];
-        let name = body.get(..directive.len());
-        let after = body.get(directive.len()..).unwrap_or("");
-        if name.is_some_and(|n| n.eq_ignore_ascii_case(directive))
-            && after.starts_with(char::is_whitespace)
-        {
-            let tokens: Vec<&str> = after.split_whitespace().collect();
-            if tokens.iter().any(|t| decode_html_attr_value(t) == source) {
-                return raw.to_string();
-            }
-            // JS: `m[4].trim().split(/\s+/)`; an empty trimmed string yields ['']
-            let mut joined: Vec<&str> = if tokens.is_empty() { vec![""] } else { tokens };
-            joined.push(&encoded);
-            return format!(
-                "{}{}{} {}{}",
-                &raw[..start],
-                lead,
-                name.unwrap_or(directive),
-                joined.join(" "),
-                &raw[end..]
-            );
+    let units = decode_units(raw);
+    let name: Vec<char> = directive.chars().collect();
+    for seg in units.split(|u| u.ch == ';') {
+        let body: Vec<&Unit> = seg.iter().skip_while(|u| u.ch.is_whitespace()).collect();
+        let named = body.len() > name.len()
+            && body
+                .iter()
+                .zip(&name)
+                .all(|(u, c)| u.ch.eq_ignore_ascii_case(c))
+            && body[name.len()].ch.is_whitespace();
+        if !named {
+            continue;
         }
-        start = end + 1;
+        let rest: String = body[name.len()..]
+            .iter()
+            .map(|u| if u.opaque { '\u{FFFD}' } else { u.ch })
+            .collect();
+        if rest.split_whitespace().any(|t| t == source) {
+            return raw.to_string();
+        }
+        // After the last source, or after the name when there is none.
+        let at = body
+            .iter()
+            .rev()
+            .find(|u| !u.ch.is_whitespace())
+            .map(|u| u.end)
+            .unwrap_or(raw.len());
+        return format!("{} {}{}", &raw[..at], encoded, &raw[at..]);
     }
-    let trimmed = raw.trim();
-    // JS: .replace(/;?\s*$/, ''), but only for a `;` that separates directives.
-    let lead_ws = raw.len() - raw.trim_start().len();
-    let base = match trimmed.strip_suffix(';') {
-        Some(b) if seps.contains(&(lead_ws + trimmed.len() - 1)) => b,
-        _ => trimmed,
+    // JS: csp.trim().replace(/;?\s*$/, ''), on decoded characters.
+    let first = units.iter().position(|u| !u.ch.is_whitespace());
+    let last = units.iter().rposition(|u| !u.ch.is_whitespace());
+    let base = match (first, last) {
+        (Some(f), Some(l)) => {
+            let end = if units[l].ch == ';' {
+                units[l].start
+            } else {
+                units[l].end
+            };
+            &raw[units[f].start..end.max(units[f].start)]
+        }
+        _ => "",
+    };
+    // A trailing `&#99` or `&amp` would take the new `;` as its terminator
+    // and swallow the separator; a space ends the reference first.
+    let tail = base.rfind('&').map(|i| &base[i + 1..]).unwrap_or(" ");
+    let gap = if !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'#') {
+        " "
+    } else {
+        ""
     };
     format!(
-        "{}; {} {} {}",
+        "{}{}; {} {} {}",
         base,
+        gap,
         directive,
         encode_html_attr_value("'self'", quote),
         encoded
@@ -675,6 +737,53 @@ mod tests {
             browser_policy(&patched),
             "default-src 'none'; script-src 'self' http://localhost:9797 'wasm-unsafe-eval'; connect-src 'self' http://localhost:9797; img-src 'self' blob:"
         );
+    }
+
+    #[test]
+    fn directive_names_and_boundaries_are_read_decoded() {
+        for (csp, expect) in [
+            (
+                "script-src&#32;'self'",
+                "script-src&#32;'self' http://localhost:9797 'wasm-unsafe-eval'; connect-src 'self' http://localhost:9797; img-src 'self' blob:",
+            ),
+            (
+                "script-sr&#99; 'self'",
+                "script-sr&#99; 'self' http://localhost:9797 'wasm-unsafe-eval'; connect-src 'self' http://localhost:9797; img-src 'self' blob:",
+            ),
+            (
+                "img-src 'self'&#59; script-src 'self'",
+                "img-src 'self' blob:&#59; script-src 'self' http://localhost:9797 'wasm-unsafe-eval'; connect-src 'self' http://localhost:9797",
+            ),
+        ] {
+            let html = format!("<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">");
+            let patched = patch_csp_meta(&html, 9797);
+            assert!(patched.contains(&format!("content=\"{expect}\"")), "{patched}");
+            assert_eq!(revert_csp_meta(&patched), html);
+        }
+    }
+
+    #[test]
+    fn trailing_unterminated_reference_keeps_the_new_separator() {
+        for (csp, base) in [
+            (
+                "default-src https://a.example/&#99",
+                "default-src https://a.example/&#99 ",
+            ),
+            (
+                "default-src https://a.example/?a&amp",
+                "default-src https://a.example/?a&amp ",
+            ),
+        ] {
+            let html = format!("<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">");
+            let patched = patch_csp_meta(&html, 9797);
+            assert!(
+                patched.contains(&format!(
+                    "content=\"{base}; script-src 'self' http://localhost:9797 'wasm-unsafe-eval';"
+                )),
+                "{patched}"
+            );
+            assert_eq!(revert_csp_meta(&patched), html);
+        }
     }
 
     #[test]
