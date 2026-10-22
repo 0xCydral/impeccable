@@ -24,11 +24,12 @@
   h1 { font-size: 28px; margin: 0 0 16px; }
   .col { display: inline-block; width: 460px; vertical-align: top; }
   h2 { font-size: 20px; margin: 0 0 16px; }
-  .frame { width: 420px; height: 150px; margin: 0 0 32px; background: #ffffff; border: 1px solid #d0d7de; border-radius: 14px; padding: 16px; box-sizing: border-box; }
+  .frame { width: 420px; height: 190px; margin: 0 0 32px; background: #ffffff; border: 1px solid #d0d7de; border-radius: 14px; padding: 16px; box-sizing: border-box; }
   .inner { width: 360px; height: 70px; background: #ffffff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px; box-sizing: border-box; }
   .label { display: block; height: 20px; font-size: 14px; line-height: 20px; margin: 0 0 8px; }
   p { margin: 0; font-size: 14px; line-height: 20px; }
   h4 { font-size: 14px; line-height: 20px; margin: 0 0 8px; }
+  .small { display: block; height: 14px; font-size: 10px; line-height: 14px; margin: 6px 0 0; color: #1a1a1a; }
   .badge { width: 110px; height: 70px; margin: 0 0 32px; }
 </style>
 </head>
@@ -42,6 +43,8 @@
   <div class="frame" id="pass-hidden" aria-hidden="true">
     <h4 style="color: #a1a1a1">Hidden window heading</h4>
     <div class="inner" id="pass-hidden-inner"><p style="color: #a1a1a1">Invoice 2041 paid by Lattice</p><p style="color: #a1a1a1">Due in three days</p></div>
+    <a class="small" href="#pass-hidden" id="pass-hidden-link">Open the invoice</a>
+    <p class="small" id="pass-hidden-small">A ten pixel sentence a visitor would have to read here.</p>
   </div>
 
   <!-- impeccable.style's div.cc-well -->
@@ -58,6 +61,8 @@
   <div class="frame" id="fail-live">
     <h4 style="color: #a3a3a3">Live demo heading</h4>
     <div class="inner" id="fail-live-inner"><p style="color: #a3a3a3">Deploy finished in 42 seconds</p><p style="color: #a3a3a3">Production, main branch</p></div>
+    <a class="small" href="#fail-live" id="fail-live-link">Open the deploy</a>
+    <p class="small" id="fail-live-small">A ten pixel sentence a visitor would have to read here.</p>
   </div>
 
   <!-- framer.com: an aria-hidden copy beside the shown original -->

@@ -3,7 +3,8 @@
 //!
 //! A product mockup the page declares is not content (`inert` or
 //! `aria-hidden="true"` on a frame-sized box drawing an interface) reports
-//! no `low-contrast` or `nested-cards`, and its headings leave the outline.
+//! no `low-contrast`, `nested-cards`, `tiny-text` or `undersized-ui-text`,
+//! and its headings leave the outline.
 //! A live demo with nothing hidden, an aria-hidden copy beside its shown
 //! original, a hidden badge too small for a frame, a hidden box with two
 //! runs of text and an inert dialog keep their findings. A box labelled as
@@ -99,6 +100,10 @@ fn declared_mockups_report_nothing() {
         for rule in ["low-contrast", "nested-cards"] {
             assert!(on(&f, rule, id).is_empty(), "{rule} {id}: {f:#?}");
         }
+    }
+    for rule in ["tiny-text", "undersized-ui-text"] {
+        assert!(on(&f, rule, "#pass-hidden").is_empty(), "{rule}: {f:#?}");
+        assert!(!on(&f, rule, "#fail-live").is_empty(), "{rule} in the live demo: {f:#?}");
     }
     let skips: Vec<&Row> = f.iter().filter(|r| r.0 == "skipped-heading").collect();
     assert!(
