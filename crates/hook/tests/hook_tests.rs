@@ -3127,3 +3127,104 @@ fn claim_keys_are_path_safe_and_separator_independent_of_the_platform() {
     let ev_none: Map<String, Value> = serde_json::from_value(json!({ "session_id": "s" })).unwrap();
     assert!(impeccable_hook::hook_claim::event_key(&ev_none, "/p", &[]).is_none());
 }
+
+// ─── Claim storage safety (#1069 review: shared temp roots) ──────────────────
+
+const OLD_CLAIM: &str = "0000000000000000000000000000000000000000000000000000000000000001";
+
+/// A claim root that is a symlink (say one another user planted) is never
+/// followed: nothing behind it is created or deleted, and both hooks scan.
+#[test]
+#[cfg(unix)]
+fn a_symlinked_claim_root_is_never_followed() {
+    let t = Tmp::new();
+    let cwd = t.path();
+    let file = t.write("src/card.css", SIDE_TAB_CSS);
+    t.write("victim/2024/keep.txt", "mine");
+    t.write(&format!("victim/1/{OLD_CLAIM}"), "");
+    let victim = jsp::join(&[&cwd, "victim"]);
+    let link = jsp::join(&[&cwd, "claims-link"]);
+    std::os::unix::fs::symlink(&victim, &link).unwrap();
+    let mut e = env(&[]);
+    e.insert("IMPECCABLE_HOOK_CLAIM_DIR".into(), link.clone());
+    let stdin = claude_post_tool_use(&cwd, &file, "toolu_link");
+    for _ in 0..2 {
+        let res = hook::run_hook(&rt_with(&cwd, e.clone()), &stdin);
+        assert!(scanned(&res) && res.audit.contains_key("findings"), "{:?}", res.audit);
+    }
+    assert!(t.exists("victim/2024/keep.txt"));
+    assert!(t.exists(&format!("victim/1/{OLD_CLAIM}")));
+    let names: Vec<String> = std::fs::read_dir(&victim).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+    assert_eq!(names.len(), 2, "{names:?}");
+}
+
+/// A root other users can write to is not trusted either.
+#[test]
+#[cfg(unix)]
+fn a_group_or_world_writable_claim_root_is_not_used() {
+    use std::os::unix::fs::PermissionsExt;
+    let t = Tmp::new();
+    let cwd = t.path();
+    let file = t.write("src/card.css", SIDE_TAB_CSS);
+    let root = jsp::join(&[&cwd, "claims"]);
+    std::fs::create_dir(&root).unwrap();
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let stdin = claude_post_tool_use(&cwd, &file, "toolu_open");
+    for _ in 0..2 {
+        let res = hook::run_hook(&rt_with(&cwd, claim_env(&t, &[])), &stdin);
+        assert!(scanned(&res), "{:?}", res.audit);
+    }
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0);
+}
+
+/// The sweep removes only old `<digits>/` buckets and only `<64 hex>` claim
+/// files in them. Foreign names, foreign files and symlinks stay.
+#[test]
+fn the_sweep_removes_only_its_own_old_buckets_and_claims() {
+    let t = Tmp::new();
+    let cwd = t.path();
+    let file = t.write("src/card.css", SIDE_TAB_CSS);
+    let root = jsp::join(&[&cwd, "claims"]);
+    t.write(&format!("claims/2/{OLD_CLAIM}"), "");
+    t.write(&format!("claims/1/{OLD_CLAIM}"), "");
+    t.write("claims/1/readme.txt", "not ours");
+    t.write("claims/notes/todo.txt", "not ours");
+    t.write(&format!("outside/{OLD_CLAIM}"), "");
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(jsp::join(&[&cwd, "outside"]), jsp::join(&[&root, "3"])).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for d in ["claims", "claims/1", "claims/2", "claims/notes"] {
+            std::fs::set_permissions(jsp::join(&[&cwd, d]), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+    }
+
+    let res = hook::run_hook(&rt_with(&cwd, claim_env(&t, &[])), &claude_post_tool_use(&cwd, &file, "toolu_sweep"));
+    assert!(scanned(&res), "{:?}", res.audit);
+
+    assert!(!t.exists("claims/2"), "an old bucket of claims only is removed");
+    assert!(t.exists("claims/1/readme.txt") && !t.exists(&format!("claims/1/{OLD_CLAIM}")));
+    assert!(t.exists("claims/notes/todo.txt"));
+    assert!(t.exists(&format!("outside/{OLD_CLAIM}")), "a symlinked bucket is not followed");
+    // And the normal path still dedupes.
+    let again = hook::run_hook(&rt_with(&cwd, claim_env(&t, &[])), &claude_post_tool_use(&cwd, &file, "toolu_sweep"));
+    assert!(!scanned(&again), "{:?}", again.audit);
+}
+
+/// Without an override the claims sit under the user's home, not in the
+/// shared temp dir.
+#[test]
+fn claims_default_to_the_users_home() {
+    let t = Tmp::new();
+    let cwd = t.path();
+    let file = t.write("src/card.css", SIDE_TAB_CSS);
+    let home = jsp::join(&[&cwd, "home"]);
+    std::fs::create_dir(&home).unwrap();
+    let e = env(&[("HOME", &home), ("USERPROFILE", &home)]);
+    let stdin = claude_post_tool_use(&cwd, &file, "toolu_home");
+    let first = hook::run_hook(&rt_with(&cwd, e.clone()), &stdin);
+    let second = hook::run_hook(&rt_with(&cwd, e.clone()), &stdin);
+    assert!(scanned(&first) && !scanned(&second));
+    assert!(t.exists("home/.impeccable/hook-claims"));
+}

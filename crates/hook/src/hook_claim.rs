@@ -16,12 +16,20 @@
 //! its calls keeps today's behavior rather than risk dropping a real second
 //! edit.
 //!
-//! Cost: one hash, one `create_dir` and one `create_new` per edit, plus a
-//! `read_dir` of the claim root (a handful of bucket dirs) when a new
-//! ten-minute bucket starts. No directory walk.
+//! Claims live in a per-user directory, `~/.impeccable/hook-claims`, never in
+//! the shared temp dir. Before anything is created there or removed from it,
+//! the root and each bucket must be a real directory (not a symlink) that,
+//! on Unix, the current user owns with no group or other write bit. The sweep
+//! of old buckets is not recursive: it removes only `<digits>/` dirs, and in
+//! them only `<64 hex>` regular files, then the dir itself if that left it
+//! empty. Symlinks are never followed.
 //!
-//! Every failure fails open: if the claim cannot be made or checked, the
-//! scan runs.
+//! Cost: one hash, a few `lstat`s, one `create_dir` and one `create_new` per
+//! edit, plus a `read_dir` of the claim root (a handful of bucket dirs) when
+//! a new ten-minute bucket starts. No directory walk.
+//!
+//! Every failure fails open: if the claim cannot be made or checked, or a
+//! directory is not safe, the scan runs and nothing is deleted.
 
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -76,17 +84,16 @@ pub fn event_key(event: &Map<String, Value>, project_cwd: &str, files: &[String]
     Some(h.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
-/// `IMPECCABLE_HOOK_CLAIM_DIR`, else `<temp>/impeccable-hook-claims`, with the
-/// temp dir read from the hook's own environment first.
-fn claim_root(rt: &Runtime) -> PathBuf {
+/// `IMPECCABLE_HOOK_CLAIM_DIR`, else `<home>/.impeccable/hook-claims`, with
+/// home read from the hook's own environment (`HOME`, then `USERPROFILE`;
+/// the other way round on Windows). `None` without a home: no claim.
+fn claim_root(rt: &Runtime) -> Option<PathBuf> {
     if let Some(dir) = rt.env("IMPECCABLE_HOOK_CLAIM_DIR").filter(|s| !s.is_empty()) {
-        return PathBuf::from(dir);
+        return Some(PathBuf::from(dir));
     }
-    let tmp = ["TMPDIR", "TEMP", "TMP"]
-        .iter()
-        .find_map(|k| rt.env(k).filter(|s| !s.is_empty()).map(PathBuf::from))
-        .unwrap_or_else(std::env::temp_dir);
-    tmp.join("impeccable-hook-claims")
+    let order: [&str; 2] = if cfg!(windows) { ["USERPROFILE", "HOME"] } else { ["HOME", "USERPROFILE"] };
+    let home = order.iter().find_map(|k| rt.env(k).filter(|s| !s.is_empty()))?;
+    Some(Path::new(home).join(".impeccable").join("hook-claims"))
 }
 
 fn now_bucket() -> Option<u64> {
@@ -94,38 +101,130 @@ fn now_bucket() -> Option<u64> {
     Some(secs / BUCKET_SECONDS)
 }
 
+/// The current effective user, for the ownership check.
+#[cfg(unix)]
+fn current_uid() -> u32 {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    unsafe { libc::geteuid() }
+}
+
+/// A directory this invocation may create in and delete from: a real
+/// directory (the metadata is `lstat`'s, so a symlink is never one), and on
+/// Unix owned by the current user with no group or other write bit.
+fn is_safe_dir(meta: &std::fs::Metadata) -> bool {
+    if !meta.file_type().is_dir() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if meta.uid() != current_uid() || meta.mode() & 0o022 != 0 {
+            return false;
+        }
+    }
+    true
+}
+
+/// Creates one directory level, private to the user on Unix. Not recursive.
+fn create_private_dir(path: &Path) -> std::io::Result<()> {
+    let mut b = std::fs::DirBuilder::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        b.mode(0o700);
+    }
+    b.create(path)
+}
+
+/// `Some(created)` when `path` is (now) a safe directory, `None` when it is
+/// missing and could not be made, or is unsafe.
+fn ensure_safe_dir(path: &Path) -> Option<bool> {
+    let created = match create_private_dir(path) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => false,
+        Err(_) => return None,
+    };
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    is_safe_dir(&meta).then_some(created)
+}
+
+/// The claim root, created when missing (with its `.impeccable` parent, a
+/// plain user dir) and checked; `None` when it is unusable or unsafe.
+fn safe_root(rt: &Runtime) -> Option<PathBuf> {
+    let root = claim_root(rt)?;
+    if std::fs::symlink_metadata(&root).is_err() {
+        if let Some(parent) = root.parent() {
+            if std::fs::symlink_metadata(parent).is_err() {
+                create_private_dir(parent).ok()?;
+            }
+        }
+    }
+    ensure_safe_dir(&root)?;
+    Some(root)
+}
+
+fn is_bucket_name(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 20 && name.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn is_claim_name(name: &str) -> bool {
+    name.len() == 64 && name.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
 /// Removes buckets older than the previous one. Runs only when this
 /// invocation created the current bucket, so it is paid once per bucket.
+/// Only safe `<digits>` dirs are touched, and in them only `<64 hex>` regular
+/// files; a bucket holding anything else is left in place.
 fn sweep_old_buckets(root: &Path, bucket: u64) {
     let Ok(entries) = std::fs::read_dir(root) else { return };
     for entry in entries.flatten() {
         let name = entry.file_name();
-        let Some(n) = name.to_str().and_then(|s| s.parse::<u64>().ok()) else { continue };
-        if n + 1 < bucket {
-            let _ = std::fs::remove_dir_all(entry.path());
+        let Some(name) = name.to_str().filter(|n| is_bucket_name(n)) else { continue };
+        let Ok(n) = name.parse::<u64>() else { continue };
+        if n + 1 >= bucket {
+            continue;
         }
+        let dir = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&dir) else { continue };
+        if !is_safe_dir(&meta) {
+            continue;
+        }
+        let Ok(claims) = std::fs::read_dir(&dir) else { continue };
+        for claim in claims.flatten() {
+            let ok_name = claim.file_name().to_str().is_some_and(is_claim_name);
+            let is_file = claim.file_type().is_ok_and(|t| t.is_file());
+            if ok_name && is_file {
+                let _ = std::fs::remove_file(claim.path());
+            }
+        }
+        let _ = std::fs::remove_dir(&dir);
     }
 }
 
+/// True when `dir/key` exists as a claim file in a safe bucket.
+fn holds_claim(dir: &Path, key: &str) -> bool {
+    let Ok(meta) = std::fs::symlink_metadata(dir) else { return false };
+    is_safe_dir(&meta) && std::fs::symlink_metadata(dir.join(key)).is_ok_and(|m| m.file_type().is_file())
+}
+
 /// Claims `key` for this invocation. `Duplicate` only when another
-/// invocation provably holds it; every error is `Scan`.
+/// invocation provably holds it; every error, and every unsafe directory, is
+/// `Scan`.
 pub fn claim_key(rt: &Runtime, key: &str) -> Claim {
+    if !is_claim_name(key) {
+        return Claim::Scan;
+    }
     let Some(bucket) = now_bucket() else { return Claim::Scan };
-    let root = claim_root(rt);
-    if bucket > 0 && root.join((bucket - 1).to_string()).join(key).exists() {
+    let Some(root) = safe_root(rt) else { return Claim::Scan };
+    if bucket > 0 && holds_claim(&root.join((bucket - 1).to_string()), key) {
         return Claim::Duplicate;
     }
     let dir = root.join(bucket.to_string());
-    match std::fs::create_dir(&dir) {
-        Ok(()) => sweep_old_buckets(&root, bucket),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(_) => {
-            if std::fs::create_dir_all(&dir).is_err() {
-                return Claim::Scan;
-            }
-            sweep_old_buckets(&root, bucket);
-        }
+    let Some(created) = ensure_safe_dir(&dir) else { return Claim::Scan };
+    if created {
+        sweep_old_buckets(&root, bucket);
     }
+    // `create_new` is O_CREAT|O_EXCL: it never follows a symlink at the path.
     match std::fs::OpenOptions::new().write(true).create_new(true).open(dir.join(key)) {
         Ok(_) => Claim::Scan,
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Claim::Duplicate,
