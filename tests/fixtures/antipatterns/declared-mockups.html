@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Product mockups the page declares are not content (round 13, decision 1)</title>
+<!--
+  A subtree under inert or aria-hidden="true" that draws an interface (a
+  frame-sized box, three or more runs of text, no h1, a small share of the
+  page's words, not a dialog, landmark, slide or copy) is a mockup the
+  author took out of the page's content. Under it low-contrast,
+  nested-cards, tiny-text, undersized-ui-text, cramped-padding and
+  clipped-overflow-container report nothing, and its headings leave the
+  outline skipped-heading reads. The URL engine reads this; the static
+  engine, which has no layout to size a frame by, reports every row.
+
+  Each row's ink is its own grey, so the page's one report per colour pair
+  never hides one row behind another.
+
+  A box whose aria-label names a screenshot is described, not hidden: its
+  findings report as advisory (taste call r13-t5).
+-->
+<style>
+  body { font-family: system-ui, sans-serif; font-size: 16px; color: #1a1a1a; background: #ffffff; margin: 24px; }
+  h1 { font-size: 28px; margin: 0 0 16px; }
+  .col { display: inline-block; width: 460px; vertical-align: top; }
+  h2 { font-size: 20px; margin: 0 0 16px; }
+  .frame { width: 420px; height: 150px; margin: 0 0 32px; background: #ffffff; border: 1px solid #d0d7de; border-radius: 14px; padding: 16px; box-sizing: border-box; }
+  .inner { width: 360px; height: 70px; background: #ffffff; border: 1px solid #e4e4e7; border-radius: 10px; padding: 12px; box-sizing: border-box; }
+  .label { display: block; height: 20px; font-size: 14px; line-height: 20px; margin: 0 0 8px; }
+  p { margin: 0; font-size: 14px; line-height: 20px; }
+  h4 { font-size: 14px; line-height: 20px; margin: 0 0 8px; }
+  .badge { width: 110px; height: 70px; margin: 0 0 32px; }
+</style>
+</head>
+<body>
+<h1>Declared mockups</h1>
+
+<div class="col" id="passes">
+  <h2>Passes: declared mockups report nothing</h2>
+
+  <!-- stripe.com's figure.DomGraphic, cursor.com's demo windows -->
+  <div class="frame" id="pass-hidden" aria-hidden="true">
+    <h4 style="color: #a1a1a1">Hidden window heading</h4>
+    <div class="inner" id="pass-hidden-inner"><p style="color: #a1a1a1">Invoice 2041 paid by Lattice</p><p style="color: #a1a1a1">Due in three days</p></div>
+  </div>
+
+  <!-- impeccable.style's div.cc-well -->
+  <div class="frame" id="pass-inert" inert>
+    <span class="label" style="color: #a2a2a2">Drafts</span>
+    <div class="inner" id="pass-inert-inner"><p style="color: #a2a2a2">Weekly active users up 12%</p><p style="color: #a2a2a2">Compared with last week</p></div>
+  </div>
+</div>
+
+<div class="col" id="fails">
+  <h2>Fails: nothing hidden, or a guard holds</h2>
+
+  <!-- a live demo with nothing hidden keeps its findings -->
+  <div class="frame" id="fail-live">
+    <h4 style="color: #a3a3a3">Live demo heading</h4>
+    <div class="inner" id="fail-live-inner"><p style="color: #a3a3a3">Deploy finished in 42 seconds</p><p style="color: #a3a3a3">Production, main branch</p></div>
+  </div>
+
+  <!-- framer.com: an aria-hidden copy beside the shown original -->
+  <div id="fail-copy-track">
+    <div class="frame logo-set" id="fail-copy-original">
+      <span class="label" style="color: #a4a4a4">Customers</span>
+      <div class="inner" id="fail-copy-original-inner"><p style="color: #a4a4a4">Trusted by teams at Acme</p><p style="color: #a4a4a4">And forty more</p></div>
+    </div>
+    <div class="frame logo-set" id="fail-copy" aria-hidden="true">
+      <span class="label" style="color: #a5a5a5">Customers</span>
+      <div class="inner" id="fail-copy-inner"><p style="color: #a5a5a5">Trusted by teams at Acme</p><p style="color: #a5a5a5">And forty more</p></div>
+    </div>
+  </div>
+
+  <!-- an aria-hidden badge smaller than a frame -->
+  <div class="badge" id="fail-badge" aria-hidden="true">
+    <span class="label" style="color: #a6a6a6">Beta</span>
+    <span class="label" style="color: #a6a6a6">New</span>
+    <span class="label" style="color: #a6a6a6">Soon</span>
+  </div>
+
+  <!-- an aria-hidden box with two runs of text: a decorative copy -->
+  <div class="frame" id="fail-two-runs" aria-hidden="true">
+    <div class="inner" id="fail-two-runs-inner"><p style="color: #a7a7a7">Build the future</p><p style="color: #a7a7a7">Ship it today</p></div>
+  </div>
+
+  <!-- an inert dialog on screen is the page's own UI -->
+  <div class="frame" id="fail-dialog" role="dialog" inert>
+    <span class="label" style="color: #a8a8a8">Cookie settings</span>
+    <div class="inner" id="fail-dialog-inner"><p style="color: #a8a8a8">Analytics cookies are off</p><p style="color: #a8a8a8">Change them at any time</p></div>
+  </div>
+
+  <!-- linear.app: a box labelled as a screenshot is described, not
+       hidden, so its findings report as advisory -->
+  <div class="frame" id="adv-screenshot" aria-label="A screenshot of the billing screen">
+    <span class="label" style="color: #a9a9a9">Billing</span>
+    <div class="inner" id="adv-screenshot-inner"><p style="color: #a9a9a9">Pro plan, renews on June 3</p><p style="color: #a9a9a9">Two seats in use</p></div>
+  </div>
+</div>
+
+</body>
+</html>
