@@ -590,13 +590,18 @@ pub fn read_pseudo_surface_dom(dom: &dyn Dom, el: ElId, rect: &Rect) -> Option<R
         if position != "absolute" && position != "fixed" {
             continue;
         }
-        // JS `(parseFloat(ps.opacity) || 1) < 0.9`
+        // An explicit 0 is 0, as [`read_pseudo_gradient_face`] reads it:
+        // family.co's secondary buttons park a hover face in the text's own
+        // colour at `opacity: 0`, and read at 1 it became the ground the
+        // label was scored on, `1.0:1` (observations-craft-1009 row 5). Only
+        // an opacity the capture did not read counts as 1.
         let opacity = {
-            let n = parse_float(&pseudo_str(dom, el, which, "opacity"));
-            if num_truthy(n) {
-                n
-            } else {
+            let raw = pseudo_str(dom, el, which, "opacity");
+            let n = parse_float(&raw);
+            if js::trim(&raw).is_empty() || !n.is_finite() {
                 1.0
+            } else {
+                n
             }
         };
         if pseudo_str(dom, el, which, "display") == "none" || opacity < 0.9 {
@@ -11683,6 +11688,53 @@ mod tests {
     /// `z-index: -1` that its `isolation: isolate` keeps over the ring. The
     /// near-white label was scored against the ring's white, "#f4f4f6 on
     /// #ffffff". The face is what the label sits on.
+    /// family.co's `ButtonSecondary`: a hover face in the label's own colour
+    /// parked at `opacity: 0` is not the ground at rest; the same face shown
+    /// is, and a failing label on it still reports.
+    #[test]
+    fn a_hover_face_at_opacity_zero_is_not_the_surface() {
+        let run = |face: &str, opacity: &str| {
+            let (mut d, body) = page();
+            let b = d.add(Some(body), "div");
+            visible(&mut d, b);
+            d.add_text(b, "Download");
+            d.set_rect(b, 40.0, 600.0, 160.0, 44.0);
+            d.set_styles(
+                b,
+                &[
+                    ("backgroundColor", "rgba(0, 0, 0, 0)"),
+                    ("color", "rgb(110, 110, 110)"),
+                    ("fontSize", "16px"),
+                    ("fontWeight", "500"),
+                    ("position", "relative"),
+                ],
+            );
+            for (p, v) in [
+                ("content", "\"\""),
+                ("position", "absolute"),
+                ("display", "block"),
+                ("backgroundColor", face),
+                ("backgroundImage", "none"),
+                ("top", "0px"),
+                ("left", "0px"),
+                ("width", "160px"),
+                ("height", "44px"),
+                ("opacity", opacity),
+            ] {
+                d.set_pseudo_style(b, "::before", p, v);
+            }
+            colors(&d, b).into_iter().filter(|h| h.id == "low-contrast").map(|h| h.snippet).collect::<Vec<_>>()
+        };
+        // The grey label passes on the white page it sits on.
+        assert!(run("rgb(110, 110, 110)", "0").is_empty(), "{:?}", run("rgb(110, 110, 110)", "0"));
+        // Shown, a grey face under it fails, scored on the face.
+        let shown = run("rgb(200, 200, 200)", "1");
+        assert_eq!(shown.len(), 1, "{shown:?}");
+        assert!(shown[0].contains("on #c8c8c8"), "{}", shown[0]);
+        // An opacity the capture did not read counts as shown.
+        assert_eq!(run("rgb(200, 200, 200)", "").len(), 1);
+    }
+
     #[test]
     fn an_opaque_gradient_face_on_a_pseudo_is_the_surface() {
         let run_with = |face: &str, isolation: &str, extra: &[(&str, &str)]| {
