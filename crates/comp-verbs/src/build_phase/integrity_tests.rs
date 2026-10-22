@@ -1582,6 +1582,7 @@ impl EntryRenderer for RecordingRenderer {
 fn responsive_and_ship_capture_the_entry_artifact_names() {
     // The recorded artifact is a framework source route; --artifact names the built entry.
     let (ws, desktop) = finished_native_workspace();
+    ws.write("src/pages/index.astro", b"<h1>Headline</h1>");
     let mut state = load_state(&ws.io()).unwrap();
     state["artifact"] = json!("src/pages/index.astro");
     save_state(&ws.io(), &state);
@@ -1590,7 +1591,9 @@ fn responsive_and_ship_capture_the_entry_artifact_names() {
     let ship = ["finish", "--disposition", "ship", "--artifact", "index.html"].map(String::from);
     assert_eq!(run_with_renderer(&ship, &mut io, &no_organic_scan, Some(&renderer)), 0);
     assert_eq!(*renderer.asked.borrow(), ["index.html"]);
-    assert_eq!(load_state(&io).unwrap()["artifact"], "src/pages/index.astro");
+    let state = load_state(&io).unwrap();
+    assert_eq!(state["artifact"], "src/pages/index.astro");
+    assert_eq!(crate::completion::report(&ws.path, Some(&state), Some("owner"))["status"], "complete");
 
     renderer.asked.borrow_mut().clear();
     let mut state = load_state(&io).unwrap();
