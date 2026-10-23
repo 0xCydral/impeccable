@@ -301,17 +301,25 @@ fn read_reference(tail: &str) -> Reference {
         .iter()
         .take_while(|c| c.is_ascii_alphanumeric())
         .count();
-    let lookup = |name: &str| NAMED_ENTITIES.get(name).copied().filter(|v| *v != (0, 0));
-    let found = if b.get(run) == Some(&b';') {
-        lookup(&tail[1..=run]).map(|v| (v, run + 1))
-    } else {
-        None
+    // Walk forward one byte at a time. Every prefix of a name is in the
+    // table, so the first miss ends the search: an unknown name costs one
+    // lookup, not one per byte of the text after it.
+    let mut found = None;
+    for end in 2..=run {
+        let Some(&value) = NAMED_ENTITIES.get(&tail[1..end]) else {
+            break;
+        };
+        if value != (0, 0) {
+            found = Some((value, end));
+        }
+        if end == run && b.get(run) == Some(&b';') {
+            if let Some(&value) = NAMED_ENTITIES.get(&tail[1..=run]) {
+                if value != (0, 0) {
+                    found = Some((value, run + 1));
+                }
+            }
+        }
     }
-    .or_else(|| {
-        (2..=run)
-            .rev()
-            .find_map(|end| lookup(&tail[1..end]).map(|v| (v, end)))
-    });
     let Some(((first, second), len)) = found else {
         return Reference::Literal;
     };
