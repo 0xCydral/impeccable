@@ -1317,6 +1317,9 @@ fn has_bright_sibling_state(dom: &dyn Dom, el: ElId) -> bool {
             && dom.tag_name(other) == tag
             && opacity_of(dom, other) >= 0.999
             && bright_state_classes(&own, &crate::browser::painted::class_tokens(dom, other))
+            // A sibling that is not shown (`display: none`, hidden) shows
+            // no state a reader meets.
+            && is_painted_for_browser_rule(dom, other)
     })
 }
 
@@ -6854,6 +6857,14 @@ mod tests {
         // transition (styled faint), and a bright sibling that is another
         // component (two class tokens apart).
         let (d, _, word, _) = stepper("feature", "feature", "0.3");
+        assert_eq!(advisory(&colors(&d, word)), vec![false]);
+        // A bright sibling that is not shown supplies no state (PR #1148
+        // review).
+        let (mut d, _, word, sibling) = stepper("feature", "feature is-active", "1");
+        d.set_style(sibling, "display", "none");
+        assert_eq!(advisory(&colors(&d, word)), vec![false]);
+        d.set_style(sibling, "display", "block");
+        d.set_style(sibling, "visibility", "hidden");
         assert_eq!(advisory(&colors(&d, word)), vec![false]);
         let (mut d, wrap, word, _) = stepper("feature", "feature is-active", "1");
         d.set_style(wrap, "transitionDuration", "0s");

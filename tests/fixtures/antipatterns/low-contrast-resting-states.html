@@ -14,7 +14,8 @@
        same shape. Items all faded alike, an item faded with no transition, an
        inactive tab or clickable option (its label names the control a
        visitor picks), a faint modifier on the dimmed box, identical class
-       lists, a disclosure `summary` or menu checkbox item, a lone box parked
+       lists, a stepper item whose active sibling is not shown, a disclosure `summary`
+       or menu checkbox item, a lone box parked
        inline with a lit namesake elsewhere, keys parked alike whose lit peer
        is not shown, parked nav links, a design token written inline, and a number written inline
        with nothing to show it moves keep their severity.
@@ -96,6 +97,9 @@
     .cap.glowing { display: none; transition: opacity 1.5s; }
     .cap-label { color: #4a4e52; }
     .cap-lit-label { color: #111111; }
+    .tour { opacity: 0.3; transition: opacity 0.3s; }
+    .tour.is-active { display: none; opacity: 1; }
+    .tour-copy { color: #3c3d3e; }
     /* Parked for a reveal: not at rest. */
     .parked-card-copy { color: #050a0f; }
     .scrubbed { transition: opacity 0.3s, transform 0.3s; }
@@ -175,6 +179,12 @@
         <li class="checkout-step current"><span class="checkout-current-copy">1. Cart</span></li>
         <li class="checkout-step"><span class="checkout-copy">2. Shipping</span></li>
       </ol></div>
+
+      <h3>Stepper item whose active sibling is not shown (display: none)</h3>
+      <div class="case">
+        <article class="tour is-active"><h4 class="tour-copy">Spaces</h4></article>
+        <article class="tour"><h4 class="tour-copy">Split view</h4></article>
+      </div>
 
       <h3>Disclosure summaries beside the open one (a control)</h3>
       <div class="case">
