@@ -202,10 +202,12 @@ fn site_names(dom: &dyn Dom) -> Vec<String> {
             .filter(|part| !part.is_empty())
             .collect();
         if parts.len() > 1 {
-            let host_run = labels.concat();
             let run = |text: &str| -> String {
                 text.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
             };
+            // The host read the same way: `get-acme-studio.com` holds
+            // `Acme Studio`.
+            let host_run = run(&labels.concat());
             for part in parts {
                 let joined = run(&part);
                 if joined.chars().count() >= 3 && host_run.contains(&joined) {
@@ -426,6 +428,7 @@ mod tests {
         assert_eq!(build("", None, "Pricing | Acme", "Acme"), None, "nothing backs either part");
         assert_eq!(build("getacme.io", None, "Pricing | Acme", "Acme"), wordmark);
         assert_eq!(build("getacme.io", None, "Pricing | Acme", "Pricing"), None);
+        assert_eq!(build("get-acme-studio.com", None, "Pricing | Acme Studio", "Acme Studio"), wordmark);
         assert_eq!(build("", Some("Acme"), "Pricing | Acme", "Acme"), wordmark);
         assert_eq!(build("", Some("Acme"), "Pricing | Acme", "Pricing"), None);
         // A title of one part is the site's name, opened word for word.
