@@ -161,41 +161,44 @@ pub fn download_file_with(
     dest: &str,
     fetch: &mut dyn FnMut(&str) -> Result<FetchResponse, String>,
 ) -> Result<(), String> {
-    download_file_capped(url, dest, fetch, MAX_DOWNLOAD_BYTES)
+    download_file_capped(url, dest, fetch, MAX_DOWNLOAD_BYTES).map_err(BundleError::into_detail)
 }
 
+/// Failures of the request or the response body are `Download`; failures to
+/// create or write `dest` are `Unpack`.
 fn download_file_capped(
     url: &str,
     dest: &str,
     fetch: &mut dyn FnMut(&str) -> Result<FetchResponse, String>,
     max_bytes: u64,
-) -> Result<(), String> {
+) -> Result<(), BundleError> {
+    use BundleError::{Download, Unpack};
     let mut current = url.to_string();
     let mut hops_left = 5;
     loop {
         // JS: new URL(current) throws `Invalid URL` (a TypeError) first.
-        let parsed = url::Url::parse(&current).map_err(|_| "Invalid URL".to_string())?;
+        let parsed = url::Url::parse(&current).map_err(|_| Download("Invalid URL".to_string()))?;
         if parsed.scheme() != "https" {
-            return Err("Refusing non-HTTPS URL".to_string());
+            return Err(Download("Refusing non-HTTPS URL".to_string()));
         }
-        let res = fetch(&current)?;
+        let res = fetch(&current).map_err(Download)?;
         if res.status >= 300 && res.status < 400 {
             let Some(location) = res.location else {
-                return Err(format!("HTTP {}", res.status));
+                return Err(Download(format!("HTTP {}", res.status)));
             };
             if hops_left <= 0 {
-                return Err("Too many redirects".to_string());
+                return Err(Download("Too many redirects".to_string()));
             }
             hops_left -= 1;
             // JS: new URL(location, current).href
             current = parsed
                 .join(&location)
-                .map_err(|_| "Invalid URL".to_string())?
+                .map_err(|_| Download("Invalid URL".to_string()))?
                 .to_string();
             continue;
         }
         if res.status != 200 {
-            return Err(format!("HTTP {}", res.status));
+            return Err(Download(format!("HTTP {}", res.status)));
         }
         // JS-PARITY: the `if (!res.body) throw new Error('Empty response
         // body')` guard has no ureq equivalent — a response always carries a
@@ -209,36 +212,45 @@ fn download_file_capped(
             // EEXIST comes from the `wx` open itself: JS leaves the existing
             // file alone and rethrows.
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err(util::node_error("open", dest, &e));
+                return Err(Unpack(util::node_error("open", dest, &e)));
             }
             Err(e) => {
                 util::rm_rf(dest);
-                return Err(util::node_error("open", dest, &e));
+                return Err(Unpack(util::node_error("open", dest, &e)));
             }
         };
         // Stream at most `max_bytes` to disk; a longer response is rejected
-        // and the partial file removed (triage C4).
-        let copied = std::io::copy(&mut res.body.take(max_bytes + 1), &mut file)
-            .and_then(|n| {
-                use std::io::Write;
-                file.flush().map(|_| n)
-            });
-        match copied {
-            Ok(n) if n > max_bytes => {
-                drop(file);
-                util::rm_rf(dest);
-                return Err(format!(
-                    "response too large downloading {current} (over {max_bytes} bytes)"
-                ));
+        // and the partial file removed (triage C4). Reads and writes are
+        // separate calls so a full disk is not reported as a network failure.
+        use std::io::Write;
+        let mut body = res.body.take(max_bytes + 1);
+        let mut buffer = [0u8; 64 * 1024];
+        let mut copied = 0u64;
+        let result = loop {
+            match body.read(&mut buffer) {
+                Ok(0) => break file.flush().map_err(|e| Unpack(e.to_string())),
+                Ok(n) => {
+                    copied += n as u64;
+                    if let Err(e) = file.write_all(&buffer[..n]) {
+                        break Err(Unpack(e.to_string()));
+                    }
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => break Err(Download(e.to_string())),
             }
-            Ok(_) => {}
-            Err(e) => {
-                drop(file);
-                util::rm_rf(dest);
-                return Err(e.to_string());
+        };
+        let result = result.and_then(|()| {
+            if copied > max_bytes {
+                Err(Download(format!("response too large downloading {current} (over {max_bytes} bytes)")))
+            } else {
+                Ok(())
             }
+        });
+        if result.is_err() {
+            drop(file);
+            util::rm_rf(dest);
         }
-        return Ok(());
+        return result;
     }
 }
 
@@ -356,7 +368,7 @@ pub enum BundleError {
     Download(String),
     /// The release could not be authenticated.
     Verify(String),
-    /// Staging, reading back or extracting the bundle on this machine failed
+    /// Staging, saving, reading back or extracting the bundle on this machine failed
     /// (disk space, permissions, an entry the extractor refuses).
     Unpack(String),
     /// An `IMPECCABLE_BUNDLE_PATH` bundle could not be read.
@@ -368,6 +380,12 @@ impl BundleError {
     /// existing installation (#734).
     pub fn is_remote(&self) -> bool {
         !matches!(self, BundleError::Local(_))
+    }
+
+    fn into_detail(self) -> String {
+        match self {
+            BundleError::Download(e) | BundleError::Verify(e) | BundleError::Unpack(e) | BundleError::Local(e) => e,
+        }
     }
 }
 
@@ -419,8 +437,8 @@ fn download_and_extract_signed_bundle(
         }
         let location = response.location.ok_or_else(|| Verify("Missing bundle release redirect".into()))?;
         let version = bundle_signature::release_version(&location).map_err(Verify)?;
-        download_file_capped(&format!("{location}.sig.json"), &tmp_signature, fetch, MAX_SIGNATURE_BYTES).map_err(Download)?;
-        download_file_with(&location, &tmp_zip, fetch).map_err(Download)?;
+        download_file_capped(&format!("{location}.sig.json"), &tmp_signature, fetch, MAX_SIGNATURE_BYTES)?;
+        download_file_capped(&location, &tmp_zip, fetch, MAX_DOWNLOAD_BYTES)?;
         let signature = std::fs::read(&tmp_signature).map_err(|e| Unpack(e.to_string()))?;
         let file = std::fs::File::open(&tmp_zip).map_err(|e| Unpack(e.to_string()))?;
         let mut reader = std::io::BufReader::new(file);
@@ -1074,7 +1092,7 @@ mod tests {
                 body: Box::new(std::io::repeat(b'a')),
             })
         };
-        let err = download_file_capped("https://x/bundle", &dest, &mut fetch, 4096).unwrap_err();
+        let err = download_file_capped("https://x/bundle", &dest, &mut fetch, 4096).unwrap_err().into_detail();
         assert!(err.contains("response too large"), "{err}");
         assert!(!std::path::Path::new(&dest).exists());
         let _ = std::fs::remove_dir_all(&dir);
@@ -1150,6 +1168,11 @@ mod tests {
         let mut fetch = |_: &str| -> Result<FetchResponse, String> { panic!("staging fails before any request") };
         let error = download_remote_bundle(&unwritable, &mut fetch, Ok(Default::default())).unwrap_err();
         assert!(matches!(error, BundleError::Unpack(_)), "{error}");
+        let mut fetch = |_: &str| -> Result<FetchResponse, String> {
+            Ok(FetchResponse { status: 200, location: None, body: Box::new(std::io::Cursor::new(b"zip".to_vec())) })
+        };
+        let error = download_file_capped("https://example.com/b.zip", "/nonexistent/impeccable/b.zip", &mut fetch, MAX_DOWNLOAD_BYTES).unwrap_err();
+        assert!(matches!(error, BundleError::Unpack(_)), "a failed save is not a download failure: {error}");
         assert!(!BundleError::Local("Local bundle not found: x".into()).is_remote());
     }
 
