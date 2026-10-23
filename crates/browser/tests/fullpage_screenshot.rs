@@ -816,8 +816,8 @@ fn blue(p: [u8; 3]) -> bool {
 
 /// Light small print in a content layer that takes no pointer events, over a
 /// fixed backdrop the page lets take the pointer (a WebGL canvas behind
-/// content). The hit test never reaches the element, so nothing is known to
-/// cover it, and the backdrop under it stays in its shot.
+/// content). Made hit-testable for the walk, the element is listed above the
+/// backdrop, so nothing covers it and the backdrop under it stays in its shot.
 const POINTERLESS_OVER_BACKDROP_PAGE: &str = r#"<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><title>Pointerless</title>
 <style>
@@ -840,6 +840,36 @@ fn an_element_shot_keeps_the_backdrop_under_an_element_the_hit_test_misses() {
     let b = share(&img, shot.rect, blue);
     assert!(b > 0.5, "the backdrop under the element was hidden: {b}");
     assert!(shot.hidden_covers.is_empty(), "{:?}", shot.hidden_covers);
+}
+
+/// A card whose content takes no pointer events, so a link stretched over
+/// the card gets them (theguardian.com's cards), under a fixed sheet. The
+/// hit test never lists the content on its own, yet the sheet is over it.
+const POINTERLESS_UNDER_SHEET_PAGE: &str = r#"<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Pointerless card</title>
+<style>
+  body { margin: 0; background: #ffffff; color: #111111; font: 16px/1.5 Arial, sans-serif; }
+  .spacer { height: 4000px; }
+  .card { position: relative; margin: 40px 20px; width: 300px; }
+  .card .content { pointer-events: none; }
+  .card a { position: absolute; inset: 0; z-index: 1; }
+  .tiny { margin: 0; width: 300px; height: 60px; font-size: 9px; color: #222222; background: #ffffff; }
+  .sheet { position: fixed; left: 0; right: 0; top: 30%; bottom: 0; z-index: 40; background: #d00000; color: #ffffff; }
+</style></head><body>
+<h1>A long read</h1>
+<div class="spacer"></div>
+<div class="card"><div class="content"><p class="tiny" id="card-print">Small print in a card a link covers.</p></div><a href="/story" aria-label="Read the story"></a></div>
+<div class="spacer" style="height: 1200px"></div>
+<aside class="sheet"><p>Support our journalism</p></aside>
+</body></html>"#;
+
+#[test]
+fn an_element_shot_hides_the_fixed_sheet_over_content_the_hit_test_misses() {
+    let Some(engine) = engine() else { return };
+    let (img, shot) = shot_of(&engine, POINTERLESS_UNDER_SHEET_PAGE, "#card-print");
+    let r = share(&img, shot.rect, red);
+    assert!(r < 0.2, "the sheet covers the element in its shot: {r}");
+    assert_eq!(shot.hidden_covers, vec!["aside.sheet".to_string()]);
 }
 
 /// A fixed box inside a transformed wrapper scrolls with the page: it is

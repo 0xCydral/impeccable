@@ -519,6 +519,11 @@ const HIDE_COVERS_JS: &str = r#"(async (resolve, { selector, identity, node }, c
   const bottom = Math.min(r.bottom, window.innerHeight);
   if (right - left < 1 || bottom - top < 1) return check ? 0 : [];
   const layers = new Set();
+  // An element that takes no pointer events (card content under a link that
+  // covers the card) is not in the hit stack. Made hit-testable for the walk,
+  // it is listed at its true paint position, so what comes before it is over it.
+  const pointer = [el.style.getPropertyValue('pointer-events'), el.style.getPropertyPriority('pointer-events')];
+  el.style.setProperty('pointer-events', 'auto', 'important');
   for (let i = 0; i < 3; i++) {
     for (let j = 0; j < 3; j++) {
       const x = left + (right - left) * (i + 0.5) / 3;
@@ -537,6 +542,8 @@ const HIDE_COVERS_JS: &str = r#"(async (resolve, { selector, identity, node }, c
       }
     }
   }
+  if (pointer[0]) el.style.setProperty('pointer-events', pointer[0], pointer[1]);
+  else el.style.removeProperty('pointer-events');
   const modal = layer => {
     for (let n = layer; n; n = up(n)) {
       if (n.nodeType !== 1) continue;
