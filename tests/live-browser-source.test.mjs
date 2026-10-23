@@ -1308,6 +1308,7 @@ function tuneHarness(params) {
     getVisibleVariantEl: () => variant, parseVariantParams: () => params,
     applyParamValue: (target, p, value) => { target.values[p.id] = value; },
     showParamsPanel() {}, hideParamsPanel() {}, showOrUpdateCyclingBar() {}, queueCheckpoint() {},
+    saveSession() { context.savedParamValues = { ...context.paramsCurrentValues }; },
   };
   const names = [
     'applyParamDefaults', 'rememberSavedParamValues', 'restoredParamValuesForVisibleVariant', 'noteParamEdited',
@@ -1487,6 +1488,20 @@ describe('Tune values across a reload', () => {
     h.fire(h.body.children[1].children[1], 'click');
     assert.equal(h.context.restoredParamValues, null);
     assert.equal(h.context.paramsCurrentValues.italic, true);
+  });
+
+  it('saves a knob edit locally, so the next reload restores it', () => {
+    const h = resumed({ paramValues: { size: 0.8 } });
+    h.api.refreshParamsPanel();
+    h.api.openTunePopover();
+    const input = h.body.children[0].children[1];
+    input.value = '0.2';
+    h.fire(input, 'input');
+    assert.deepEqual({ ...h.context.savedParamValues }, { size: 0.2, italic: false, face: 'sans' });
+    const reloaded = resumed({ paramValues: h.context.savedParamValues });
+    reloaded.api.refreshParamsPanel();
+    assert.equal(reloaded.context.paramsCurrentValues.size, 0.2);
+    assert.equal(reloaded.variant.values.size, 0.2);
   });
 
   it('ignores stale keys and values that no longer fit the param', () => {

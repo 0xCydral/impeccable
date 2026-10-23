@@ -3281,8 +3281,11 @@
     return null;
   }
 
+  // The local save is what a reload resumes from, so an edit is saved there
+  // as well as checkpointed to the server.
   function noteParamEdited() {
     restoredParamValues = null;
+    saveSession();
     queueCheckpoint('param_changed');
   }
 
