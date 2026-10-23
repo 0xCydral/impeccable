@@ -1915,9 +1915,15 @@ fn same_colour(a: &Rgba, b: &Rgba) -> bool {
 /// (`linear-gradient(90deg, ink 0%, ink 30%, highlight 55%, ink 70%, ink
 /// 100%)` at `200% 100%`, `shimmer` sweeping `background-position-x`): a
 /// highlight passing over plain type, a state of the label rather than a
-/// gradient treatment. Any part the capture did not record keeps the
-/// finding.
+/// gradient treatment. The glyphs have to paint in that ink: a rainbow
+/// headline that sets `color` to its end stop as a fallback and fills its
+/// text with nothing (`-webkit-text-fill-color: transparent`) shows only
+/// the gradient, and stays gradient text. Any part the capture did not
+/// record keeps the finding.
 pub(crate) fn gradient_text_is_a_shimmer(dom: &dyn Dom, el: ElId) -> bool {
+    if text_fill_is_transparent(&dom.style(el, "webkitTextFillColor")) {
+        return false;
+    }
     let image = dom.style(el, "backgroundImage");
     let stops = parse_gradient_colors(Some(&image));
     let (Some(first), Some(last), Some(ink)) = (stops.first(), stops.last(), parse_any_color(Some(&dom.style(el, "color"))))

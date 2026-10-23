@@ -70,6 +70,13 @@ pub const LEADING_LEAD_TEXT_MAX_LINES: f64 = 3.0;
 /// lines at 1.0 (finding 10046656), stripe.com's 22px intro at 1.10.
 pub const LEADING_LEAD_TEXT_MIN_RATIO: f64 = 1.15;
 
+/// The tightest ratio a label in capitals can set and keep its exemption
+/// from the tight-leading floor (r13-t3): capitals have no descenders, but
+/// under solid their lines overlap. The browser engine also bounds the label
+/// to [`LEADING_LEAD_TEXT_MAX_LINES`] rendered lines; the static engine,
+/// which cannot count lines, to under `ALL_CAPS_LONG_RUN` characters.
+pub const LEADING_CAPS_LABEL_MIN_RATIO: f64 = 1.0;
+
 /// How much of a second line box the tight-leading floor needs to see before
 /// it judges leading. Text that renders as one line has no gap between lines
 /// to crowd; wrapped text is two line boxes or more, so the midpoint

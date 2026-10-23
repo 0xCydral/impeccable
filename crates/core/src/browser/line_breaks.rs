@@ -144,7 +144,8 @@ fn push_rendered_text(dom: &dyn Dom, el: ElId, out: &mut String) {
 /// [`CLIP_SEARCH_DEPTH`] ancestors. Chromium lays out the lines a clamp
 /// hides below the box, and `Dom::text_line_rects` still returns them, so
 /// the last line measured is not the last line shown. A line whose middle
-/// lies below the clip box's content edge is hidden. Clips that hide nothing
+/// lies below a clamp's content edge, or below an overflow clip's padding
+/// edge, is hidden. Clips that hide nothing
 /// leave the lines as they are.
 fn lines_run_past_a_clip(dom: &dyn Dom, el: ElId, lines: &[super::dom::Rect]) -> bool {
     let Some(lowest) = lines.iter().map(|r| r.top + r.height / 2.0).reduce(f64::max) else {
@@ -161,7 +162,12 @@ fn lines_run_past_a_clip(dom: &dyn Dom, el: ElId, lines: &[super::dom::Rect]) ->
                 let v = js::parse_float(&dom.style(c, k));
                 if v.is_finite() { v } else { 0.0 }
             };
-            let bottom = r.bottom - px("borderBottomWidth") - px("paddingBottom");
+            // A clamp hides the lines past its count, so its content edge is
+            // the last line shown; overflow clips at the padding edge, and
+            // text set in the padding (a caption on a padding-hack ratio
+            // card) is in view.
+            let padding = if clamp { px("paddingBottom") } else { 0.0 };
+            let bottom = r.bottom - px("borderBottomWidth") - padding;
             if bottom.is_finite() && lowest > bottom {
                 return true;
             }

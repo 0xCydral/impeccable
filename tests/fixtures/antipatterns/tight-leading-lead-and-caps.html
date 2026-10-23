@@ -6,9 +6,12 @@
   <!--
     Taste call r13-t3, browser-only reads. Lead text at 20px or more over
     three rendered lines or fewer sets its own leading, as display type
-    does unless it is set tighter than 1.15, and text set in capitals has no descenders to crowd the line
-    below. Widths are in ch of a monospace face so the line counts hold on
-    any host font.
+    does unless it is set tighter than 1.15, and a label set in capitals
+    has no descenders to crowd the line below. A label runs three rendered
+    lines or fewer (the static engine, with no lines to count, reads under
+    80 characters) and is set at 1.0 or looser: a paragraph in capitals,
+    and capitals whose lines overlap, still crowd. Widths are in
+    ch of a monospace face so the line counts hold on any host font.
   -->
   <style>
     body { margin: 0; padding: 32px; font-family: monospace; font-size: 16px; line-height: 1.6; color: #1a1a1a; background: #ffffff; }
@@ -20,6 +23,8 @@
     .body19 { font-size: 19px; line-height: 1.15; width: 30ch; }
     .label { font-size: 12px; line-height: 1.1; width: 30ch; }
     .caps { text-transform: uppercase; }
+    .caps-para { font-size: 16px; line-height: 1; width: 40ch; }
+    .caps-tight { font-size: 18px; line-height: 0.9; width: 30ch; }
   </style>
 </head>
 <body>
@@ -30,6 +35,8 @@
     <p id="flag-solid-lead" class="lead solid">A standfirst set solid at one over two lines crowds at any size.</p>
     <p id="flag-body-19" class="body19">Nineteen pixels is still body copy, so two lines of it at one point one five crowd.</p>
     <p id="flag-lower-label" class="label">the same spec label in lower case, with descenders dropping toward the next line.</p>
+    <p id="flag-caps-paragraph" class="caps-para caps">A paragraph set in capitals is reading copy, not a label, and four lines of it set solid at one crowd each other the way body copy would, capitals or not.</p>
+    <p id="flag-caps-overlap" class="caps-tight caps">capitals set at point nine, where the lines overlap each other.</p>
   </section>
   <section>
     <h2>Should pass</h2>

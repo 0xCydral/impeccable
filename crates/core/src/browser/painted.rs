@@ -106,8 +106,9 @@ const MASKED_OUT_ALPHA: f64 = 0.2;
 /// #000 382px, rgba(0,0,0,.62) 424px, rgba(0,0,0,.22) 450px, transparent
 /// 467px)`. The gradient runs over the element's layout box, so a scaled
 /// box reads its stops at layout scale. `None` for no mask, any other mask
-/// (an image, several layers, an angle, a `calc()` stop), a tilted box, or a
-/// box the capture did not measure: the point is taken as painted.
+/// (an image, several layers, an angle, a `calc()` stop), a tilted box, a
+/// box that scrolls along the gradient, or a box the capture did not
+/// measure: the point is taken as painted.
 fn mask_alpha_at(dom: &dyn Dom, el: ElId, x: f64, y: f64) -> Option<f64> {
     let image = {
         let m = dom.style(el, "maskImage");
@@ -142,6 +143,17 @@ fn mask_alpha_at(dom: &dyn Dom, el: ElId, x: f64, y: f64) -> Option<f64> {
         None => (true, false),
     };
     if super::page_checks::drawn_tilted(dom, el) {
+        return None;
+    }
+    // A box that scrolls along the gradient moves its content under the
+    // mask: a chip in the faded end of an `overflow-x: auto` row is one
+    // scroll from full alpha.
+    let scrolls_along = if vertical {
+        scrolls(&dom.style(el, "overflowY")) && has_overflow(dom.scroll_height(el), dom.client_height(el))
+    } else {
+        scrolls(&dom.style(el, "overflowX")) && has_overflow(dom.scroll_width(el), dom.client_width(el))
+    };
+    if scrolls_along {
         return None;
     }
     let r = dom.rect(el);
@@ -4695,6 +4707,23 @@ mod tests {
         assert_eq!(text(&d, heading), None, "above a 10% fade");
         d.set_rect(heading, 55.2, 4095.8 + 0.99 * 484.6 - 10.0, 120.0, 20.0);
         assert_eq!(text(&d, heading), Some(Unpainted::MaskedOut), "at the end of the fade");
+        // A chip in the faded end of a row that scrolls along the mask is
+        // one scroll from full alpha; the same row unscrolled hides it.
+        let row = d.add(Some(body), "div");
+        d.set_rect(row, 0.0, 5000.0, 400.0, 40.0);
+        d.set_style(row, "maskImage", "linear-gradient(to right, rgb(0, 0, 0) 60%, transparent)");
+        let chip = d.add(Some(row), "span");
+        d.add_text(chip, "Travel");
+        d.set_rect(chip, 370.0, 5010.0, 24.0, 20.0);
+        assert_eq!(text(&d, chip), Some(Unpainted::MaskedOut), "a fixed row's faded end");
+        d.set_style(row, "overflowX", "auto");
+        d.el_mut(row).scroll_width = 900.0;
+        d.el_mut(row).client_width = 400.0;
+        assert_eq!(text(&d, chip), None, "a row that scrolls along its mask");
+        // Scrolling on x does not move content under a mask that runs on y.
+        d.set_style(row, "maskImage", "linear-gradient(rgb(0, 0, 0) 10%, transparent)");
+        d.set_rect(chip, 10.0, 5034.0, 24.0, 4.0);
+        assert_eq!(text(&d, chip), Some(Unpainted::MaskedOut), "a y mask on an x scroller");
         // A mask the engine does not read is taken as painted.
         d.set_style(frame, "maskImage", "linear-gradient(rgb(0, 0, 0) calc(100% - 56px), rgba(0, 0, 0, 0))");
         assert_eq!(text(&d, label), None);

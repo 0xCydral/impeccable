@@ -3,16 +3,18 @@
 //! break the same way on every host is set in `ch` of a monospace face.
 //!
 //! - `tight-leading-lead-and-caps.html`: short lead text at 20px or more and
-//!   text in capitals keep their leading (r13-t3); four lines of lead text,
-//!   lead text set solid, 19px copy and lower-case labels do not.
+//!   labels in capitals keep their leading (r13-t3); four lines of lead text,
+//!   lead text set solid, 19px copy, lower-case labels, a paragraph in
+//!   capitals and capitals set under solid do not.
 //! - `gradient-text-states.html`: a running shimmer is not gradient text, a
-//!   one-colour sheen is advisory (r13-t6), a two-colour ramp reports.
+//!   one-colour sheen is advisory (r13-t6), a two-colour ramp and a
+//!   sweeping rainbow with transparent glyphs report.
 //! - `line-length-nested-list.html`: a list item heading a nested list is
 //!   not charged with the list's lines.
 //! - `buried-raster-tracking-pixel.html`: a 0x0 beacon is not a buried
 //!   image; a faint photo is.
 //! - `straggler-clamped.html`: lines a clamp hides leave the last line
-//!   unjudged.
+//!   unjudged; a caption in an overflow box's padding is still judged.
 //! - `cramped-padding-dividers.html`: text under a lone divider is measured
 //!   to its glyphs; a scroller cuts the line that meets its bottom edge.
 //! - `low-contrast-covered-and-masked.html`: a caption under a higher panel
@@ -107,7 +109,14 @@ fn lead_text_and_capitals_keep_their_leading() {
     columns(
         &f,
         "tight-leading",
-        &["flag-long-lead", "flag-solid-lead", "flag-body-19", "flag-lower-label"],
+        &[
+            "flag-long-lead",
+            "flag-solid-lead",
+            "flag-body-19",
+            "flag-lower-label",
+            "flag-caps-paragraph",
+            "flag-caps-overlap",
+        ],
         &["pass-short-lead", "pass-caps-label"],
     );
 }
@@ -115,7 +124,13 @@ fn lead_text_and_capitals_keep_their_leading() {
 #[test]
 fn a_shimmer_is_not_gradient_text_and_a_sheen_is_advisory() {
     let Some(f) = scan("gradient-text-states.html") else { return };
-    columns(&f, "gradient-text", &["flag-ramp", "flag-sheen-advisory"], &["pass-shimmer"]);
+    columns(
+        &f,
+        "gradient-text",
+        &["flag-ramp", "flag-rainbow-fallback", "flag-sheen-advisory"],
+        &["pass-shimmer"],
+    );
+    assert_eq!(on(&f, "gradient-text", "flag-rainbow-fallback")[0].severity, "warning");
     assert_eq!(on(&f, "gradient-text", "flag-ramp")[0].severity, "warning");
     assert_eq!(on(&f, "gradient-text", "flag-sheen-advisory")[0].severity, "advisory");
 }
@@ -138,7 +153,7 @@ fn lines_a_clamp_hides_leave_the_last_line_unjudged() {
     columns(
         &f,
         "straggler",
-        &["flag-unclamped", "flag-marker-last"],
+        &["flag-unclamped", "flag-marker-last", "flag-in-ratio-padding"],
         &["pass-clamped"],
     );
 }

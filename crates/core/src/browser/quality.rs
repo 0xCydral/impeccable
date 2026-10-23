@@ -25,7 +25,7 @@ use crate::checks::text_rules::{
     is_line_clamp, is_under_ui_text_floor, justifies_without_word_spaces_text,
     tracking_is_crushed, ALL_CAPS_LONG_RUN, LEADING_BOLD_TITLE_WEIGHT, SMALLPRINT_TEXT_FLOOR_PX,
     UI_TEXT_FLOOR_PX,
-    JUSTIFY_NARROW_CHARS_PER_LINE, LEADING_DISPLAY_TYPE_PX, LEADING_HEADING_CONTEXT, LEADING_LEAD_TEXT_MAX_LINES, LEADING_LEAD_TEXT_MIN_RATIO, LEADING_LEAD_TEXT_PX,
+    JUSTIFY_NARROW_CHARS_PER_LINE, LEADING_DISPLAY_TYPE_PX, LEADING_HEADING_CONTEXT, LEADING_CAPS_LABEL_MIN_RATIO, LEADING_LEAD_TEXT_MAX_LINES, LEADING_LEAD_TEXT_MIN_RATIO, LEADING_LEAD_TEXT_PX,
     LEADING_MIN_LINE_BOXES, NON_RENDERED_TAGS, QUALITY_TEXT_TAGS,
     SR_ONLY_SELECTOR, TEXT_EDGE_TAGS,
 };
@@ -2650,8 +2650,17 @@ pub fn check_quality(dom: &dyn Dom, q: &QualityInput) -> Vec<RuleHit> {
                 // Capitals have no descenders to crowd the line below, so a
                 // label set in them keeps the leading it is given, as
                 // tiny-text already lets it keep its size
-                // (teenage.engineering's uppercase spec labels).
-                let caps = || st("textTransform") == "uppercase" || typed_caps_text(dom, el);
+                // (teenage.engineering's uppercase spec labels). A label runs
+                // three rendered lines or fewer, as lead text does (a typed
+                // run, shorter than a sentence), and is set solid or looser:
+                // capitals under 1.0 overlap.
+                let caps = || {
+                    shown >= LEADING_CAPS_LABEL_MIN_RATIO
+                        && ((st("textTransform") == "uppercase" && {
+                            let (_, bottom) = rendered_lines(dom, el, &text_rect);
+                            text_line_count(bottom - text_rect.top, lh, font_size) <= LEADING_LEAD_TEXT_MAX_LINES
+                        }) || typed_caps_text(dom, el))
+                };
                 if wraps
                     && !lead_text()
                     && !caps()
@@ -5448,7 +5457,10 @@ mod tests {
         }
         // Two wrapped lines of 16px copy on a 20px line box.
         fn wrapped(d: &mut FakeDom, parent: ElId, tag: &str, font: &str, lh: f64) -> ElId {
-            let el = text_el(d, parent, tag, COPY, font);
+            wrapped_text(d, parent, tag, COPY, font, lh)
+        }
+        fn wrapped_text(d: &mut FakeDom, parent: ElId, tag: &str, text: &str, font: &str, lh: f64) -> ElId {
+            let el = text_el(d, parent, tag, text, font);
             d.set_style(el, "lineHeight", &format!("{lh}px"));
             d.set_rect(el, 40.0, 100.0, 240.0, lh * 2.0);
             d.el_mut(el).direct_text_rect = Some(Rect::from_xywh(40.0, 100.0, 240.0, lh * 2.0));
@@ -5484,11 +5496,22 @@ mod tests {
 
         // Capitals have no descenders to crowd the next line (r13-t3), as
         // tiny-text already reads them; the same words in lower case keep it.
-        let caps = wrapped(&mut d, body, "p", "12px", 13.3);
+        // A label runs three lines or fewer and is set solid or looser: six
+        // lines of capitals, or capitals set under solid, still crowd.
+        const LABEL: &str = "New! Hardened glass, high resolution flush display.";
+        let caps = wrapped_text(&mut d, body, "p", LABEL, "12px", 13.3);
         d.set_style(caps, "textTransform", "uppercase");
         assert!(leading(&d, caps).is_empty(), "uppercase label");
-        let lower = wrapped(&mut d, body, "p", "12px", 13.3);
+        let lower = wrapped_text(&mut d, body, "p", LABEL, "12px", 13.3);
         assert_eq!(leading(&d, lower), vec!["line-height 1.11x (need >=1.3)"]);
+        let caps_para = wrapped(&mut d, body, "p", "16px", 16.0);
+        d.set_rect(caps_para, 40.0, 100.0, 240.0, 96.0);
+        d.el_mut(caps_para).direct_text_rect = Some(Rect::from_xywh(40.0, 100.0, 240.0, 96.0));
+        d.set_style(caps_para, "textTransform", "uppercase");
+        assert_eq!(leading(&d, caps_para), vec!["line-height 1.00x (need >=1.3)"], "six lines of capitals");
+        let caps_overlap = wrapped_text(&mut d, body, "p", LABEL, "18px", 16.2);
+        d.set_style(caps_overlap, "textTransform", "uppercase");
+        assert_eq!(leading(&d, caps_overlap), vec!["line-height 0.90x (need >=1.3)"], "capitals set under solid");
 
         // One line box: there is no gap between lines to crowd.
         let one_line = wrapped(&mut d, body, "p", "16px", 20.0);

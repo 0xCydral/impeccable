@@ -9,7 +9,9 @@
     its layer is wider than the box and an endless animation moves it. It is
     a state, not gradient text. A sheen of one colour fading in alpha
     (resend.com's headings) reports as advisory (taste call r13-t6), and a
-    ramp between two colours reports as before.
+    ramp between two colours reports as before. So does a rainbow headline
+    that sweeps like a shimmer but fills its glyphs with nothing, keeping
+    its end stop only as a fallback colour: the gradient is all it paints.
   -->
   <style>
     body { margin: 0; padding: 32px; font-family: system-ui, sans-serif; font-size: 16px; line-height: 1.6; color: #1a1a1a; background: #ffffff; }
@@ -28,6 +30,13 @@
       background-image: linear-gradient(to right bottom, rgb(255, 255, 255) 30%, rgba(255, 255, 255, 0.5));
       -webkit-background-clip: text; background-clip: text;
     }
+    @keyframes shine { to { background-position: 200% center; } }
+    .rainbow {
+      font-size: 32px; margin: 0 0 24px; color: #ff0080;
+      background: linear-gradient(90deg, #ff0080, #7928ca, #2563eb, #ff0080);
+      background-size: 200% auto; -webkit-background-clip: text; background-clip: text;
+      -webkit-text-fill-color: transparent; animation: shine 3s linear infinite;
+    }
     .ramp {
       font-size: 32px; margin: 0 0 24px; color: transparent;
       background-image: linear-gradient(90deg, #db2777, #7c3aed);
@@ -40,6 +49,7 @@
   <section>
     <h2>Should flag</h2>
     <p id="flag-ramp" class="ramp">A ramp between two colours</p>
+    <p id="flag-rainbow-fallback" class="rainbow">A sweeping rainbow</p>
     <div class="dark"><p id="flag-sheen-advisory" class="sheen">A sheen of one colour</p></div>
   </section>
   <section>
