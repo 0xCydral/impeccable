@@ -172,6 +172,7 @@ fn svg_is_a_bar_series(painted: &str, primitives: usize) -> bool {
             let dim = |re: &Regex| svg_attr_dim(tag.as_str(), re).filter(|v| v.is_finite()).unwrap_or(f64::NAN);
             (dim(&SVG_WIDTH_RE), dim(&SVG_HEIGHT_RE))
         })
+        .filter(|(w, h)| w.is_finite() && h.is_finite())
         .collect();
     // The rects sharing one value of `side` (within a pixel), where the
     // other side takes more than one value: bars of one width and many
@@ -1251,6 +1252,12 @@ mod tests {
             .map(|i| format!("<rect x=\"{}\" y=\"40\" width=\"1\" height=\"{}\" fill=\"#635bff\"/>", i % 380, 10 + i % 150))
             .collect();
         assert_eq!(svg(&format!("{fills}{few}")), 0, "a series inside the budget");
+        // A rect whose height comes from CSS is not counted: equal-width
+        // tiles with no height attribute are not a series of bars.
+        let css_sized: String = (0..14)
+            .map(|i| format!("<rect x=\"{}\" y=\"40\" width=\"40\" fill=\"#0b5\"/>", i * 26))
+            .collect();
+        assert_eq!(svg(&format!("{fills}{css_sized}")), 1, "tiles sized by CSS");
     }
 
     #[test]

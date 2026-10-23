@@ -1577,7 +1577,18 @@ const LINE_CLAMP_SEARCH_DEPTH: usize = 4;
 /// when one holds them (a clamp leaves its hidden lines in the text rect).
 fn shown_line_count(dom: &dyn Dom, el: ElId, t: &Rect, lh: f64, font_size: f64) -> f64 {
     let (clamped, bottom) = rendered_lines(dom, el, t);
-    let lines = text_line_count(bottom - t.top, lh, font_size);
+    // The rects are drawn px, the pitch layout px: a box a transform scales
+    // draws its lines at that scale (`offsetHeight` is rounded, so only a
+    // real scale counts).
+    let r = dom.rect(el);
+    let layout_h = dom.offset_height(el);
+    let scale = if layout_h.is_finite() && layout_h > 0.0 && r.height.is_finite() && r.height > 0.0 {
+        let s = r.height / layout_h;
+        if (s - 1.0).abs() > 0.01 { s } else { 1.0 }
+    } else {
+        1.0
+    };
+    let lines = text_line_count((bottom - t.top) / scale, lh, font_size);
     if !clamped {
         return lines;
     }
@@ -5575,6 +5586,16 @@ mod tests {
         d.el_mut(clamped_lead).direct_text_rect = Some(Rect::from_xywh(40.0, 100.0, 240.0, 130.0));
         d.set_styles(clamped_lead, &[("display", "-webkit-box"), ("webkitLineClamp", "3")]);
         assert!(leading(&d, clamped_lead).is_empty(), "lead text clamped to three lines");
+        // Four lines drawn at scale(.75) are still four lines (review).
+        let scaled_lead = wrapped(&mut d, body, "p", "22px", 26.0);
+        d.set_rect(scaled_lead, 40.0, 100.0, 180.0, 78.0);
+        d.el_mut(scaled_lead).offset_height = 104.0;
+        d.el_mut(scaled_lead).direct_text_rect = Some(Rect::from_xywh(40.0, 100.0, 180.0, 78.0));
+        assert_eq!(
+            leading(&d, scaled_lead),
+            vec!["line-height 1.18x (need >=1.3)"],
+            "four lines of lead text drawn at three quarters"
+        );
         d.set_style(clamped_lead, "webkitLineClamp", "5");
         assert_eq!(
             leading(&d, clamped_lead),
