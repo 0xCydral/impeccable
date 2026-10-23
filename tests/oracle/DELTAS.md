@@ -7208,3 +7208,19 @@ Decision 3 of round 13: a legal or footnote block (a `legal`, `disclaimer`, `dis
 Review round, 2026-10-22 (round 13 review of corpus/round13-legal): a singular `disclosure` token (the WAI-ARIA name of an expand/collapse widget) and a `footnote` after a type-scale word (`text-footnote`) stay advisory; a legal block that is or directly holds a `details`, `summary` or `aria-expanded` control, and a policy page's body (no `footer` or contentinfo ancestor, 2000 or more characters, half the page's text or more), are demoted to advisory. `fine-print.html` gains three 11px should-flag rows (a `disclosure__panel` answer, a `details.footer-footnote-accordion`, a `p.text-footnote`) and a wide browser-only FAQ answer in a disclosure widget, and its `#footnote-4` row wraps to two lines. New fixture `fine-print-policy.html` (browser-only line-length rows). Re-recorded from the binary and reviewed by hand: `detect-fixture-json-fine-print-html` and `detect-fixture-text-fine-print-html` gain three `tiny-text` and three `tight-leading` advisories (the three new rows), advisory notes 15 to 21; the new cases `detect-fixture-json-fine-print-policy-html` and `detect-fixture-text-fine-print-policy-html` are clean in the static engine (exit 0, no findings); the directory sweeps `detect-dir-json-all-fixtures`, `detect-dir-text-all-fixtures`, `detect-dir-quiet-all-fixtures`, `detect-scope-type` and `detect-scope-both` carry the same six advisories (181 to 187), failures unchanged; `detect-no-advisory-json` and `detect-no-advisory-text` did not move.
 
 Merged with main (#1129, #1131, #1132): the directory sweeps `detect-dir-json-all-fixtures`, `detect-dir-text-all-fixtures`, `detect-dir-quiet-all-fixtures`, `detect-scope-both`, `detect-no-advisory-json` and `detect-no-advisory-text` re-recorded from the binary and reviewed by hand differ from main's only by the `fine-print.html` lines above: three `undersized-ui-text` warnings (1026 to 1029 failures), and nine more advisories (178 to 187); exit codes unchanged.
+
+## Recorded 2026-10-22: CSP meta revert restores the original bytes (issue #1125)
+
+The JS `revertCspMeta` removed the `data-impeccable-csp-original` marker with a
+regex built from `\s*` plus the raw marker text. The `\s*` also ate the newline
+before the marker when the attributes ended on their own line, so the reverted
+tag lost that line break, and a base64 value holding `+` never matched, so the
+marker stayed behind. The engine now removes the marker and the one space the
+patch put before it literally. The goldens of `live-inject-vite-csp-meta` and
+`live-inject-next-jsx` were re-recorded from the engine after a line-level
+review: the only change is that the reverted file keeps the newline before
+`/>`, which makes it byte-identical to the file before inject. They are
+ordinary goldens again, not accepted deltas. The new cases
+`live-inject-csp-meta-quote-styles` and `live-inject-csp-meta-quote-styles-remove`
+pin the in-place patch of the raw content value (references kept, inserted
+sources encoded for the quote style) and the round trip.
