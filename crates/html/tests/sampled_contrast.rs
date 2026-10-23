@@ -771,6 +771,7 @@ fn a_shifted_image_is_not_known_to_cover_a_color() {
         ("right bottom / 100% 100% no-repeat", true),
         ("0 0 / 100% 100% no-repeat", true),
         ("0 200px / 100% 100% no-repeat", false),
+        ("0 +200px / 100% 100% no-repeat", false),
         ("150% 0 / cover no-repeat", false),
         ("center 4rem / cover no-repeat", false),
         ("calc(50% - 10px) 0 / cover no-repeat", false),
@@ -801,7 +802,7 @@ fn a_shifted_image_is_not_known_to_cover_a_color() {
     // shorthand's tokens, the repeat and the color named by others, is read
     // once the property resolves: a length offset leaves the color as the
     // ground, a keyword lets the image cover.
-    for (value, sampled) in [("center", true), ("0 200px", false)] {
+    for (value, sampled) in [("center", true), ("0 200px", false), ("0 +200px", false)] {
         let css = format!(
             ":root {{ --pos: {value}; }} .hero {{ background: #17150f url(light.png) var(--pos) no-repeat; background-size: 100% 100%; }} p {{ color: #fdfdfd; }}"
         );
@@ -1418,6 +1419,19 @@ fn a_pseudo_overlay_split_across_rules_still_stops_the_walk() {
     let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; } .hero::before { background: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.7)); } p { position: relative; color: #fdfdfd; }";
     let found = site.contrast(css, body);
     assert!(found.is_empty(), "{found:?}");
+    // A `background` shorthand resets the longhands declared before it: an
+    // earlier clear `background-color` does not hide the paint of a later
+    // complete rule.
+    let css = ".hero { background: url(light.png); position: relative; } .hero::before { background-color: rgba(0, 0, 0, 0); } .hero::before { content: ''; position: absolute; inset: 0; background: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.7)); } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(found.is_empty(), "{found:?}");
+    // A longhand declared after the shorthand wins its slot back: the
+    // translucent fill is cleared (`transparent` is known not to paint,
+    // though no color parser reads it), and nothing is painted over the
+    // image.
+    let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.5); } .hero::before { background-color: transparent; } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
     // The two rules may sit on two selectors that match the same element.
     let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; } .dark::before { background: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.7)); } p { position: relative; color: #fdfdfd; }";
     let found = site.contrast(css, "<div class=\"hero dark\"><p>White copy</p></div>");

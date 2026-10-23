@@ -389,6 +389,30 @@ fn mark_pseudo_analytic(
     }
 }
 
+/// One declaration into a merged pseudo map, by the cascade's priority
+/// (a later declaration of equal priority wins, as within one rule). A
+/// `background` shorthand also takes the `background-color` and
+/// `background-image` keys, since it resets both longhands: a longhand
+/// declared before it loses its slot, one declared after it wins the slot
+/// back, and the readers below prefer the longhand key.
+fn merge_pseudo_decl(
+    map: &mut IndexMap<String, (String, DeclMeta)>,
+    key: &str,
+    value: &str,
+    meta: &DeclMeta,
+) {
+    let mut put = |key: &str| {
+        if compare_static_priority(map.get(key).map(|(_, m)| m), meta) {
+            map.insert(key.to_string(), (value.to_string(), meta.clone()));
+        }
+    };
+    put(key);
+    if key == "background" {
+        put("background-color");
+        put("background-image");
+    }
+}
+
 /// Whether a `::before` / `::after` rule names the geometry or the paint
 /// the merged read below needs, so its matches are worth looking up: a rule
 /// naming only `content` (an icon font's) cannot complete an overlay on its
@@ -448,11 +472,13 @@ fn mark_pseudo_paint(
         .map(|m| m.as_str().to_string());
     let surf = parse_any_color(Some(token.as_deref().unwrap_or(&surf_raw)));
     // Anything the pseudo paints over the box, however faint, sits between
-    // the box's own image and its text (#560). Only nothing, `none`, and a
-    // color too faint to see are known not to paint; a value the engine
-    // cannot read counts as paint.
+    // the box's own image and its text (#560). Only nothing, `none`,
+    // `transparent` (which no color parser reads), and a color too faint to
+    // see are known not to paint; a value the engine cannot read counts as
+    // paint.
     let no_paint = surf_raw.is_empty()
         || surf_raw.eq_ignore_ascii_case("none")
+        || surf_raw.eq_ignore_ascii_case("transparent")
         || surf.is_some_and(|c| c.alpha_or_one() <= 0.02);
     let paints = !no_paint || GRADIENT_RE.is_match(&surf_raw) || picture;
     for id in ids {
@@ -530,16 +556,13 @@ pub fn build_static_style_map(
                         let after = PSEUDO_AFTER_RE.is_match(&rule.selector);
                         let merged = pseudo_merged.entry((base, after)).or_default();
                         for d in &rule.declarations {
-                            let key = js::to_lower_case(&d.prop);
                             let meta = DeclMeta {
                                 important: d.important,
                                 specificity: rule.specificity,
                                 order: rule.order,
                                 inline: false,
                             };
-                            if compare_static_priority(merged.get(&key).map(|(_, m)| m), &meta) {
-                                merged.insert(key, (d.value.clone(), meta));
-                            }
+                            merge_pseudo_decl(merged, &js::to_lower_case(&d.prop), &d.value, &meta);
                         }
                         continue;
                     }
@@ -621,9 +644,7 @@ pub fn build_static_style_map(
                 for id in ids {
                     let merged = pseudo_by_node.entry((id, *after)).or_default();
                     for (key, (value, meta)) in decls {
-                        if compare_static_priority(merged.get(key).map(|(_, m)| m), meta) {
-                            merged.insert(key.clone(), (value.clone(), meta.clone()));
-                        }
+                        merge_pseudo_decl(merged, key, value, meta);
                     }
                 }
             }

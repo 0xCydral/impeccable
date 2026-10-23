@@ -203,20 +203,23 @@ static BG_BOX_RE: Lazy<Regex> = Lazy::new(|| {
 static BG_REPEAT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)^(?:repeat|no-repeat|repeat-x|repeat-y|space|round)$").expect("BG_REPEAT_RE")
 });
+// A CSS number with its unit or `%`, signed or not (`+200px`, `-.5em`,
+// `1e2px`): the reader decides what it means.
+const CSS_DIMENSION: &str = r"[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:e[-+]?[0-9]+)?[a-z%]*";
 // One `background-position` component: an edge or center keyword, a length
 // or percentage, or a value function the compute loop resolves later.
 static BG_POSITION_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        r"(?i)^(?:left|right|top|bottom|center|-?[0-9.]+[a-z%]*|(?:calc|min|max|clamp|env)\(.*\))$",
-    )
+    Regex::new(&format!(
+        r"(?i)^(?:left|right|top|bottom|center|{CSS_DIMENSION}|(?:calc|min|max|clamp|env)\(.*\))$"
+    ))
     .expect("BG_POSITION_RE")
 });
 // One `background-size` component: a keyword, a length or percentage, or a
 // value function (`var()`, `calc()`) the compute loop resolves later.
 static BG_SIZE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        r"(?i)^(?:auto|cover|contain|-?[0-9.]+[a-z%]*|(?:var|calc|min|max|clamp|env)\(.*\))$",
-    )
+    Regex::new(&format!(
+        r"(?i)^(?:auto|cover|contain|{CSS_DIMENSION}|(?:var|calc|min|max|clamp|env)\(.*\))$"
+    ))
     .expect("BG_SIZE_RE")
 });
 // An image value at the head of a token: the call the css-tree generator may
@@ -1099,6 +1102,16 @@ mod tests {
             read("backgroundPosition", "from-shorthand(#111 center 100% no-repeat)"),
             one("center 100%")
         );
+        // A signed length is a component like any other; the reader decides.
+        assert_eq!(
+            read("backgroundPosition", "from-shorthand(#111 0 +200px no-repeat)"),
+            one("0 +200px")
+        );
+        assert_eq!(
+            read("backgroundPosition", "from-shorthand(-.5em 1e2px)"),
+            one("-.5em 1e2px")
+        );
+        assert_eq!(read("backgroundSize", "from-shorthand(center / +20px)"), one("+20px"));
         assert_eq!(read("backgroundAttachment", "from-shorthand(fixed)"), one("fixed"));
         assert_eq!(read("backgroundAttachment", "from-shorthand(center)"), one("scroll"));
         assert_eq!(read("backgroundOrigin", "from-shorthand(content-box)"), one("content-box"));
