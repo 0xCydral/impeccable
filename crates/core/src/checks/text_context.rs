@@ -1049,8 +1049,8 @@ fn is_disclosure_widget<N: ContextNode>(c: &N) -> bool {
 /// body (about a screen of 14px text).
 pub const LEGAL_PAGE_MIN_CHARS: usize = 2000;
 
-/// [`rendered_text_chars`] without hidden subtrees (a `hidden` attribute,
-/// `aria-hidden="true"` or `display: none`): a hidden mobile copy of a
+/// [`rendered_text_chars`] without hidden subtrees (a `hidden` attribute
+/// no author `display` undoes, `aria-hidden="true"` or `display: none`): a hidden mobile copy of a
 /// policy is not text a visitor reads, on either side of the comparison.
 fn visible_text_chars<N: ContextNode>(n: &N, cap: usize) -> usize {
     let mut count = 0usize;
@@ -1059,10 +1059,17 @@ fn visible_text_chars<N: ContextNode>(n: &N, cap: usize) -> usize {
         if count > cap {
             break;
         }
+        // A `hidden` element that author CSS sets to a display renders
+        // (`[hidden].reveal { display: block }`), except `until-found`.
+        let display = e.style("display");
+        let display = display.trim();
+        let hidden_attr = e.attr("hidden").is_some_and(|v| {
+            v.trim().eq_ignore_ascii_case("until-found") || display.is_empty() || display == "none"
+        });
         if SOURCE_TEXT_TAGS.contains(&e.tag().as_str())
-            || e.attr("hidden").is_some()
+            || hidden_attr
             || e.attr("aria-hidden").is_some_and(|v| v.trim().eq_ignore_ascii_case("true"))
-            || e.style("display").trim() == "none"
+            || display == "none"
         {
             continue;
         }
@@ -2422,6 +2429,14 @@ mod tests {
         body.add("h1").font(32.0).text("Privacy policy");
         let p = body.add("div").class("legal-content").add("p").text(&long);
         body.add("div").attr("hidden", "").class("legal-content-mobile").add("p").text(&long);
+        assert_eq!(fine_print(&p), FinePrint::Advisory);
+        // A `hidden` policy that author CSS reveals is page text: it keeps
+        // the policy-page demotion.
+        let (_t, body) = Tree::new();
+        let body = body.font(14.0);
+        body.add("h1").font(32.0).text("Privacy policy");
+        let shown = body.add("div").attr("hidden", "").class("legal-content").style("display", "block");
+        let p = shown.add("p").text(&long);
         assert_eq!(fine_print(&p), FinePrint::Advisory);
         // Should-flag twin: the same copy left visible is half the page, and
         // the policy is a block on it.
