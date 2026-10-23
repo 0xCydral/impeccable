@@ -4506,13 +4506,10 @@ const SIBLING_CARD_OVERLAP_MIN_PX: f64 = 8.0;
 fn sibling_card_on_top(dom: &dyn Dom, parent: ElId, a: ElId, b: ElId) -> ElId {
     let item = matches!(dom.style(parent, "display").as_str(), "flex" | "inline-flex" | "grid" | "inline-grid");
     let set = |e: ElId, p: &str| !matches!(dom.style(e, p).as_str(), "" | "none" | "auto");
-    let positioned = |e: ElId| {
-        !matches!(dom.style(e, "position").as_str(), "static" | "")
-            || set(e, "transform")
-            || set(e, "filter")
-            || set(e, "willChange")
-            || js::parse_float(&dom.style(e, "opacity")) < 1.0
-    };
+    let positioned = |e: ElId| !matches!(dom.style(e, "position").as_str(), "static" | "");
+    // `z-index` applies to a positioned box or a flex or grid item only; a
+    // transform or a filter on a static box opens a layer at 0 but leaves
+    // its `z-index` unread.
     let level = |e: ElId| {
         let z = parse_float(&dom.style(e, "zIndex"));
         if (positioned(e) || item) && z.is_finite() {
@@ -4521,11 +4518,18 @@ fn sibling_card_on_top(dom: &dyn Dom, parent: ElId, a: ElId, b: ElId) -> ElId {
             0.0
         }
     };
+    let layered = |e: ElId| {
+        positioned(e)
+            || set(e, "transform")
+            || set(e, "filter")
+            || set(e, "willChange")
+            || parse_float(&dom.style(e, "opacity")) < 1.0
+    };
     let (za, zb) = (level(a), level(b));
     if za != zb {
         return if za > zb { a } else { b };
     }
-    match (positioned(a), positioned(b)) {
+    match (layered(a), layered(b)) {
         (true, false) => a,
         (false, true) => b,
         _ if super::painted::later_sibling_paints_after(dom, parent, a, b) => b,
@@ -8251,6 +8255,13 @@ mod tests {
         assert_eq!(hits, vec![Some(quotes[0])], "the later card covers the first");
         let (hits, quotes) = run(&[("transform", "matrix(1, 0, 0, 1, 0, 0)")], &[]);
         assert_eq!(hits, vec![Some(quotes[1])], "a transformed first card paints over the second");
+        // A static card's `z-index` is not read, transform or not: a later
+        // positioned card at z-index 1 still paints over it.
+        let (hits, quotes) = run(
+            &[("transform", "matrix(1, 0, 0, 1, 0, 0)"), ("zIndex", "10")],
+            &[("position", "relative"), ("zIndex", "1")],
+        );
+        assert_eq!(hits, vec![Some(quotes[0])], "the positioned z-index 1 card is on top");
         let (hits, _) = run(&[], &[("clipPath", "inset(0px 0px 0px 80px)")]);
         assert!(hits.is_empty(), "{hits:?}");
     }
