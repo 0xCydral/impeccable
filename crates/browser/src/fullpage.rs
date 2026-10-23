@@ -635,11 +635,11 @@ fn capture_with(
     // keeps the beyond-viewport capture.
     let after = probe_layout(page, false);
     if layout_moved(&before, &after) {
-        // Only a page that comes back to where it was measured relaid for
-        // the capture. One that keeps moving (a marquee on `margin-left`, an
+        // Only a page whose moved boxes come back to where they were
+        // measured relaid for the capture. One that keeps moving (a marquee on `margin-left`, an
         // autoplaying accordion) is in motion either way, and a beyond-viewport
         // capture shows it no worse than tiles would.
-        if wait_for_layout(page, &before) {
+        if wait_for_layout(page, &before, &moved_boxes(&before, &after)) {
             if let Ok(stitched) = stitch(page, geometry, None, width, height) {
                 if let Some(jpeg_base64) = encode_jpeg(&stitched, quality) {
                     return Ok(Screenshot {
@@ -741,41 +741,65 @@ fn probe_layout(page: &mut Page<'_>, pick: bool) -> Vec<Option<[f64; 4]>> {
         .unwrap_or_default()
 }
 
+/// Which boxes of one sample ([`probe_layout`]) moved sideways between two
+/// measures: measured both times, with the left edge or the width changed by
+/// 2px or more. Only the horizontal geometry counts: an image that loads
+/// during a capture pushes content down without the layout having switched.
+pub fn moved_boxes(before: &[Option<[f64; 4]>], after: &[Option<[f64; 4]>]) -> Vec<bool> {
+    before
+        .iter()
+        .zip(after)
+        .map(|(b, a)| match (b, a) {
+            (Some(b), Some(a)) => (b[0] - a[0]).abs() >= 2.0 || (b[2] - a[2]).abs() >= 2.0,
+            _ => false,
+        })
+        .collect()
+}
+
 /// Whether the page's layout moved sideways between two measures of one
-/// sample ([`probe_layout`]): at least 2 of the elements measured both times,
-/// and a quarter of them, changed their left edge or width by 2px or more.
-/// Only the horizontal geometry counts: an image that loads during a capture
-/// pushes content down without the layout having switched.
+/// sample: at least 2 of the elements measured both times, and a quarter of
+/// them, are [`moved_boxes`].
 pub fn layout_moved(before: &[Option<[f64; 4]>], after: &[Option<[f64; 4]>]) -> bool {
-    let mut measured = 0usize;
-    let mut moved = 0usize;
-    for (b, a) in before.iter().zip(after) {
-        let (Some(b), Some(a)) = (b, a) else { continue };
-        measured += 1;
-        if (b[0] - a[0]).abs() >= 2.0 || (b[2] - a[2]).abs() >= 2.0 {
-            moved += 1;
-        }
-    }
+    let measured = before.iter().zip(after).filter(|(b, a)| b.is_some() && a.is_some()).count();
+    let moved = moved_boxes(before, after).iter().filter(|m| **m).count();
     moved >= 2 && moved * 4 >= measured
 }
 
-/// Whether a page measured `before` has settled back there: the last two
-/// measures of the sample, 100ms apart, both read as unmoved
-/// ([`layout_moved`]). A box in steady motion can pass its old place once,
-/// not twice in a row.
-pub fn settled(before: &[Option<[f64; 4]>], measures: &[Vec<Option<[f64; 4]>>]) -> bool {
-    measures.len() >= 2 && measures[measures.len() - 2..].iter().all(|m| !layout_moved(before, m))
+/// Whether a page measured `before` has settled back there: every box that
+/// `moved` at the capture is back in its place (measured, left edge and
+/// width within 2px) in the last two measures, 100ms apart. A box in steady
+/// motion can pass its old place once, not twice in a row. Boxes that did
+/// not move at the capture do not count: the image was painted with them
+/// where they were measured, whatever they do afterwards. A box that moved
+/// at the capture and keeps its new geometry leaves the page unsettled, so
+/// it keeps the beyond-viewport capture: the engine cannot tell whether the
+/// image or the rects hold its true place (developer.apple.com's navigator
+/// labels re-wrap at the capture's resize and stay that way).
+pub fn settled(before: &[Option<[f64; 4]>], moved: &[bool], measures: &[Vec<Option<[f64; 4]>>]) -> bool {
+    let back = |m: &Vec<Option<[f64; 4]>>| {
+        before.iter().zip(moved).enumerate().all(|(i, (b, moved))| {
+            if !moved {
+                return true;
+            }
+            match (b, m.get(i).copied().flatten()) {
+                (Some(b), Some(a)) => (b[0] - a[0]).abs() < 2.0 && (b[2] - a[2]).abs() < 2.0,
+                _ => false,
+            }
+        })
+    };
+    moved.iter().any(|m| *m) && measures.len() >= 2 && measures[measures.len() - 2..].iter().all(back)
 }
 
-/// Measure the sample every 100ms, up to 2 seconds, until it has
-/// [`settled`] back to `before`. Returns whether it did.
-fn wait_for_layout(page: &mut Page<'_>, before: &[Option<[f64; 4]>]) -> bool {
+/// Measure the sample every 100ms, up to 2 seconds, until the boxes that
+/// `moved` at the capture have [`settled`] back to `before`. Returns whether
+/// they did.
+fn wait_for_layout(page: &mut Page<'_>, before: &[Option<[f64; 4]>], moved: &[bool]) -> bool {
     let started = std::time::Instant::now();
     let mut measures: Vec<Vec<Option<[f64; 4]>>> = Vec::new();
     while started.elapsed() < std::time::Duration::from_secs(2) {
         std::thread::sleep(std::time::Duration::from_millis(100));
         measures.push(probe_layout(page, false));
-        if settled(before, &measures) {
+        if settled(before, moved, &measures) {
             return true;
         }
     }
@@ -1227,14 +1251,62 @@ mod tests {
     fn a_page_has_settled_when_two_measures_in_a_row_match() {
         let at = |x: f64| vec![Some([x, 0.0, 300.0, 40.0]), Some([x, 60.0, 300.0, 40.0])];
         let before = at(390.0);
+        let moved = moved_boxes(&before, &at(0.0));
+        assert_eq!(moved, vec![true, true]);
         // Folded, then on its way back, then back twice: settled.
-        assert!(settled(&before, &[at(0.0), at(300.0), at(390.0), at(390.0)]));
+        assert!(settled(&before, &moved, &[at(0.0), at(300.0), at(390.0), at(390.0)]));
         // Back once is not enough: a marquee passes its old place.
-        assert!(!settled(&before, &[at(0.0), at(390.0)]));
-        assert!(!settled(&before, &[at(390.0), at(200.0)]));
+        assert!(!settled(&before, &moved, &[at(0.0), at(390.0)]));
+        assert!(!settled(&before, &moved, &[at(390.0), at(200.0)]));
         // Never back.
-        assert!(!settled(&before, &[at(100.0), at(200.0), at(300.0)]));
-        assert!(!settled(&before, &[]));
+        assert!(!settled(&before, &moved, &[at(100.0), at(200.0), at(300.0)]));
+        assert!(!settled(&before, &moved, &[]));
+        // Nothing moved at the capture: nothing to wait for.
+        assert!(!settled(&before, &[false, false], &[at(390.0), at(390.0)]));
+    }
+
+    #[test]
+    fn only_the_boxes_that_moved_at_the_capture_decide_settled() {
+        // Two column boxes and four navigator labels. The capture's resize
+        // moves the column and it slides back; the labels change width
+        // only after the capture.
+        let page = |x: f64, w: f64| -> Vec<Option<[f64; 4]>> {
+            vec![
+                Some([x, 0.0, 539.0, 40.0]),
+                Some([x, 60.0, 539.0, 40.0]),
+                Some([165.0, 0.0, w, 20.0]),
+                Some([165.0, 30.0, w, 20.0]),
+                Some([204.0, 60.0, w, 20.0]),
+                Some([204.0, 90.0, w, 20.0]),
+            ]
+        };
+        let before = page(390.0, 96.0);
+        let after = page(309.0, 96.0);
+        assert!(layout_moved(&before, &after));
+        let moved = moved_boxes(&before, &after);
+        assert_eq!(moved, vec![true, true, false, false, false, false]);
+        // The column is back and the labels changed width for good: settled,
+        // though the whole sample still reads as moved.
+        let back = page(390.0, 84.0);
+        assert!(layout_moved(&before, &back));
+        assert!(settled(&before, &moved, &[after.clone(), back.clone(), back.clone()]));
+        // Should-flag twin: a box that moved at the capture and stays
+        // changed keeps the page unsettled, whatever the rest does. This
+        // is developer.apple.com's shape: its labels re-wrap at the capture
+        // and keep the new width, so it keeps the beyond-viewport capture.
+        let rewrapped = page(309.0, 84.0);
+        let moved_too = moved_boxes(&before, &rewrapped);
+        assert_eq!(moved_too, vec![true; 6]);
+        assert!(!settled(&before, &moved_too, &[rewrapped.clone(), back.clone(), back.clone()]));
+        let stays = page(309.0, 96.0);
+        assert!(!settled(&before, &moved, &[after.clone(), stays.clone(), stays]));
+        let mut half = page(390.0, 96.0);
+        half[1] = Some([390.0, 60.0, 420.0, 40.0]);
+        assert!(!settled(&before, &moved, &[after.clone(), half.clone(), half]));
+        // A moved box that left the document is not back.
+        let mut gone = page(390.0, 96.0);
+        gone[0] = None;
+        assert!(!settled(&before, &moved, &[after, gone.clone(), gone]));
     }
 
     #[test]
