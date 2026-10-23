@@ -12,6 +12,7 @@
     ramp between two colours reports as before. So does a rainbow headline
     that sweeps like a shimmer but fills its glyphs with nothing, keeping
     its end stop only as a fallback colour: the gradient is all it paints.
+    A shimmer whose animation is paused stands still, and reports.
   -->
   <style>
     body { margin: 0; padding: 32px; font-family: system-ui, sans-serif; font-size: 16px; line-height: 1.6; color: #1a1a1a; background: #ffffff; }
@@ -25,6 +26,7 @@
       background-size: 200% 100%; -webkit-background-clip: text; background-clip: text;
       animation: shimmer 2s linear infinite;
     }
+    .paused { animation-play-state: paused; }
     .sheen {
       font-size: 32px; margin: 0; color: transparent;
       background-image: linear-gradient(to right bottom, rgb(255, 255, 255) 30%, rgba(255, 255, 255, 0.5));
@@ -50,6 +52,7 @@
     <h2>Should flag</h2>
     <p id="flag-ramp" class="ramp">A ramp between two colours</p>
     <p id="flag-rainbow-fallback" class="rainbow">A sweeping rainbow</p>
+    <p><span id="flag-paused-shimmer" class="shimmer paused">Working on your request</span></p>
     <div class="dark"><p id="flag-sheen-advisory" class="sheen">A sheen of one colour</p></div>
   </section>
   <section>

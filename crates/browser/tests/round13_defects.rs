@@ -7,8 +7,8 @@
 //!   lead text set solid, 19px copy, lower-case labels, a paragraph in
 //!   capitals and capitals set under solid do not.
 //! - `gradient-text-states.html`: a running shimmer is not gradient text, a
-//!   one-colour sheen is advisory (r13-t6), a two-colour ramp and a
-//!   sweeping rainbow with transparent glyphs report.
+//!   one-colour sheen is advisory (r13-t6), a two-colour ramp, a paused
+//!   shimmer and a sweeping rainbow with transparent glyphs report.
 //! - `line-length-nested-list.html`: a list item heading a nested list is
 //!   not charged with the list's lines.
 //! - `buried-raster-tracking-pixel.html`: a 0x0 beacon is not a buried
@@ -127,7 +127,7 @@ fn a_shimmer_is_not_gradient_text_and_a_sheen_is_advisory() {
     columns(
         &f,
         "gradient-text",
-        &["flag-ramp", "flag-rainbow-fallback", "flag-sheen-advisory"],
+        &["flag-ramp", "flag-rainbow-fallback", "flag-paused-shimmer", "flag-sheen-advisory"],
         &["pass-shimmer"],
     );
     assert_eq!(on(&f, "gradient-text", "flag-rainbow-fallback")[0].severity, "warning");

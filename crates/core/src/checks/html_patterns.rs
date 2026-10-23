@@ -147,6 +147,11 @@ re!(
     )
 );
 
+/// The most primitives [`svg_is_a_bar_series`] reads. Its grouping compares
+/// every rect with every other, so past this an SVG keeps the base reading
+/// (it reports), and the hook's cost stays bounded.
+const BAR_SERIES_MAX_PRIMITIVES: usize = 400;
+
 /// Whether an SVG's primitives are a series of equal bars rather than a
 /// scene: half or more of them are `<rect>`s that share one width or one
 /// height (within a pixel), and fewer than a quarter are circles, ellipses
@@ -156,7 +161,9 @@ re!(
 /// and polygon roofs, and a stack of equal blocks, are scenes. A rect whose
 /// size is not written as attributes is not counted.
 fn svg_is_a_bar_series(painted: &str, primitives: usize) -> bool {
-    if (SVG_ROUND_SHAPE_RE.find_iter(painted).count() as f64) >= primitives as f64 * 0.25 {
+    if primitives > BAR_SERIES_MAX_PRIMITIVES
+        || (SVG_ROUND_SHAPE_RE.find_iter(painted).count() as f64) >= primitives as f64 * 0.25
+    {
         return false;
     }
     let rects: Vec<(f64, f64)> = SVG_RECT_TAG_RE
@@ -1234,6 +1241,16 @@ mod tests {
         assert_eq!(svg(&format!("{fills}{mixed}")), 1, "bars of every size");
         let blocks = "<rect width=\"40\" height=\"40\" fill=\"#0b5\"/>".repeat(14);
         assert_eq!(svg(&format!("{fills}{blocks}")), 1, "a stack of equal blocks");
+        // Past the primitive budget the series is not read, and the SVG
+        // reports as before: the grouping compares every rect pair.
+        let many: String = (0..401)
+            .map(|i| format!("<rect x=\"{}\" y=\"40\" width=\"1\" height=\"{}\" fill=\"#635bff\"/>", i % 380, 10 + i % 150))
+            .collect();
+        assert_eq!(svg(&format!("{fills}{many}")), 1, "a series past the budget");
+        let few: String = (0..300)
+            .map(|i| format!("<rect x=\"{}\" y=\"40\" width=\"1\" height=\"{}\" fill=\"#635bff\"/>", i % 380, 10 + i % 150))
+            .collect();
+        assert_eq!(svg(&format!("{fills}{few}")), 0, "a series inside the budget");
     }
 
     #[test]

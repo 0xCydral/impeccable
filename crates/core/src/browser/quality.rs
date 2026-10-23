@@ -868,10 +868,20 @@ fn visible_y_extent(
         let oy = crate::browser::text_geometry::overflow_y(dom, p);
         if dom.style(p, "display") != "inline" && matches!(oy.as_str(), "hidden" | "clip" | "auto" | "scroll") {
             let pr = dom.rect(p);
+            // `clientHeight` and border widths are layout px; the rects are
+            // drawn px. A box scaled by a transform draws them at its scale.
+            let layout_h = dom.offset_height(p);
+            // `offsetHeight` is rounded, so only a real scale counts.
+            let scale = if layout_h.is_finite() && layout_h > 0.0 && pr.height.is_finite() && pr.height > 0.0 {
+                let s = pr.height / layout_h;
+                if (s - 1.0).abs() > 0.01 { s } else { 1.0 }
+            } else {
+                1.0
+            };
             let border_top = style_px(dom, p, "borderTopWidth");
-            let inner_top = pr.top + if border_top.is_finite() { border_top.max(0.0) } else { 0.0 };
+            let inner_top = pr.top + if border_top.is_finite() { border_top.max(0.0) * scale } else { 0.0 };
             let ch = dom.client_height(p);
-            let inner_bottom = if ch.is_finite() && ch > 0.0 { inner_top + ch } else { pr.bottom };
+            let inner_bottom = if ch.is_finite() && ch > 0.0 { inner_top + ch * scale } else { pr.bottom };
             if top < inner_top {
                 cut_top |= inner_top - top > tolerance;
                 top = inner_top;
@@ -1561,6 +1571,27 @@ const LINE_CLAMP_SEARCH_DEPTH: usize = 4;
 /// a fixed height with `overflow: hidden`) is no clamp: it only cuts the
 /// count at its content box, so bold text it shows three lines of still
 /// reports.
+/// How many lines of `el`'s text show: the lines down to where a clipping
+/// box cuts them ([`rendered_lines`]), and no more than a line clamp's count
+/// when one holds them (a clamp leaves its hidden lines in the text rect).
+fn shown_line_count(dom: &dyn Dom, el: ElId, t: &Rect, lh: f64, font_size: f64) -> f64 {
+    let (clamped, bottom) = rendered_lines(dom, el, t);
+    let lines = text_line_count(bottom - t.top, lh, font_size);
+    if !clamped {
+        return lines;
+    }
+    let mut cur = Some(el);
+    for _ in 0..LINE_CLAMP_SEARCH_DEPTH {
+        let Some(c) = cur else { break };
+        if is_line_clamp(&dom.style(c, "display"), &dom.style(c, "webkitLineClamp")) {
+            let n = js::parse_float(&dom.style(c, "webkitLineClamp"));
+            return if n.is_finite() && n > 0.0 { lines.min(n) } else { lines };
+        }
+        cur = dom.parent(c);
+    }
+    lines
+}
+
 fn rendered_lines(dom: &dyn Dom, el: ElId, t: &Rect) -> (bool, f64) {
     let mut cur = Some(el);
     let mut depth = 0;
@@ -2644,8 +2675,7 @@ pub fn check_quality(dom: &dyn Dom, q: &QualityInput) -> Vec<RuleHit> {
                     if font_size < LEADING_LEAD_TEXT_PX || shown < LEADING_LEAD_TEXT_MIN_RATIO {
                         return false;
                     }
-                    let (_, bottom) = rendered_lines(dom, el, &text_rect);
-                    text_line_count(bottom - text_rect.top, lh, font_size) <= LEADING_LEAD_TEXT_MAX_LINES
+                    shown_line_count(dom, el, &text_rect, lh, font_size) <= LEADING_LEAD_TEXT_MAX_LINES
                 };
                 // Capitals have no descenders to crowd the line below, so a
                 // label set in them keeps the leading it is given, as
@@ -2657,8 +2687,7 @@ pub fn check_quality(dom: &dyn Dom, q: &QualityInput) -> Vec<RuleHit> {
                 let caps = || {
                     shown >= LEADING_CAPS_LABEL_MIN_RATIO
                         && ((st("textTransform") == "uppercase" && {
-                            let (_, bottom) = rendered_lines(dom, el, &text_rect);
-                            text_line_count(bottom - text_rect.top, lh, font_size) <= LEADING_LEAD_TEXT_MAX_LINES
+                            shown_line_count(dom, el, &text_rect, lh, font_size) <= LEADING_LEAD_TEXT_MAX_LINES
                         }) || typed_caps_text(dom, el))
                 };
                 if wraps
@@ -4633,6 +4662,26 @@ mod tests {
         // On the bottom edge of a box that scrolls on to more: cut there.
         assert!(run((300.0, 39.0, 100.0, 18.0), 400.0).is_empty());
         assert_eq!(run((300.0, 39.0, 100.0, 18.0), 56.0).len(), 1);
+
+        // A box a transform draws at twice its layout height shows text in
+        // its lower half: `clientHeight` is layout px and is drawn at scale
+        // (review). The same box unscaled clips that text out.
+        let scaled = |offset_height: f64| {
+            let mut d = FakeDom::new();
+            let (row, button) = accordion_row(&mut d);
+            d.set_styles(row, &[("overflowY", "hidden"), ("paddingRight", "0px")]);
+            d.set_rect(row, 0.0, 0.0, 600.0, 116.0);
+            d.el_mut(row).offset_height = offset_height;
+            d.el_mut(row).client_width = 600.0;
+            d.el_mut(row).client_height = 56.0;
+            let h3 = d.parent(button).unwrap();
+            d.set_rect(h3, 24.0, 0.0, 576.0, 116.0);
+            d.set_rect(button, 24.0, 0.0, 576.0, 116.0);
+            d.set_text_rect(button, 300.0, 60.0, 299.3, 18.0);
+            cramped(&d, row)
+        };
+        assert_eq!(scaled(58.0).len(), 1, "drawn at scale 2");
+        assert!(scaled(116.0).is_empty(), "unscaled, the clip hides it");
     }
 
     /// observations-47 row 13: auction.co.kr's menu links set their text at
@@ -5513,6 +5562,19 @@ mod tests {
             leading(&d, boundary),
             vec!["line-height 1.18x (need >=1.3)"],
             "four lines of 22px are reading copy"
+        );
+        // A clamp leaves its hidden lines in the text rect: five lines of
+        // 22px lead text clamped to three show three (review).
+        let clamped_lead = wrapped(&mut d, body, "p", "22px", 26.0);
+        d.set_rect(clamped_lead, 40.0, 100.0, 240.0, 130.0);
+        d.el_mut(clamped_lead).direct_text_rect = Some(Rect::from_xywh(40.0, 100.0, 240.0, 130.0));
+        d.set_styles(clamped_lead, &[("display", "-webkit-box"), ("webkitLineClamp", "3")]);
+        assert!(leading(&d, clamped_lead).is_empty(), "lead text clamped to three lines");
+        d.set_style(clamped_lead, "webkitLineClamp", "5");
+        assert_eq!(
+            leading(&d, clamped_lead),
+            vec!["line-height 1.18x (need >=1.3)"],
+            "lead text clamped to five lines"
         );
         let small = wrapped(&mut d, body, "p", "19px", 22.0);
         assert_eq!(leading(&d, small), vec!["line-height 1.16x (need >=1.3)"], "19px is body copy");

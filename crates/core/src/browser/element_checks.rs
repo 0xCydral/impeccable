@@ -1945,10 +1945,16 @@ pub(crate) fn gradient_text_is_a_shimmer(dom: &dyn Dom, el: ElId) -> bool {
     let names = dom.style(el, "animationName");
     let counts = dom.style(el, "animationIterationCount");
     let counts: Vec<&str> = counts.split(',').map(str::trim).collect();
+    // A paused sweep (a reduced-motion rule, a pause control) leaves the
+    // gradient standing still: that is gradient text.
+    let states = dom.style(el, "animationPlayState");
+    let states: Vec<&str> = states.split(',').map(str::trim).collect();
     names.split(',').map(str::trim).enumerate().any(|(i, name)| {
         let count = counts.get(i % counts.len().max(1)).copied().unwrap_or("");
+        let state = states.get(i % states.len().max(1)).copied().unwrap_or("");
         name != "none"
             && count == "infinite"
+            && state != "paused"
             && dom.keyframes(name).is_some_and(|frames| {
                 frames
                     .iter()
