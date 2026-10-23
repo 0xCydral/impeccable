@@ -4498,12 +4498,21 @@ const SIBLING_CARD_OVERLAP_MIN_PX: f64 = 8.0;
 
 /// Which of two sibling cards paints on top, `a` coming first in tree order.
 /// A higher `z-index` wins where it applies (a positioned box, or a flex or
-/// grid item); on one level a positioned box paints after an unpositioned
-/// one, and otherwise the later sibling paints last, once flex and grid
+/// grid item); on one level a box that paints as a layer of its own (a
+/// positioned one, or one a transform, an opacity under 1, a filter or
+/// `will-change` lifts into a stacking context) paints after one that does
+/// not, and otherwise the later sibling paints last, once flex and grid
 /// `order` is counted.
 fn sibling_card_on_top(dom: &dyn Dom, parent: ElId, a: ElId, b: ElId) -> ElId {
     let item = matches!(dom.style(parent, "display").as_str(), "flex" | "inline-flex" | "grid" | "inline-grid");
-    let positioned = |e: ElId| !matches!(dom.style(e, "position").as_str(), "static" | "");
+    let set = |e: ElId, p: &str| !matches!(dom.style(e, p).as_str(), "" | "none" | "auto");
+    let positioned = |e: ElId| {
+        !matches!(dom.style(e, "position").as_str(), "static" | "")
+            || set(e, "transform")
+            || set(e, "filter")
+            || set(e, "willChange")
+            || js::parse_float(&dom.style(e, "opacity")) < 1.0
+    };
     let level = |e: ElId| {
         let z = parse_float(&dom.style(e, "zIndex"));
         if (positioned(e) || item) && z.is_finite() {
@@ -5149,6 +5158,16 @@ pub fn check_text_occlusion_dom(dom: &dyn Dom) -> Vec<ElFinding> {
                 (a.el, b.el)
             };
             if effective_opacity_dom(dom, top) <= 0.02 {
+                continue;
+            }
+            // A clip or a mask can take away the very part of the box that
+            // overlaps; what it leaves painted is not known from the box.
+            let shaped = |e: ElId| {
+                ["clipPath", "webkitClipPath", "maskImage", "webkitMaskImage"]
+                    .iter()
+                    .any(|p| !matches!(dom.style(e, p).as_str(), "" | "none"))
+            };
+            if shaped(top) {
                 continue;
             }
             let overlap = Rect::from_xywh(
@@ -8196,6 +8215,43 @@ mod tests {
         // Lines that end above the overlap: the second card covers the empty
         // body of the first, which reports nothing.
         let (hits, _, _) = run("auto", -40.0);
+        assert!(hits.is_empty(), "{hits:?}");
+    }
+
+    /// A transform lifts a static card into a layer of its own, painted over
+    /// a later static sibling; a clip-path on the card on top leaves its
+    /// painted shape unknown, so the overlap is not counted.
+    #[test]
+    fn text_occlusion_sibling_cards_follow_layers_and_skip_clipped_covers() {
+        let run = |first: &[(&str, &str)], second: &[(&str, &str)]| {
+            let mut d = FakeDom::new();
+            let (_h, body) = d.with_page();
+            let row = d.add(Some(body), "div");
+            d.set_styles(row, OCCLUSION_BASE);
+            d.set_rect(row, 0.0, 0.0, 600.0, 200.0);
+            let mut quotes = Vec::new();
+            for (x, extra) in [(0.0, first), (200.0, second)] {
+                let c = d.add(Some(row), "article");
+                d.set_styles(c, OCCLUSION_BASE);
+                d.set_styles(c, &[("backgroundColor", "rgb(255, 255, 255)"), ("borderTopWidth", "1px")]);
+                d.set_styles(c, extra);
+                d.set_rect(c, x, 0.0, 260.0, 100.0);
+                let p = d.add(Some(c), "p");
+                d.add_text(p, "A quote that runs the width of its card");
+                d.set_styles(p, OCCLUSION_BASE);
+                d.set_styles(p, &[("fontSize", "14px"), ("lineHeight", "20px")]);
+                d.set_rect(p, x + 10.0, 10.0, 240.0, 40.0);
+                d.el_mut(p).text_line_rects = Some(vec![Rect::from_xywh(x + 10.0, 10.0, 240.0, 20.0), Rect::from_xywh(x + 10.0, 30.0, 240.0, 20.0)]);
+                quotes.push(p);
+            }
+            mark_body_descendants(&mut d);
+            (check_text_occlusion_dom(&d).iter().map(|f| f.el).collect::<Vec<_>>(), quotes)
+        };
+        let (hits, quotes) = run(&[], &[]);
+        assert_eq!(hits, vec![Some(quotes[0])], "the later card covers the first");
+        let (hits, quotes) = run(&[("transform", "matrix(1, 0, 0, 1, 0, 0)")], &[]);
+        assert_eq!(hits, vec![Some(quotes[1])], "a transformed first card paints over the second");
+        let (hits, _) = run(&[], &[("clipPath", "inset(0px 0px 0px 80px)")]);
         assert!(hits.is_empty(), "{hits:?}");
     }
 
