@@ -1915,15 +1915,12 @@ fn same_colour(a: &Rgba, b: &Rgba) -> bool {
 /// (`linear-gradient(90deg, ink 0%, ink 30%, highlight 55%, ink 70%, ink
 /// 100%)` at `200% 100%`, `shimmer` sweeping `background-position-x`): a
 /// highlight passing over plain type, a state of the label rather than a
-/// gradient treatment. The glyphs have to paint in that ink: a rainbow
-/// headline that sets `color` to its end stop as a fallback and fills its
-/// text with nothing (`-webkit-text-fill-color: transparent`) shows only
-/// the gradient, and stays gradient text. Any part the capture did not
-/// record keeps the finding.
+/// gradient treatment. The ink has to hold solid over at least half the
+/// layer ([`ink_plateau_share`]): a rainbow headline that sets `color` to
+/// its end stop as a fallback (`#ff0080, #7928ca, #2563eb, #ff0080`) meets
+/// its ink only at the two ends, and stays gradient text. Any part the
+/// capture did not record keeps the finding.
 pub(crate) fn gradient_text_is_a_shimmer(dom: &dyn Dom, el: ElId) -> bool {
-    if text_fill_is_transparent(&dom.style(el, "webkitTextFillColor")) {
-        return false;
-    }
     let image = dom.style(el, "backgroundImage");
     let stops = parse_gradient_colors(Some(&image));
     let (Some(first), Some(last), Some(ink)) = (stops.first(), stops.last(), parse_any_color(Some(&dom.style(el, "color"))))
@@ -1931,6 +1928,9 @@ pub(crate) fn gradient_text_is_a_shimmer(dom: &dyn Dom, el: ElId) -> bool {
         return false;
     };
     if stops.len() < 3 || !same_colour(first, &ink) || !same_colour(last, &ink) {
+        return false;
+    }
+    if !ink_plateau_share(&image, &ink).is_some_and(|share| share >= SHIMMER_INK_MIN_SHARE) {
         return false;
     }
     let size = dom.style(el, "backgroundSize");
@@ -1955,6 +1955,96 @@ pub(crate) fn gradient_text_is_a_shimmer(dom: &dyn Dom, el: ElId) -> bool {
                     .any(|f| f.decls.iter().any(|(p, _)| p.starts_with("background-position")))
             })
     })
+}
+
+/// The least share of a shimmer's layer its ink holds solid
+/// ([`gradient_text_is_a_shimmer`]): cursor.com's holds 60%, the ink from 0
+/// to 30% and from 70 to 100%.
+const SHIMMER_INK_MIN_SHARE: f64 = 0.5;
+
+/// The share of a single `linear-gradient`'s length over which it holds
+/// `ink` solid: the runs between two neighbouring stops that are both
+/// `ink`, and the ends past a first or last stop that is. Stops without a
+/// position are spread as CSS spreads them. `None` for anything else
+/// (several layers, a stop at `px` or `calc()`, a colour that does not
+/// parse).
+fn ink_plateau_share(image: &str, ink: &Rgba) -> Option<f64> {
+    let args = js::trim(image).strip_prefix("linear-gradient(")?.strip_suffix(')')?;
+    if args.contains("gradient(") || args.contains("url(") {
+        return None;
+    }
+    let mut parts = crate::color::split_top_level_commas(args);
+    let head = js::to_lower_case(js::trim(parts.first()?));
+    if head.starts_with("to ") || ["deg", "turn", "rad", "grad"].iter().any(|u| head.ends_with(u)) {
+        parts.remove(0);
+    }
+    let mut stops: Vec<(bool, Option<f64>)> = Vec::new();
+    for part in &parts {
+        let part = js::trim(part);
+        let (color, rest) = match part.find(')') {
+            Some(i) if part[..i].contains('(') => (&part[..=i], &part[i + 1..]),
+            _ => match part.find(char::is_whitespace) {
+                Some(i) => (&part[..i], &part[i..]),
+                None => (part, ""),
+            },
+        };
+        let is_ink = same_colour(&parse_any_color(Some(color))?, ink);
+        let positions = rest
+            .split_whitespace()
+            .map(|p| p.strip_suffix('%').map(parse_float).filter(|v| v.is_finite()))
+            .collect::<Option<Vec<f64>>>()?;
+        match positions.as_slice() {
+            [] => stops.push((is_ink, None)),
+            [a] => stops.push((is_ink, Some(*a))),
+            [a, b] => {
+                stops.push((is_ink, Some(*a)));
+                stops.push((is_ink, Some(*b)));
+            }
+            _ => return None,
+        }
+    }
+    if stops.len() < 2 {
+        return None;
+    }
+    // Positions as CSS resolves them: the ends default to 0 and 100, a
+    // position under an earlier one is raised to it, and a run without
+    // positions is spread evenly between its neighbours.
+    let n = stops.len();
+    let mut at: Vec<Option<f64>> = stops.iter().map(|s| s.1).collect();
+    at[0] = Some(at[0].unwrap_or(0.0));
+    at[n - 1] = Some(at[n - 1].unwrap_or(100.0));
+    let mut max = 0.0f64;
+    for a in at.iter_mut().flatten() {
+        max = max.max(*a);
+        *a = max;
+    }
+    let mut i = 0;
+    while i < n {
+        if at[i].is_none() {
+            let start = i - 1;
+            let end = (i..n).find(|&j| at[j].is_some())?;
+            let (from, to) = (at[start]?, at[end]?);
+            for (k, slot) in at.iter_mut().enumerate().take(end).skip(i) {
+                *slot = Some(from + (to - from) * (k - start) as f64 / (end - start) as f64);
+            }
+            i = end;
+        }
+        i += 1;
+    }
+    let at: Vec<f64> = at.into_iter().collect::<Option<Vec<f64>>>()?;
+    let mut solid = 0.0;
+    if stops[0].0 {
+        solid += at[0].clamp(0.0, 100.0);
+    }
+    if stops[n - 1].0 {
+        solid += (100.0 - at[n - 1]).clamp(0.0, 100.0);
+    }
+    for k in 0..n - 1 {
+        if stops[k].0 && stops[k + 1].0 {
+            solid += (at[k + 1].min(100.0) - at[k].max(0.0)).max(0.0);
+        }
+    }
+    Some(solid / 100.0)
 }
 
 /// Whether every stop of the gradient clipped to `el`'s text is one RGB at
@@ -5597,6 +5687,23 @@ pub fn check_element_blinking_cursor_dom(dom: &dyn Dom, el: ElId) -> Vec<Browser
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// cursor.com's shimmer holds its ink over 60% of the layer; a rainbow
+    /// that ends on its fallback colour meets the ink only at its ends; a
+    /// stop the engine cannot place gives no answer.
+    #[test]
+    fn ink_plateau_share_reads_the_solid_runs() {
+        let ink = parse_any_color(Some("rgba(0, 0, 0, 0.38)")).unwrap();
+        let cursor = "linear-gradient(90deg, rgba(0, 0, 0, 0.38) 0%, rgba(0, 0, 0, 0.38) 30%, color(srgb 0.14 0.137 0.111 / 0.913) 55%, rgba(0, 0, 0, 0.38) 70%, rgba(0, 0, 0, 0.38) 100%)";
+        assert!((ink_plateau_share(cursor, &ink).unwrap() - 0.6).abs() < 1e-9);
+        let pink = parse_any_color(Some("rgb(255, 0, 128)")).unwrap();
+        let rainbow = "linear-gradient(90deg, rgb(255, 0, 128), rgb(121, 40, 202), rgb(37, 99, 235), rgb(255, 0, 128))";
+        assert_eq!(ink_plateau_share(rainbow, &pink), Some(0.0));
+        let hard = "linear-gradient(90deg, rgb(255, 0, 128) 40%, rgb(37, 99, 235) 40% 60%, rgb(255, 0, 128) 60%)";
+        assert!((ink_plateau_share(hard, &pink).unwrap() - 0.8).abs() < 1e-9);
+        let px = "linear-gradient(90deg, rgb(255, 0, 128) 10px, rgb(37, 99, 235))";
+        assert_eq!(ink_plateau_share(px, &pink), None);
+    }
     use crate::browser::fake_dom::FakeDom;
 
     /// One element, its own page-level dedupe state.

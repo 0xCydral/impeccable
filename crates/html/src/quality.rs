@@ -928,8 +928,8 @@ pub fn check_quality(q: &QualityInput<'_, '_>) -> Vec<RuleHit> {
                 // (r13-t3), as the browser engine reads them. With no layout
                 // the lead-text exemption, which counts lines, is browser-only.
                 // A label is set solid or looser, and here, with no lines to
-                // count (the browser bounds it to three), is shorter than a
-                // sentence: a stricter stand-in, so it only keeps findings.
+                // count (the browser bounds it to three), shorter than a
+                // sentence: the nearest stand-in without layout.
                 let caps = sv(style, "textTransform") == "uppercase"
                     && shown >= LEADING_CAPS_LABEL_MIN_RATIO
                     && utf16_len(&collapse_ws(js::trim(&el.text_content()))) < ALL_CAPS_LONG_RUN;
