@@ -1227,6 +1227,21 @@ struct BoxLayer {
     positioned: bool,
 }
 
+/// Whether `node`'s `z-index` applies: a positioned box, or a flex or grid
+/// item.
+fn z_index_applies(dom: &dyn Dom, node: ElId) -> bool {
+    let z = dom.style(node, "zIndex");
+    let z = js::trim(&z);
+    !z.is_empty() && z != "auto" && parse_float(z).is_finite() && {
+        let position = dom.style(node, "position");
+        !matches!(js::trim(&position), "" | "static")
+            || dom.parent(node).map_or(false, |p| {
+                let display = dom.style(p, "display");
+                display.contains("flex") || display.contains("grid")
+            })
+    }
+}
+
 fn box_layer(dom: &dyn Dom, node: ElId) -> BoxLayer {
     let position = dom.style(node, "position");
     let position = js::trim(&position);
@@ -2742,9 +2757,8 @@ fn measured_through(dom: &dyn Dom, el: ElId, found: ElId, text: &Rect, ink: Rgba
         if c == found {
             break;
         }
-        let position = dom.style(c, "position");
-        let z = parse_float(&dom.style(c, "zIndex"));
-        if !matches!(js::trim(&position), "" | "static") && z.is_finite() {
+        // `z-index` applies to a positioned box and to a flex or grid item.
+        if let Some(z) = box_layer(dom, c).context.filter(|_| z_index_applies(dom, c)) {
             text_z = text_z.max(z);
         }
         cur = dom.parent(c);
@@ -5748,6 +5762,12 @@ mod tests {
         // ground it makes (about #262626): nothing measured there.
         d.set_pseudo_style(body, "::before", "zIndex", "auto");
         assert!(handed_over_unmeasured(&d, eye, verdict));
+        // A flex item raised over the scrim by its own `z-index` (no
+        // `position` needed) has the layer under it: a wash again.
+        d.set_pseudo_style(body, "::before", "zIndex", "2147483600");
+        d.set_style(body, "display", "flex");
+        d.set_style(eye, "zIndex", "2147483647");
+        assert!(handed_over_unmeasured(&d, eye, verdict), "flex item over the scrim");
     }
 
     /// stripe.com's hero: a green `h1` under a copy of itself in blue at
