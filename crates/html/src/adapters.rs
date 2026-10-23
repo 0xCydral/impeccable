@@ -1487,6 +1487,13 @@ pub fn sampled_ground(
         ground.layer.font_size,
     );
     let extents = inset_by_padding(el, &ground, extents);
+    // A layer fixed to the viewport meets the box where layout says, which
+    // a file scan does not have: not known on either axis.
+    let extents = if sampled_contrast::attachment_depends_on_layout(&ground.layer.attachment) {
+        (Extent::Unknown, Extent::Unknown)
+    } else {
+        extents
+    };
     let is_ground = if ground.over_opaque_color {
         sampled_contrast::covers_box(extents)
     } else {

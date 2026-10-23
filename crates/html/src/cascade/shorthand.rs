@@ -256,76 +256,96 @@ fn size_component(token: &str) -> String {
     }
 }
 
-/// The per-layer `background-repeat`, `background-size`, and
-/// `background-position` lists of a `background` shorthand (`url(a) center
-/// / cover no-repeat, url(b)` -> `no-repeat, repeat`, `cover, auto`, and
-/// `center, 0% 0%`). An image call at the head of a token is dropped and
-/// the rest of the token kept; any other function is a value and stays
-/// whole, so `/ var(--s)` is stored for the compute loop to resolve instead
-/// of collapsing to `auto`. A bare `var()` among the tokens may hold the
-/// repeat, the position, a box, or (see `color_outside_image`) the color:
-/// the bare `var()` tokens of a layer are stored in every slot they could
-/// still hold beside the literal tokens, each where it stood among them
-/// (further position components up to four, further repeat keywords up to
-/// two, the origin and the clip beside a literal box keyword, and the size
-/// as the shorthand's own `from-shorthand(...)`, holding the layer's tokens
-/// in source order, when the layer names no literal size, since the `var()`
-/// may hold one behind its own slash and a literal component after it may
-/// continue that size), so
-/// the compute loop resolves them and each reader takes what it can read,
-/// leaving the rest unknown (the repeat reader reads keywords only, the
-/// position slot first drops what cannot be a position, see
-/// `position_slot_or_default`, the size slot takes a size only from behind
-/// a slash, see `size_slot_or_default`, and the padding read looks for a
-/// `content-box` token). One directly before the size slash can only be
-/// the position and is stored as that. The
-/// fourth value is the per-layer `background-origin` and `background-clip`
-/// lists from the layers' box keywords and bare `var()` tokens (one keyword
-/// sets both, two set the origin then the clip; a layer naming none is
-/// `padding-box` / `border-box`), and only when some layer names one or
-/// holds a `var()`: a shorthand without either leaves both as they were
-/// (`background_longhands`).
-fn parse_static_background_layers(
-    value: &str,
-) -> (String, String, String, Option<(String, String)>) {
+/// The per-layer lists a `background` shorthand sets beside the pinned
+/// expansion: the repeat, the size, the position, the origin and clip
+/// (`None` when no layer names a box or holds a `var()`), and the
+/// attachment (`None` on the same terms).
+pub struct LayerLists {
+    pub repeat: String,
+    pub size: String,
+    pub position: String,
+    pub boxes: Option<(String, String)>,
+    pub attachment: Option<String>,
+}
+
+static BG_ATTACHMENT_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)^(?:scroll|fixed|local)$").expect("BG_ATTACHMENT_RE"));
+
+/// The per-layer lists of a `background` shorthand (`url(a) center / cover
+/// no-repeat, url(b)` -> repeat `no-repeat, repeat`, size `cover, auto`,
+/// position `center, 0% 0%`). An image call at the head of a token is
+/// dropped and the rest of the token kept; any other function is a value
+/// and stays whole, so `/ calc(100% / 3)` is stored for the compute loop to
+/// resolve instead of collapsing to `auto`. A layer holding a `var()`
+/// anywhere outside its image call is stored whole in every slot, as the
+/// shorthand's own `from-shorthand(<the layer's tokens>)`: the parser
+/// cannot see what the `var()` holds (a position, a size behind its slash,
+/// a repeat, a box, an attachment, a color, or whole layers), so each slot
+/// re-reads the resolved text with this same grammar once the compute loop
+/// has substituted it (`expand_shorthand_slot`). The origin and clip lists
+/// come from the layers' box keywords (one sets both, two set the origin
+/// then the clip; a layer naming none is `padding-box` / `border-box`), the
+/// attachment list from its keyword (`scroll` for a layer naming none),
+/// and each only when some layer names one or holds a `var()`: a shorthand
+/// without either leaves earlier values in place, which errs silent.
+pub fn parse_static_background_layers(value: &str) -> LayerLists {
     let mut repeats: Vec<String> = Vec::new();
     let mut sizes: Vec<String> = Vec::new();
     let mut positions: Vec<String> = Vec::new();
     let mut origins: Vec<String> = Vec::new();
     let mut clips: Vec<String> = Vec::new();
+    let mut attachments: Vec<String> = Vec::new();
     let mut named_box = false;
+    let mut named_attachment = false;
     for layer in split_layers(value) {
-        // Slot entries carry their source order, so a `var()` merges into a
-        // slot where it stood: `var(--x) no-repeat` names the x axis first.
-        let mut repeat: Vec<(usize, String)> = Vec::new();
-        let mut size: Vec<String> = Vec::new();
-        let mut position: Vec<(usize, String)> = Vec::new();
-        let mut boxes: Vec<String> = Vec::new();
-        let mut vars: Vec<(usize, String)> = Vec::new();
-        // Every token of the layer but the image call, in source order: what
-        // the size slot stores around a bare `var()` (see below).
-        let mut layer_tokens: Vec<String> = Vec::new();
-        let mut in_size = false;
         let tokens: Vec<String> = split_tokens(&layer).iter().flat_map(|t| unglue(t)).collect();
-        for (order, raw) in join_slashes(tokens).into_iter().enumerate() {
-            let token: &str = match BG_IMAGE_CALL_RE.find(&raw) {
-                Some(call) => &raw[css_call_end(&raw, call.end() - 1)..],
-                None => raw.as_str(),
-            };
+        // Each token with the image call at its head dropped; an empty
+        // result marks where the call stood.
+        let parts: Vec<String> = join_slashes(tokens)
+            .iter()
+            .map(|raw| match BG_IMAGE_CALL_RE.find(raw) {
+                Some(call) => raw[css_call_end(raw, call.end() - 1)..].to_string(),
+                None => raw.clone(),
+            })
+            .collect();
+        if parts.iter().any(|t| VAR_ANYWHERE_RE.is_match(t)) {
+            let text = format!(
+                "{FROM_SHORTHAND}({})",
+                parts
+                    .iter()
+                    .filter(|t| !t.is_empty())
+                    .map(|t| t.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+            repeats.push(text.clone());
+            sizes.push(text.clone());
+            positions.push(text.clone());
+            origins.push(text.clone());
+            clips.push(text.clone());
+            attachments.push(text);
+            named_box = true;
+            named_attachment = true;
+            continue;
+        }
+        let mut repeat: Vec<String> = Vec::new();
+        let mut size: Vec<String> = Vec::new();
+        let mut position: Vec<String> = Vec::new();
+        let mut boxes: Vec<String> = Vec::new();
+        let mut attachment: Option<String> = None;
+        let mut in_size = false;
+        for token in &parts {
+            let token = token.as_str();
             if token.is_empty() {
                 in_size = false;
                 continue;
             }
-            layer_tokens.push(token.to_string());
             // `center/cover`, `center / cover`, or `center/ cover`: the size
             // is what follows the slash, one or two values; what precedes it
             // is the last position component.
             if let Some((before, after)) = split_size_slash(token) {
-                if !before.is_empty()
-                    && position.len() < 4
-                    && (BG_POSITION_RE.is_match(before) || VAR_HEAD_TOKEN_RE.is_match(before))
-                {
-                    position.push((order, size_component(before)));
+                if !before.is_empty() && position.len() < 4 && BG_POSITION_RE.is_match(before) {
+                    position.push(size_component(before));
                 }
                 in_size = true;
                 size.clear();
@@ -340,84 +360,55 @@ fn parse_static_background_layers(
             }
             in_size = false;
             if repeat.len() < 2 && BG_REPEAT_RE.is_match(token) {
-                repeat.push((order, js::to_lower_case(token)));
+                repeat.push(js::to_lower_case(token));
                 continue;
             }
             if boxes.len() < 2 && BG_BOX_RE.is_match(token) {
                 boxes.push(js::to_lower_case(token));
                 continue;
             }
-            // A bare `var()` may hold the repeat, a box, a color, or a
-            // position; every one is kept, with its place, for the slots it
-            // could still fill.
-            if VAR_HEAD_TOKEN_RE.is_match(token) {
-                vars.push((order, token.to_string()));
+            if attachment.is_none() && BG_ATTACHMENT_RE.is_match(token) {
+                attachment = Some(js::to_lower_case(token));
                 continue;
             }
             if position.len() < 4 && BG_POSITION_RE.is_match(token) {
-                position.push((order, size_component(token)));
+                position.push(size_component(token));
             }
         }
-        // The bare `var()` tokens fill every slot they could still hold
-        // beside the literal tokens, in source order, and each reader takes
-        // what it can read once the compute loop resolves them.
-        let has_vars = !vars.is_empty();
-        let var_text = || {
-            vars.iter()
-                .map(|(_, v)| v.as_str())
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
-        let with_vars = |mut parts: Vec<(usize, String)>, room: usize| -> Vec<String> {
-            if parts.len() < room {
-                parts.extend(vars.iter().cloned());
-                parts.sort_by_key(|(order, _)| *order);
-            }
-            parts.into_iter().map(|(_, v)| v).collect()
-        };
-        let repeat = with_vars(repeat, 2);
         repeats.push(if repeat.is_empty() {
             "repeat".into()
         } else {
             repeat.join(" ")
         });
-        // A bare `var()` may hold the size behind its own slash, and a
-        // literal component after it may continue that size (`var(--l)
-        // 100%` with `--l: center / 100%` is `100% 100%`), so the slot
-        // stores the layer's tokens around the `var()` as they stand.
-        sizes.push(if !size.is_empty() {
-            size.join(" ")
-        } else if has_vars {
-            format!("{FROM_SHORTHAND}({})", layer_tokens.join(" "))
-        } else {
+        sizes.push(if size.is_empty() {
             "auto".into()
+        } else {
+            size.join(" ")
         });
-        let position = with_vars(position, 4);
         positions.push(if position.is_empty() {
             "0% 0%".into()
         } else {
             position.join(" ")
         });
-        named_box |= !boxes.is_empty() || has_vars;
-        origins.push(match boxes.first() {
-            Some(first) => first.clone(),
-            None if has_vars => var_text(),
-            None => "padding-box".into(),
-        });
-        clips.push(match (boxes.get(1), boxes.first()) {
-            (Some(second), _) => second.clone(),
-            (None, Some(first)) if has_vars => format!("{first} {}", var_text()),
-            (None, Some(first)) => first.clone(),
-            (None, None) if has_vars => var_text(),
-            (None, None) => "border-box".into(),
-        });
+        named_box |= !boxes.is_empty();
+        origins.push(boxes.first().cloned().unwrap_or_else(|| "padding-box".into()));
+        clips.push(
+            boxes
+                .get(1)
+                .or(boxes.first())
+                .cloned()
+                .unwrap_or_else(|| "border-box".into()),
+        );
+        named_attachment |= attachment.is_some();
+        attachments.push(attachment.unwrap_or_else(|| "scroll".into()));
     }
-    (
-        repeats.join(", "),
-        sizes.join(", "),
-        positions.join(", "),
-        named_box.then(|| (origins.join(", "), clips.join(", "))),
-    )
+    LayerLists {
+        repeat: repeats.join(", "),
+        size: sizes.join(", "),
+        position: positions.join(", "),
+        boxes: named_box.then(|| (origins.join(", "), clips.join(", "))),
+        attachment: named_attachment.then(|| attachments.join(", ")),
+    }
 }
 
 static VAR_HEAD_TOKEN_RE: Lazy<Regex> =
@@ -551,6 +542,35 @@ fn split_layers(value: &str) -> Vec<String> {
     split_escaped(value, |c| c == ',')
 }
 
+/// Whether a value holds a comma outside every call and string: a layer
+/// boundary, even one beside nothing (`, no-repeat`), which `split_layers`
+/// would drop.
+fn has_top_level_comma(value: &str) -> bool {
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            chars.next();
+            continue;
+        }
+        if let Some(q) = quote {
+            if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '(' => depth += 1,
+            ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
 fn split_tokens(layer: &str) -> Vec<String> {
     split_escaped(layer, js::is_js_whitespace)
 }
@@ -594,99 +614,33 @@ pub fn names_background_geometry(value: &str) -> bool {
         })
 }
 
-/// A `background` shorthand's bare `var()` is stored in the position slot
-/// too when no other token names the position (#560). Resolved, it may hold
-/// what another slot reads instead: a repeat, a size keyword, an attachment
-/// or box keyword, or a color. None of those is a position, so the slot
-/// computes without them, `0% 0%` when nothing is left, and the position
-/// reader sees the position the shorthand named, the default when it named
-/// none, instead of taking a `no-repeat` for a shift that leaves a covering
-/// image unread. A token that still holds a `var()`, and anything else the
-/// shorthand grammar does not name, stays as it is: the reader treats it as
-/// able to shift the image. A value with nothing to drop is returned as it
-/// came.
-pub fn position_slot_or_default(value: &str) -> String {
-    let outside_position = |token: &str| {
-        !VAR_ANYWHERE_RE.is_match(token)
-            && (BG_REPEAT_RE.is_match(token)
-                || BG_SIZE_KEYWORD_RE.is_match(token)
-                || BG_ATTACHMENT_OR_BOX_RE.is_match(token)
-                || COLOR_KEYWORD_RE.is_match(token)
-                || !extract_static_color(token).is_empty())
-    };
-    let mut dropped = false;
-    let layers: Vec<String> = split_layers(value)
-        .iter()
-        .map(|layer| {
-            let tokens = join_slashes(split_tokens(layer).iter().flat_map(|t| unglue(t)).collect());
-            let mut kept: Vec<String> = Vec::new();
-            // A `var()` may have held the size behind its slash too
-            // (`center / cover`): the slash and the one or two size
-            // components after it are the size slot's (`size_slot_or_default`),
-            // not a position.
-            let mut sizes_left = 0usize;
-            for token in tokens {
-                if let Some((before, after)) = split_size_slash(&token) {
-                    dropped = true;
-                    if !before.is_empty() && !outside_position(before) {
-                        kept.push(before.to_string());
-                    }
-                    sizes_left = if after.is_empty() { 2 } else { 1 };
-                    continue;
-                }
-                if sizes_left > 0 && BG_SIZE_RE.is_match(&token) {
-                    sizes_left -= 1;
-                    continue;
-                }
-                sizes_left = 0;
-                if outside_position(&token) {
-                    dropped = true;
-                    continue;
-                }
-                kept.push(token);
-            }
-            if kept.is_empty() {
-                "0% 0%".to_string()
-            } else {
-                kept.join(" ")
-            }
-        })
-        .collect();
-    if dropped {
-        layers.join(", ")
-    } else {
-        value.to_string()
-    }
-}
-
-/// The marker a `background` shorthand's layer is stored under in the size
-/// slot when it holds a bare `var()` and names no literal size: the `var()`
-/// may hold the size behind its own slash (`--layout: center / cover`),
-/// which the parser cannot see, a literal component after it may continue
-/// that size, and a longhand never carries the marker, so the computed
-/// slot can tell the shorthand's own value from one a later
-/// `background-size` declaration set. The name holds no `var(`, which the
-/// resolver would take for the call itself.
+/// The marker a `background` shorthand's layer is stored under in every
+/// slot when it holds a `var()`: the parser cannot see what the `var()`
+/// holds, and a longhand never carries the marker, so the computed slot can
+/// tell the shorthand's own value from one a later longhand set. The name
+/// holds no `var(`, which the resolver would take for the call itself.
 const FROM_SHORTHAND: &str = "from-shorthand";
 static FROM_SHORTHAND_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^from-shorthand\(").expect("FROM_SHORTHAND_RE"));
 
-/// A size slot holding the shorthand's `from-shorthand(...)` (#560), once the
-/// compute loop resolved the `var()` inside it: the layer computes to the
-/// one or two size components behind a top-level slash in the resolved
-/// value (`center / cover` gives `cover`, `0 0 / 100% auto` gives `100%
-/// auto`, and `center / 100% 100% no-repeat`, a literal `100%` continuing
-/// what the `var()` held, gives `100% 100%`), and to `auto`, the size the
-/// shorthand named, when it holds none (a repeat, a position, a color; a
-/// slash inside `calc()` is not one). A
-/// `var()` the loop could not resolve is left in place, unknown to the size
-/// reader as it is to every other. A slot without the marker, a longhand's
-/// or a literal size's, is returned as it came.
-pub fn size_slot_or_default(value: &str) -> String {
+/// A slot holding the shorthand's `from-shorthand(...)` (#560), once the
+/// compute loop resolved the `var()` inside it: each such layer is re-read
+/// with the shorthand grammar (`parse_static_background_layers`) and the
+/// slot takes what that read gives it, the default where the layer named
+/// nothing for it (`center / cover` gives size `cover` and position
+/// `center`, `#17150f` gives repeat `repeat` and attachment `scroll`). A
+/// `var()` the loop could not resolve is left in place, unknown to every
+/// reader. The second value says whether the `var()` added or removed
+/// layers (its text holds a top-level comma, or nothing at all): the lists
+/// then no longer line up with the image layers, and the level is not
+/// known (`analyze_level` gives up on `backgroundLayersUnknown`). A slot
+/// without the marker, a longhand's or a literal's, is returned as it came.
+pub fn expand_shorthand_slot(prop: &str, value: &str) -> (String, bool) {
     if !value.contains(FROM_SHORTHAND) {
-        return value.to_string();
+        return (value.to_string(), false);
     }
-    let layers: Vec<String> = split_layers(value)
+    let mut unknown = false;
+    let entries: Vec<String> = split_layers(value)
         .iter()
         .map(|layer| {
             let Some(head) = FROM_SHORTHAND_RE.find(layer) else {
@@ -698,39 +652,29 @@ pub fn size_slot_or_default(value: &str) -> String {
             if VAR_ANYWHERE_RE.is_match(inner) {
                 return inner.to_string();
             }
-            let tokens = join_slashes(split_tokens(inner).iter().flat_map(|t| unglue(t)).collect());
-            let mut found: Vec<String> = Vec::new();
-            let mut in_size = false;
-            for token in tokens {
-                if let Some((_, after)) = split_size_slash(&token) {
-                    in_size = true;
-                    found.clear();
-                    if !after.is_empty() && BG_SIZE_RE.is_match(after) {
-                        found.push(size_component(after));
-                    }
-                    continue;
-                }
-                if in_size && found.len() < 2 && BG_SIZE_RE.is_match(&token) {
-                    found.push(size_component(&token));
-                    continue;
-                }
-                in_size = false;
+            if inner.is_empty() || has_top_level_comma(inner) {
+                unknown = true;
             }
-            if found.is_empty() {
-                "auto".to_string()
-            } else {
-                found.join(" ")
+            let lists = parse_static_background_layers(inner);
+            match prop {
+                "backgroundRepeat" => lists.repeat,
+                "backgroundSize" => lists.size,
+                "backgroundPosition" => lists.position,
+                "backgroundOrigin" => lists
+                    .boxes
+                    .map_or_else(|| "padding-box".to_string(), |boxes| boxes.0),
+                "backgroundClip" => lists
+                    .boxes
+                    .map_or_else(|| "border-box".to_string(), |boxes| boxes.1),
+                "backgroundAttachment" => {
+                    lists.attachment.unwrap_or_else(|| "scroll".to_string())
+                }
+                _ => layer.clone(),
             }
         })
         .collect();
-    layers.join(", ")
+    (entries.join(", "), unknown)
 }
-
-static BG_SIZE_KEYWORD_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)^(?:auto|cover|contain)$").expect("BG_SIZE_KEYWORD_RE"));
-// The color keywords `extract_static_color` does not read as a color.
-static COLOR_KEYWORD_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)^(?:transparent|currentcolor)$").expect("COLOR_KEYWORD_RE"));
 
 /// The background color a shorthand names where `expand_static_declaration`
 /// does not look: after the image (`url(x) #17150f`), or as the final layer
@@ -837,6 +781,10 @@ pub fn background_longhands(prop: &str, value: &str) -> Vec<Expanded> {
             initial_or(&unglued_layers(v), "0% 0%"),
         )],
         "background-origin" => vec![("backgroundOrigin".into(), initial_or(v, "padding-box"))],
+        "background-attachment" => vec![(
+            "backgroundAttachment".into(),
+            initial_or(&unglued_layers(v), "scroll"),
+        )],
         // Not part of the shorthand, so it is never reset by one; the
         // sampled-contrast path stands down on any mode but `normal`.
         "background-blend-mode" => vec![("backgroundBlendMode".into(), v.to_string())],
@@ -900,15 +848,18 @@ fn background_shorthand_longhands(v: &str) -> Vec<Expanded> {
             ("backgroundPosition".into(), initial_or(v, "0% 0%")),
         ];
     }
-    let (repeat, size, position, boxes) = parse_static_background_layers(v);
+    let lists = parse_static_background_layers(v);
     let mut out: Vec<Expanded> = vec![
-        ("backgroundRepeat".into(), repeat),
-        ("backgroundSize".into(), size),
-        ("backgroundPosition".into(), position),
+        ("backgroundRepeat".into(), lists.repeat),
+        ("backgroundSize".into(), lists.size),
+        ("backgroundPosition".into(), lists.position),
     ];
-    if let Some((origin, clip)) = boxes {
+    if let Some((origin, clip)) = lists.boxes {
         out.push(("backgroundOrigin".into(), origin));
         out.push(("backgroundClip".into(), clip));
+    }
+    if let Some(attachment) = lists.attachment {
+        out.push(("backgroundAttachment".into(), attachment));
     }
     if !has_image {
         // Neither a `url()` nor a gradient. A shorthand that names no image
@@ -1123,72 +1074,74 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_var_in_the_position_slot_computes_without_what_other_slots_read() {
-        for (resolved, position) in [
-            ("no-repeat", "0% 0%"),
-            ("center no-repeat", "center"),
-            ("no-repeat center", "center"),
-            ("#17150f", "0% 0%"),
-            ("rgba(23, 21, 15, 0.9)", "0% 0%"),
-            ("transparent", "0% 0%"),
-            ("fixed border-box", "0% 0%"),
-            ("cover", "0% 0%"),
-            ("no-repeat, center", "0% 0%, center"),
-            ("0 200px no-repeat", "0 200px"),
-            // The size the `var()` held behind its slash is the size slot's.
-            ("center/cover", "center"),
-            ("center / cover no-repeat", "center"),
-            ("0 0 / 100% 100%", "0 0"),
-            ("/cover", "0% 0%"),
-            ("center/cover, 0% 0%", "center, 0% 0%"),
-        ] {
-            assert_eq!(position_slot_or_default(resolved), position, "{resolved}");
-        }
-        // Nothing to drop: the value is returned as it came, an unresolved
-        // `var()` and anything the grammar does not name included.
-        for value in [
-            "0% 0%",
-            "center",
-            "right top",
-            "0 200px",
-            "calc(50% - 10px) 0",
-            "var(--pos)",
-            "var(--c, #fff)",
-            "calc(50% / 2) 0",
-            "150% 0",
-        ] {
-            assert_eq!(position_slot_or_default(value), value);
-        }
-    }
-
-    #[test]
-    fn the_shorthands_var_in_the_size_slot_computes_to_what_follows_its_slash() {
-        for (resolved, size) in [
-            ("from-shorthand(center / cover)", "cover"),
-            ("from-shorthand(center/cover)", "cover"),
-            ("from-shorthand(0 0 / 100% auto)", "100% auto"),
-            ("from-shorthand(center / cover no-repeat)", "cover"),
-            ("from-shorthand(/cover)", "cover"),
-            // The layer's literal tokens stand around the resolved `var()`.
-            ("from-shorthand(#111 center / 100% 100% no-repeat)", "100% 100%"),
-            ("from-shorthand(#111 center 100% no-repeat)", "auto"),
-            ("from-shorthand(center / cover 100%)", "cover 100%"),
-            ("from-shorthand(no-repeat)", "auto"),
-            ("from-shorthand(center)", "auto"),
-            ("from-shorthand(50% 50%)", "auto"),
-            ("from-shorthand(0 0)", "auto"),
-            ("from-shorthand(#17150f)", "auto"),
-            ("from-shorthand(calc(50% / 2) 0)", "auto"),
-            ("from-shorthand(center / cover), auto", "cover, auto"),
-            ("64px, from-shorthand(center)", "64px, auto"),
-            // Unresolved: the `var()` stays, unknown to the size reader.
-            ("from-shorthand(var(--layout))", "var(--layout)"),
-        ] {
-            assert_eq!(size_slot_or_default(resolved), size, "{resolved}");
-        }
-        // A longhand's or a literal size's slot is returned as it came.
+    fn a_layer_holding_a_var_is_re_read_once_resolved() {
+        let read = |prop: &str, value: &str| expand_shorthand_slot(prop, value);
+        let one = |v: &str| (v.to_string(), false);
+        assert_eq!(read("backgroundSize", "from-shorthand(center / cover)"), one("cover"));
+        assert_eq!(
+            read("backgroundPosition", "from-shorthand(center / cover no-repeat)"),
+            one("center")
+        );
+        assert_eq!(
+            read("backgroundRepeat", "from-shorthand(center / cover no-repeat)"),
+            one("no-repeat")
+        );
+        assert_eq!(read("backgroundRepeat", "from-shorthand(#17150f)"), one("repeat"));
+        assert_eq!(
+            read("backgroundSize", "from-shorthand(#111 center / 100% 100% no-repeat)"),
+            one("100% 100%")
+        );
+        assert_eq!(
+            read("backgroundSize", "from-shorthand(#111 center 100% no-repeat)"),
+            one("auto")
+        );
+        assert_eq!(
+            read("backgroundPosition", "from-shorthand(#111 center 100% no-repeat)"),
+            one("center 100%")
+        );
+        assert_eq!(read("backgroundAttachment", "from-shorthand(fixed)"), one("fixed"));
+        assert_eq!(read("backgroundAttachment", "from-shorthand(center)"), one("scroll"));
+        assert_eq!(read("backgroundOrigin", "from-shorthand(content-box)"), one("content-box"));
+        assert_eq!(read("backgroundClip", "from-shorthand(content-box)"), one("content-box"));
+        assert_eq!(
+            read("backgroundClip", "from-shorthand(border-box content-box)"),
+            one("content-box")
+        );
+        assert_eq!(read("backgroundClip", "from-shorthand(center)"), one("border-box"));
+        assert_eq!(
+            read("backgroundSize", "from-shorthand(center / cover), 64px"),
+            one("cover, 64px")
+        );
+        assert_eq!(
+            read("backgroundSize", "64px, from-shorthand(no-repeat)"),
+            one("64px, auto")
+        );
+        // Unresolved: the `var()` stays, unknown to every reader.
+        assert_eq!(
+            read("backgroundSize", "from-shorthand(var(--layout))"),
+            one("var(--layout)")
+        );
+        // The `var()` added a layer, or held nothing: the lists no longer
+        // line up with the image layers, and the level is not known.
+        assert_eq!(
+            read(
+                "backgroundSize",
+                "from-shorthand(linear-gradient(#000, #000) 0 0 / 20px 20px no-repeat, center / cover)"
+            ),
+            ("20px 20px, cover".to_string(), true)
+        );
+        assert_eq!(read("backgroundSize", "from-shorthand()"), (String::new(), true));
+        assert_eq!(
+            read("backgroundSize", "from-shorthand(, no-repeat)"),
+            ("auto".to_string(), true)
+        );
+        assert_eq!(
+            read("backgroundRepeat", "from-shorthand(url(\"a,b.png\") no-repeat)"),
+            one("no-repeat")
+        );
+        // A slot without the marker is returned as it came.
         for value in ["auto", "cover", "100% auto", "calc(100% / 3) auto", "var(--s)", "auto, 64px"] {
-            assert_eq!(size_slot_or_default(value), value);
+            assert_eq!(read("backgroundSize", value), one(value));
         }
     }
 }

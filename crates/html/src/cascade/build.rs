@@ -9,7 +9,7 @@
 //! (`customPropMap` is `null`, `overrides` is `null`).
 
 use super::checks_shim::CustomProps;
-use super::shorthand::{names_background_geometry, position_slot_or_default, size_slot_or_default};
+use super::shorthand::{expand_shorthand_slot, names_background_geometry};
 use super::{
     apply_static_declaration, collect_static_css_rules, collect_static_css_rules_from,
     compare_static_priority, is_static_inherited_prop, make_default_style,
@@ -237,6 +237,8 @@ pub fn collect_static_css_text(
     (css, pattern_texts.join("\n"))
 }
 
+static PSEUDO_AFTER_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)::?after\s*$").expect("PSEUDO_AFTER_RE"));
 static PSEUDO_RULE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(&format!(
         r"(?i)^(.+?){ws}*::?(?:before|after)$",
@@ -283,19 +285,47 @@ fn resolve_root(raw: &str, root: &impeccable_core::checks::css_scan::CustomProps
     measures::resolve_var_refs(raw, &lookup, 0)
 }
 
-/// The `::before` / `::after` rule pre-pass: mark base-selector matches whose
-/// pseudo paints a short chromatic dash (`setAccentDashPseudo`) or a
-/// full-cover opaque surface (`setPseudoSurface`).
-fn mark_pseudo_rule(
-    doc: &mut StaticDocument,
-    rule: &CssRule,
-    base_selector: &str,
-    root_custom_props: &impeccable_core::checks::css_scan::CustomProps,
-) {
+/// The declarations of one `::before` / `::after` rule, by lowercased
+/// property.
+fn pseudo_decls(rule: &CssRule) -> IndexMap<String, String> {
     let mut decls: IndexMap<String, String> = IndexMap::new();
     for d in &rule.declarations {
         decls.insert(js::to_lower_case(&d.prop), d.value.clone());
     }
+    decls
+}
+
+/// Whether a pseudo with these declarations is stretched over its element:
+/// positioned, and inset to every edge or 100% by 100%.
+fn pseudo_covers_box(decls: &IndexMap<String, String>) -> bool {
+    let get = |k: &str| decls.get(k).map(|s| s.as_str());
+    let pseudo_pos = js::to_lower_case(get("position").unwrap_or(""));
+    if pseudo_pos != "absolute" && pseudo_pos != "fixed" {
+        return false;
+    }
+    let zero_len = |v: Option<&str>| v.is_some_and(|s| ZERO_LEN_RE.is_match(js::trim(s)));
+    let inset_raw = js::trim(get("inset").unwrap_or(""));
+    (!inset_raw.is_empty()
+        && WS_SPLIT_RE
+            .split(inset_raw)
+            .all(|t| ZERO_LEN_RE.is_match(t)))
+        || ["top", "right", "bottom", "left"]
+            .iter()
+            .all(|side| zero_len(get(side)))
+        || (js::trim(get("width").unwrap_or("")) == "100%"
+            && js::trim(get("height").unwrap_or("")) == "100%")
+}
+
+/// The `::before` / `::after` rule pre-pass as the JS read it, one rule at
+/// a time: mark base-selector matches whose pseudo paints a short chromatic
+/// dash (`setAccentDashPseudo`) or a full-cover opaque surface
+/// (`setPseudoSurface`).
+fn mark_pseudo_analytic(
+    doc: &mut StaticDocument,
+    decls: &IndexMap<String, String>,
+    base_selector: &str,
+    root_custom_props: &impeccable_core::checks::css_scan::CustomProps,
+) {
     let get = |k: &str| decls.get(k).map(|s| s.as_str());
     let first_of = |a: &str, b: &str| -> String {
         match get(a) {
@@ -335,108 +365,125 @@ fn mark_pseudo_rule(
             }
         }
     }
-    let pseudo_pos = js::to_lower_case(get("position").unwrap_or(""));
-    if pseudo_pos == "absolute" || pseudo_pos == "fixed" {
-        let zero_len = |v: Option<&str>| v.is_some_and(|s| ZERO_LEN_RE.is_match(js::trim(s)));
-        let inset_raw = js::trim(get("inset").unwrap_or(""));
-        let covers_box = (!inset_raw.is_empty()
-            && WS_SPLIT_RE
-                .split(inset_raw)
-                .all(|t| ZERO_LEN_RE.is_match(t)))
-            || ["top", "right", "bottom", "left"]
-                .iter()
-                .all(|side| zero_len(get(side)))
-            || (js::trim(get("width").unwrap_or("")) == "100%"
-                && js::trim(get("height").unwrap_or("")) == "100%");
-        // A pseudo stretched over its element and painting a raster image is a
-        // picture under that element's content: the hero photo written as
-        // `.hero::before { position: absolute; inset: 0; background: url() }`.
-        // The contrast pass stands down over it, as it does over an `<img>`.
-        if covers_box
-            && decls.contains_key("content")
-            && js::to_lower_case(&first_of("background-image", "background")).contains("url(")
-        {
-            let ids: Vec<NodeId> = doc
-                .query_selector_all(base_selector)
-                .iter()
-                .map(|e| e.id())
-                .collect();
-            for id in ids {
-                doc.set_pseudo_picture(id);
-            }
-        }
-        if covers_box && decls.contains_key("content") {
-            let surf_raw = resolve_root(
-                &first_of("background-color", "background"),
-                root_custom_props,
-            );
-            let token = COLOR_TOKEN_RE
-                .find(&surf_raw)
-                .map(|m| m.as_str().to_string());
-            let surf = parse_any_color(Some(token.as_deref().unwrap_or(&surf_raw)));
-            // Anything the pseudo paints over the box, however faint, sits
-            // between the box's own image and its text (#560). Only nothing,
-            // `none`, and a color too faint to see are known not to paint; a
-            // value the engine cannot read counts as paint.
-            let no_paint = surf_raw.is_empty()
-                || surf_raw.eq_ignore_ascii_case("none")
-                || surf.is_some_and(|c| c.alpha_or_one() <= 0.02);
-            let paints = !no_paint
-                || GRADIENT_RE.is_match(&surf_raw)
-                || js::to_lower_case(&first_of("background-image", "background")).contains("url(");
-            if paints {
+    if pseudo_covers_box(decls) && decls.contains_key("content") {
+        let surf_raw = resolve_root(
+            &first_of("background-color", "background"),
+            root_custom_props,
+        );
+        let token = COLOR_TOKEN_RE
+            .find(&surf_raw)
+            .map(|m| m.as_str().to_string());
+        let surf = parse_any_color(Some(token.as_deref().unwrap_or(&surf_raw)));
+        if let Some(surf) = surf {
+            if surf.alpha_or_one() >= 0.9 && !GRADIENT_RE.is_match(&surf_raw) {
                 let ids: Vec<NodeId> = doc
                     .query_selector_all(base_selector)
                     .iter()
                     .map(|e| e.id())
                     .collect();
                 for id in ids {
-                    doc.set_pseudo_overlay(id);
-                }
-            }
-            if let Some(surf) = surf {
-                if surf.alpha_or_one() >= 0.9 && !GRADIENT_RE.is_match(&surf_raw) {
-                    let ids: Vec<NodeId> = doc
-                        .query_selector_all(base_selector)
-                        .iter()
-                        .map(|e| e.id())
-                        .collect();
-                    for id in ids {
-                        doc.set_pseudo_surface(id, surf);
-                    }
+                    doc.set_pseudo_surface(id, surf);
                 }
             }
         }
     }
 }
 
-/// A `background` shorthand's bare `var()` beside its image is stored in
-/// every slot no other token claims (#560): the repeat, the position, and
-/// the color. Resolved, it held one of them, and the other slots compute as
-/// if the shorthand had named nothing there, so each reader sees what the
-/// shorthand named, the default when it named none:
-///
-/// - the color slot computes as `transparent` when it resolves to
-///   background geometry (a repeat, position, size, attachment, or box
-///   token), so every reader of `backgroundColor` sees exactly that and
-///   none takes a keyword for an unreadable color;
-/// - the position slot computes without a repeat, size keyword, attachment,
-///   box, or color token, `0% 0%` when nothing is left
-///   (`position_slot_or_default`), so the position reader does not take a
-///   `no-repeat` for a shift and leave a covering image unread;
-/// - the position slot also computes without a size the `var()` held
-///   behind its slash (`center / cover`), which is the size slot's;
-/// - the size slot, holding the same `var()` as the shorthand's own
-///   (`from-shorthand(...)`), computes to the size behind that slash and
-///   to `auto` when the `var()` held none (`size_slot_or_default`); a
-///   later `background-size` longhand carries no marker and simply wins;
-/// - the repeat reader reads keywords only, so that slot needs nothing.
-fn shorthand_slot_or_default(prop: &str, value: String) -> String {
+/// Whether a `::before` / `::after` rule names the geometry or the paint
+/// the merged read below needs, so its matches are worth looking up: a rule
+/// naming only `content` (an icon font's) cannot complete an overlay on its
+/// own and merges on its own selector alone.
+fn names_pseudo_paint_or_geometry(decls: &IndexMap<String, (String, DeclMeta)>) -> bool {
+    [
+        "position",
+        "inset",
+        "top",
+        "right",
+        "bottom",
+        "left",
+        "width",
+        "height",
+        "background",
+        "background-color",
+        "background-image",
+    ]
+    .iter()
+    .any(|key| decls.contains_key(*key))
+}
+
+/// The sampled path's marks (#560) on a pseudo stretched over its element:
+/// a raster image makes it a picture under the element's content, and any
+/// paint at all makes it an overlay the walk gives up on. Read from the
+/// winning declarations of every rule on the same pseudo of the element
+/// (`build_static_style_map`), not rule by rule: the geometry and the paint
+/// may come from different rules, on one selector or two, and a later rule
+/// may take the paint away.
+fn mark_pseudo_paint(
+    doc: &mut StaticDocument,
+    decls: &IndexMap<String, String>,
+    ids: &[NodeId],
+    root_custom_props: &impeccable_core::checks::css_scan::CustomProps,
+) {
+    if !pseudo_covers_box(decls) || !decls.contains_key("content") {
+        return;
+    }
+    let get = |k: &str| decls.get(k).map(|s| s.as_str());
+    let first_of = |a: &str, b: &str| -> String {
+        match get(a) {
+            Some(v) if !v.is_empty() => v.to_string(),
+            _ => get(b).unwrap_or("").to_string(),
+        }
+    };
+    // A pseudo stretched over its element and painting a raster image is a
+    // picture under that element's content: the hero photo written as
+    // `.hero::before { position: absolute; inset: 0; background: url() }`.
+    // The contrast pass stands down over it, as it does over an `<img>`.
+    let picture = js::to_lower_case(&first_of("background-image", "background")).contains("url(");
+    let surf_raw = resolve_root(
+        &first_of("background-color", "background"),
+        root_custom_props,
+    );
+    let token = COLOR_TOKEN_RE
+        .find(&surf_raw)
+        .map(|m| m.as_str().to_string());
+    let surf = parse_any_color(Some(token.as_deref().unwrap_or(&surf_raw)));
+    // Anything the pseudo paints over the box, however faint, sits between
+    // the box's own image and its text (#560). Only nothing, `none`, and a
+    // color too faint to see are known not to paint; a value the engine
+    // cannot read counts as paint.
+    let no_paint = surf_raw.is_empty()
+        || surf_raw.eq_ignore_ascii_case("none")
+        || surf.is_some_and(|c| c.alpha_or_one() <= 0.02);
+    let paints = !no_paint || GRADIENT_RE.is_match(&surf_raw) || picture;
+    for id in ids {
+        if picture {
+            doc.set_pseudo_picture(*id);
+        }
+        if paints {
+            doc.set_pseudo_overlay(*id);
+        }
+    }
+}
+
+/// A `background` shorthand's layer that holds a `var()` is stored whole in
+/// every slot (#560), as `from-shorthand(<its tokens>)`, since the parser
+/// cannot see what the `var()` holds. Resolved, each slot re-reads the
+/// layer with the shorthand grammar and takes what the shorthand named,
+/// the default when it named nothing there (`expand_shorthand_slot`); the
+/// color slot, which the pinned expansion fills with a `var()` standing
+/// before the image, computes as `transparent` when that resolves to
+/// background geometry, so no reader of `backgroundColor` takes a keyword
+/// for an unreadable color. The second value says the `var()` added or
+/// removed layers, which the compute loop records as
+/// `backgroundLayersUnknown` for the walk to give up on.
+fn shorthand_slot_or_default(prop: &str, value: String) -> (String, bool) {
     match prop {
-        "backgroundColor" if names_background_geometry(&value) => "transparent".to_string(),
-        "backgroundPosition" => position_slot_or_default(&value),
-        "backgroundSize" => size_slot_or_default(&value),
-        _ => value,
+        "backgroundColor" if names_background_geometry(&value) => {
+            ("transparent".to_string(), false)
+        }
+        "backgroundRepeat" | "backgroundSize" | "backgroundPosition" | "backgroundOrigin"
+        | "backgroundClip" | "backgroundAttachment" => expand_shorthand_slot(prop, &value),
+        _ => (value, false),
     }
 }
 
@@ -464,6 +511,12 @@ pub fn build_static_style_map(
         profile,
         Meta::new("selector-match", "css-selectors", file_path),
         || {
+            // The winning declarations of every `::before` / `::after` rule
+            // on one base selector, for the paint read once all are in
+            // (#560): a pseudo's geometry and its paint may be split across
+            // rules, and a later rule may take the paint away.
+            let mut pseudo_merged: IndexMap<(String, bool), IndexMap<String, (String, DeclMeta)>> =
+                IndexMap::new();
             for rule in &rules {
                 let placeholder_host = if rule.is_hover {
                     None
@@ -473,7 +526,21 @@ pub fn build_static_style_map(
                 if !rule.is_hover && placeholder_host.is_none() {
                     if let Some(pm) = PSEUDO_RULE_RE.captures(&rule.selector) {
                         let base = pm.get(1).map(|m| m.as_str()).unwrap_or("").to_string();
-                        mark_pseudo_rule(doc, rule, &base, &root_custom_props);
+                        mark_pseudo_analytic(doc, &pseudo_decls(rule), &base, &root_custom_props);
+                        let after = PSEUDO_AFTER_RE.is_match(&rule.selector);
+                        let merged = pseudo_merged.entry((base, after)).or_default();
+                        for d in &rule.declarations {
+                            let key = js::to_lower_case(&d.prop);
+                            let meta = DeclMeta {
+                                important: d.important,
+                                specificity: rule.specificity,
+                                order: rule.order,
+                                inline: false,
+                            };
+                            if compare_static_priority(merged.get(&key).map(|(_, m)| m), &meta) {
+                                merged.insert(key, (d.value.clone(), meta));
+                            }
+                        }
                         continue;
                     }
                 }
@@ -535,6 +602,37 @@ pub fn build_static_style_map(
                         apply_static_declaration(store, node, &decl.prop, &decl.value, &meta);
                     }
                 }
+            }
+
+            // Then by element: the winners of every selector that names the
+            // pseudo's geometry or paint, merged by the cascade's own
+            // priority, so two selectors matching one element read as one.
+            // The lookup is quiet, as the side-accent probes are: a base
+            // selector the matcher refuses is not a parity record.
+            let mut pseudo_by_node: IndexMap<(NodeId, bool), IndexMap<String, (String, DeclMeta)>> =
+                IndexMap::new();
+            for ((base, after), decls) in &pseudo_merged {
+                if !names_pseudo_paint_or_geometry(decls) {
+                    continue;
+                }
+                let Some(ids) = doc.select_ids_quiet(base) else {
+                    continue;
+                };
+                for id in ids {
+                    let merged = pseudo_by_node.entry((id, *after)).or_default();
+                    for (key, (value, meta)) in decls {
+                        if compare_static_priority(merged.get(key).map(|(_, m)| m), meta) {
+                            merged.insert(key.clone(), (value.clone(), meta.clone()));
+                        }
+                    }
+                }
+            }
+            for ((id, _), decls) in &pseudo_by_node {
+                let merged: IndexMap<String, String> = decls
+                    .iter()
+                    .map(|(k, (v, _))| (k.clone(), v.clone()))
+                    .collect();
+                mark_pseudo_paint(doc, &merged, &[*id], &root_custom_props);
             }
 
             let mut inline_order: i64 = rules.len() as i64 + 1;
@@ -761,6 +859,7 @@ fn compute_styles(
         if doc.element(node).is_some_and(|el| matches!(el.tag_lower().as_str(), "em" | "i" | "cite" | "dfn" | "var" | "address")) {
             values.insert("fontStyle".to_string(), "italic".to_string());
         }
+        let mut layers_unknown = false;
         for (prop, decl) in specified_map {
             if prop.starts_with("--") {
                 continue;
@@ -772,8 +871,12 @@ fn compute_styles(
                 parent_style.as_deref(),
                 Some(&values),
             );
-            let next = shorthand_slot_or_default(prop, next);
+            let (next, unknown) = shorthand_slot_or_default(prop, next);
+            layers_unknown |= unknown;
             values.insert(prop.clone(), next);
+        }
+        if layers_unknown {
+            values.insert("backgroundLayersUnknown".to_string(), "1".to_string());
         }
         // Hover pass: color / backgroundColor only.
         if let Some(hover_map) = hover_specified.get(&node) {
@@ -793,7 +896,7 @@ fn compute_styles(
                     parent_style.as_deref(),
                     Some(&values),
                 );
-                let next = shorthand_slot_or_default(prop, next);
+                let (next, _) = shorthand_slot_or_default(prop, next);
                 if values.get(prop).map(|s| s.as_str()) == Some(next.as_str()) {
                     continue;
                 }

@@ -247,6 +247,16 @@ pub fn paints_no_tile(size: &str) -> bool {
     size_components(&size).iter().any(|token| zero_size(token))
 }
 
+/// Whether a layer's `background-attachment` entry places it against the
+/// viewport rather than its box (`fixed`), so that where its paint meets
+/// the box depends on layout a file scan does not have: its coverage is not
+/// known on either axis, and a wash so attached is not known to tint. An
+/// entry still holding a `var()` is not known either way.
+pub fn attachment_depends_on_layout(attachment: &str) -> bool {
+    let attachment = attachment.trim().to_ascii_lowercase();
+    attachment == "fixed" || attachment.contains("var(")
+}
+
 /// Whether a `background-position` keeps the image inside its box: edge and
 /// center keywords and percentages from 0 to 100 align the image to the
 /// box, a zero length is an edge. Any other length (`0 200px`), a
@@ -537,6 +547,16 @@ mod tests {
         assert!(!paints_no_tile("-10px"));
         assert!(!paints_no_tile("-1%"));
         assert!(covers("repeat", "-10px"));
+    }
+
+    #[test]
+    fn a_fixed_attachment_depends_on_layout() {
+        assert!(attachment_depends_on_layout("fixed"));
+        assert!(attachment_depends_on_layout(" Fixed "));
+        assert!(attachment_depends_on_layout("var(--att)"));
+        assert!(!attachment_depends_on_layout("scroll"));
+        assert!(!attachment_depends_on_layout("local"));
+        assert!(!attachment_depends_on_layout(""));
     }
 
     #[test]

@@ -302,9 +302,12 @@ fn background_longhands_ride_beside_the_expansion() {
             "url(seal.png) no-repeat right top / var(--Seal)"
         ),
         own(&[
-            ("backgroundRepeat", "no-repeat"),
-            ("backgroundSize", "var(--Seal)"),
-            ("backgroundPosition", "right top")
+            ("backgroundRepeat", "from-shorthand(no-repeat right top/var(--Seal))"),
+            ("backgroundSize", "from-shorthand(no-repeat right top/var(--Seal))"),
+            ("backgroundPosition", "from-shorthand(no-repeat right top/var(--Seal))"),
+            ("backgroundOrigin", "from-shorthand(no-repeat right top/var(--Seal))"),
+            ("backgroundClip", "from-shorthand(no-repeat right top/var(--Seal))"),
+            ("backgroundAttachment", "from-shorthand(no-repeat right top/var(--Seal))")
         ])
     );
     assert_eq!(
@@ -481,11 +484,12 @@ fn background_longhands_ride_beside_the_expansion() {
     assert_eq!(
         pairs("background", "url(icon.png)var(--tile)"),
         own(&[
-            ("backgroundRepeat", "var(--tile)"),
+            ("backgroundRepeat", "from-shorthand(var(--tile))"),
             ("backgroundSize", "from-shorthand(var(--tile))"),
-            ("backgroundPosition", "var(--tile)"),
-            ("backgroundOrigin", "var(--tile)"),
-            ("backgroundClip", "var(--tile)"),
+            ("backgroundPosition", "from-shorthand(var(--tile))"),
+            ("backgroundOrigin", "from-shorthand(var(--tile))"),
+            ("backgroundClip", "from-shorthand(var(--tile))"),
+            ("backgroundAttachment", "from-shorthand(var(--tile))"),
             ("backgroundColor", "var(--tile)")
         ])
     );
@@ -518,29 +522,31 @@ fn background_longhands_ride_beside_the_expansion() {
         ])
     );
     // A bare `var()` after the image is stored as the color too, the one
-    // slot the expansion never reads on that side, beside every slot it
-    // could still hold (the second repeat keyword, the position, the
-    // origin and the clip); glued to the size slash it is the position,
-    // and inside another function it is not read.
+    // slot the expansion never reads on that side; the layer it stands in
+    // is stored whole in every other slot, marked, for the re-read once it
+    // resolves. A `var()` inside another function marks the layer the same
+    // way.
     assert_eq!(
         pairs("background", "url(icon.png) no-repeat var(--brand)"),
         own(&[
-            ("backgroundRepeat", "no-repeat var(--brand)"),
+            ("backgroundRepeat", "from-shorthand(no-repeat var(--brand))"),
             ("backgroundSize", "from-shorthand(no-repeat var(--brand))"),
-            ("backgroundPosition", "var(--brand)"),
-            ("backgroundOrigin", "var(--brand)"),
-            ("backgroundClip", "var(--brand)"),
+            ("backgroundPosition", "from-shorthand(no-repeat var(--brand))"),
+            ("backgroundOrigin", "from-shorthand(no-repeat var(--brand))"),
+            ("backgroundClip", "from-shorthand(no-repeat var(--brand))"),
+            ("backgroundAttachment", "from-shorthand(no-repeat var(--brand))"),
             ("backgroundColor", "var(--brand)")
         ])
     );
     assert_eq!(
         pairs("background", "url(icon.png)var(--x)"),
         own(&[
-            ("backgroundRepeat", "var(--x)"),
+            ("backgroundRepeat", "from-shorthand(var(--x))"),
             ("backgroundSize", "from-shorthand(var(--x))"),
-            ("backgroundPosition", "var(--x)"),
-            ("backgroundOrigin", "var(--x)"),
-            ("backgroundClip", "var(--x)"),
+            ("backgroundPosition", "from-shorthand(var(--x))"),
+            ("backgroundOrigin", "from-shorthand(var(--x))"),
+            ("backgroundClip", "from-shorthand(var(--x))"),
+            ("backgroundAttachment", "from-shorthand(var(--x))"),
             ("backgroundColor", "var(--x)"),
         ])
     );
@@ -549,11 +555,12 @@ fn background_longhands_ride_beside_the_expansion() {
     assert_eq!(
         pairs("background", "url(a.png), var(--brand)"),
         own(&[
-            ("backgroundRepeat", "repeat, var(--brand)"),
+            ("backgroundRepeat", "repeat, from-shorthand(var(--brand))"),
             ("backgroundSize", "auto, from-shorthand(var(--brand))"),
-            ("backgroundPosition", "0% 0%, var(--brand)"),
-            ("backgroundOrigin", "padding-box, var(--brand)"),
-            ("backgroundClip", "border-box, var(--brand)"),
+            ("backgroundPosition", "0% 0%, from-shorthand(var(--brand))"),
+            ("backgroundOrigin", "padding-box, from-shorthand(var(--brand))"),
+            ("backgroundClip", "border-box, from-shorthand(var(--brand))"),
+            ("backgroundAttachment", "scroll, from-shorthand(var(--brand))"),
         ])
     );
     // A literal color beside the `var()` is the color, whichever comes
@@ -561,67 +568,74 @@ fn background_longhands_ride_beside_the_expansion() {
     assert_eq!(
         pairs("background", "url(hero.jpg) #17150f var(--tile)"),
         own(&[
-            ("backgroundRepeat", "var(--tile)"),
+            ("backgroundRepeat", "from-shorthand(#17150f var(--tile))"),
             ("backgroundSize", "from-shorthand(#17150f var(--tile))"),
-            ("backgroundPosition", "var(--tile)"),
-            ("backgroundOrigin", "var(--tile)"),
-            ("backgroundClip", "var(--tile)"),
+            ("backgroundPosition", "from-shorthand(#17150f var(--tile))"),
+            ("backgroundOrigin", "from-shorthand(#17150f var(--tile))"),
+            ("backgroundClip", "from-shorthand(#17150f var(--tile))"),
+            ("backgroundAttachment", "from-shorthand(#17150f var(--tile))"),
             ("backgroundColor", "#17150f"),
         ])
     );
     assert_eq!(
         pairs("background", "url(hero.jpg) var(--tile) rgba(0, 0, 0, 0.5)"),
         own(&[
-            ("backgroundRepeat", "var(--tile)"),
+            ("backgroundRepeat", "from-shorthand(var(--tile) rgba(0, 0, 0, 0.5))"),
             ("backgroundSize", "from-shorthand(var(--tile) rgba(0, 0, 0, 0.5))"),
-            ("backgroundPosition", "var(--tile)"),
-            ("backgroundOrigin", "var(--tile)"),
-            ("backgroundClip", "var(--tile)"),
+            ("backgroundPosition", "from-shorthand(var(--tile) rgba(0, 0, 0, 0.5))"),
+            ("backgroundOrigin", "from-shorthand(var(--tile) rgba(0, 0, 0, 0.5))"),
+            ("backgroundClip", "from-shorthand(var(--tile) rgba(0, 0, 0, 0.5))"),
+            ("backgroundAttachment", "from-shorthand(var(--tile) rgba(0, 0, 0, 0.5))"),
             ("backgroundColor", "rgba(0, 0, 0, 0.5)"),
         ])
     );
     assert_eq!(
         pairs("background", "url(hero.jpg) var(--brand, #fff)"),
         own(&[
-            ("backgroundRepeat", "var(--brand, #fff)"),
+            ("backgroundRepeat", "from-shorthand(var(--brand, #fff))"),
             ("backgroundSize", "from-shorthand(var(--brand, #fff))"),
-            ("backgroundPosition", "var(--brand, #fff)"),
-            ("backgroundOrigin", "var(--brand, #fff)"),
-            ("backgroundClip", "var(--brand, #fff)"),
+            ("backgroundPosition", "from-shorthand(var(--brand, #fff))"),
+            ("backgroundOrigin", "from-shorthand(var(--brand, #fff))"),
+            ("backgroundClip", "from-shorthand(var(--brand, #fff))"),
+            ("backgroundAttachment", "from-shorthand(var(--brand, #fff))"),
             ("backgroundColor", "var(--brand, #fff)"),
         ])
     );
     assert_eq!(
         pairs("background", "url(a.png) rgb(var(--r) 0 0)"),
         own(&[
-            ("backgroundRepeat", "repeat"),
-            ("backgroundSize", "auto"),
-            ("backgroundPosition", "0% 0%")
+            ("backgroundRepeat", "from-shorthand(rgb(var(--r) 0 0))"),
+            ("backgroundSize", "from-shorthand(rgb(var(--r) 0 0))"),
+            ("backgroundPosition", "from-shorthand(rgb(var(--r) 0 0))"),
+            ("backgroundOrigin", "from-shorthand(rgb(var(--r) 0 0))"),
+            ("backgroundClip", "from-shorthand(rgb(var(--r) 0 0))"),
+            ("backgroundAttachment", "from-shorthand(rgb(var(--r) 0 0))")
         ])
     );
-    // A bare `var()` in a shorthand may hold the repeat, the position, or
-    // the color: it is stored in every slot no other token claims and the
-    // compute loop resolves it. A repeat keyword or a position component
-    // beside it takes its slot.
+    // A bare `var()` in a shorthand may hold the repeat, the position, the
+    // color, or more: the layer is stored whole in every slot, marked, and
+    // each slot re-reads it once the compute loop resolves it.
     assert_eq!(
         pairs("background", "url(icon.png) var(--repeat)"),
         own(&[
-            ("backgroundRepeat", "var(--repeat)"),
+            ("backgroundRepeat", "from-shorthand(var(--repeat))"),
             ("backgroundSize", "from-shorthand(var(--repeat))"),
-            ("backgroundPosition", "var(--repeat)"),
-            ("backgroundOrigin", "var(--repeat)"),
-            ("backgroundClip", "var(--repeat)"),
+            ("backgroundPosition", "from-shorthand(var(--repeat))"),
+            ("backgroundOrigin", "from-shorthand(var(--repeat))"),
+            ("backgroundClip", "from-shorthand(var(--repeat))"),
+            ("backgroundAttachment", "from-shorthand(var(--repeat))"),
             ("backgroundColor", "var(--repeat)"),
         ])
     );
     assert_eq!(
         pairs("background", "var(--brand) url(a.png) center no-repeat"),
         own(&[
-            ("backgroundRepeat", "var(--brand) no-repeat"),
+            ("backgroundRepeat", "from-shorthand(var(--brand) center no-repeat)"),
             ("backgroundSize", "from-shorthand(var(--brand) center no-repeat)"),
-            ("backgroundPosition", "var(--brand) center"),
-            ("backgroundOrigin", "var(--brand)"),
-            ("backgroundClip", "var(--brand)"),
+            ("backgroundPosition", "from-shorthand(var(--brand) center no-repeat)"),
+            ("backgroundOrigin", "from-shorthand(var(--brand) center no-repeat)"),
+            ("backgroundClip", "from-shorthand(var(--brand) center no-repeat)"),
+            ("backgroundAttachment", "from-shorthand(var(--brand) center no-repeat)"),
         ])
     );
     // The position keeps its lengths and functions for the sampler to
@@ -642,22 +656,29 @@ fn background_longhands_ride_beside_the_expansion() {
             ("backgroundPosition", "calc(50% - 10px) bottom 1rem")
         ])
     );
-    // A `var()` directly before the size slash can only be the position,
-    // however the value was spaced; one standing alone is never read as it.
+    // A `var()` directly before the size slash travels with the slash and
+    // the size however the value was spaced, so the re-read sees them as
+    // one token.
     assert_eq!(
         pairs("background", "url(a.png) var(--pos)/100% 100% no-repeat"),
         own(&[
-            ("backgroundRepeat", "no-repeat"),
-            ("backgroundSize", "100% 100%"),
-            ("backgroundPosition", "var(--pos)")
+            ("backgroundRepeat", "from-shorthand(var(--pos)/100% 100% no-repeat)"),
+            ("backgroundSize", "from-shorthand(var(--pos)/100% 100% no-repeat)"),
+            ("backgroundPosition", "from-shorthand(var(--pos)/100% 100% no-repeat)"),
+            ("backgroundOrigin", "from-shorthand(var(--pos)/100% 100% no-repeat)"),
+            ("backgroundClip", "from-shorthand(var(--pos)/100% 100% no-repeat)"),
+            ("backgroundAttachment", "from-shorthand(var(--pos)/100% 100% no-repeat)")
         ])
     );
     assert_eq!(
         pairs("background", "url(a.png) var(--pos) / cover"),
         own(&[
-            ("backgroundRepeat", "repeat"),
-            ("backgroundSize", "cover"),
-            ("backgroundPosition", "var(--pos)")
+            ("backgroundRepeat", "from-shorthand(var(--pos)/cover)"),
+            ("backgroundSize", "from-shorthand(var(--pos)/cover)"),
+            ("backgroundPosition", "from-shorthand(var(--pos)/cover)"),
+            ("backgroundOrigin", "from-shorthand(var(--pos)/cover)"),
+            ("backgroundClip", "from-shorthand(var(--pos)/cover)"),
+            ("backgroundAttachment", "from-shorthand(var(--pos)/cover)")
         ])
     );
     // What the walk reads a resolved color slot as when the `var()` held
@@ -914,63 +935,65 @@ fn a_box_keyword_in_the_shorthand_is_the_origin_and_the_clip() {
             ("backgroundClip", "content-box, border-box"),
         ])
     );
-    // Every bare `var()` of a layer is kept, in order, for every slot it
-    // could still hold beside the literal tokens: once resolved, the repeat
-    // reader takes the keyword, the position slot drops it, the size slot
-    // takes only what follows a slash (as the shorthand's own, marked), and
-    // the padding read looks for a box keyword.
+    // A layer holding a `var()` is stored whole in every slot, as the
+    // shorthand's own, marked: once resolved, each slot re-reads the layer
+    // with the shorthand grammar and takes what it names, the default when
+    // it names nothing there.
     assert_eq!(
         background_longhands("background", "#111 url(icon.png) var(--pos) var(--tile)"),
         own(&[
-            ("backgroundRepeat", "var(--pos) var(--tile)"),
+            ("backgroundRepeat", "from-shorthand(#111 var(--pos) var(--tile))"),
             ("backgroundSize", "from-shorthand(#111 var(--pos) var(--tile))"),
-            ("backgroundPosition", "var(--pos) var(--tile)"),
-            ("backgroundOrigin", "var(--pos) var(--tile)"),
-            ("backgroundClip", "var(--pos) var(--tile)"),
+            ("backgroundPosition", "from-shorthand(#111 var(--pos) var(--tile))"),
+            ("backgroundOrigin", "from-shorthand(#111 var(--pos) var(--tile))"),
+            ("backgroundClip", "from-shorthand(#111 var(--pos) var(--tile))"),
+            ("backgroundAttachment", "from-shorthand(#111 var(--pos) var(--tile))"),
         ])
     );
-    // Beside a literal position component it may be the next one, beside
-    // one repeat keyword the second, and beside one box keyword the clip.
+    // The literal tokens beside it travel with it, in source order, so the
+    // re-read sees them where they stood.
     assert_eq!(
         background_longhands("background", "#111 url(light.png) 0 var(--y) no-repeat"),
         own(&[
-            ("backgroundRepeat", "var(--y) no-repeat"),
+            ("backgroundRepeat", "from-shorthand(#111 0 var(--y) no-repeat)"),
             ("backgroundSize", "from-shorthand(#111 0 var(--y) no-repeat)"),
-            ("backgroundPosition", "0 var(--y)"),
-            ("backgroundOrigin", "var(--y)"),
-            ("backgroundClip", "var(--y)"),
+            ("backgroundPosition", "from-shorthand(#111 0 var(--y) no-repeat)"),
+            ("backgroundOrigin", "from-shorthand(#111 0 var(--y) no-repeat)"),
+            ("backgroundClip", "from-shorthand(#111 0 var(--y) no-repeat)"),
+            ("backgroundAttachment", "from-shorthand(#111 0 var(--y) no-repeat)"),
         ])
     );
-    // Where it stood among the literal tokens: a variable before the
-    // repeat keyword or the position component names the x axis.
     assert_eq!(
         background_longhands("background", "#111 url(light.png) var(--x) no-repeat"),
         own(&[
-            ("backgroundRepeat", "var(--x) no-repeat"),
+            ("backgroundRepeat", "from-shorthand(#111 var(--x) no-repeat)"),
             ("backgroundSize", "from-shorthand(#111 var(--x) no-repeat)"),
-            ("backgroundPosition", "var(--x)"),
-            ("backgroundOrigin", "var(--x)"),
-            ("backgroundClip", "var(--x)"),
+            ("backgroundPosition", "from-shorthand(#111 var(--x) no-repeat)"),
+            ("backgroundOrigin", "from-shorthand(#111 var(--x) no-repeat)"),
+            ("backgroundClip", "from-shorthand(#111 var(--x) no-repeat)"),
+            ("backgroundAttachment", "from-shorthand(#111 var(--x) no-repeat)"),
         ])
     );
     assert_eq!(
         background_longhands("background", "#111 url(light.png) var(--y) 0 no-repeat"),
         own(&[
-            ("backgroundRepeat", "var(--y) no-repeat"),
+            ("backgroundRepeat", "from-shorthand(#111 var(--y) 0 no-repeat)"),
             ("backgroundSize", "from-shorthand(#111 var(--y) 0 no-repeat)"),
-            ("backgroundPosition", "var(--y) 0"),
-            ("backgroundOrigin", "var(--y)"),
-            ("backgroundClip", "var(--y)"),
+            ("backgroundPosition", "from-shorthand(#111 var(--y) 0 no-repeat)"),
+            ("backgroundOrigin", "from-shorthand(#111 var(--y) 0 no-repeat)"),
+            ("backgroundClip", "from-shorthand(#111 var(--y) 0 no-repeat)"),
+            ("backgroundAttachment", "from-shorthand(#111 var(--y) 0 no-repeat)"),
         ])
     );
     assert_eq!(
         background_longhands("background", "url(a.png) content-box var(--v)"),
         own(&[
-            ("backgroundRepeat", "var(--v)"),
+            ("backgroundRepeat", "from-shorthand(content-box var(--v))"),
             ("backgroundSize", "from-shorthand(content-box var(--v))"),
-            ("backgroundPosition", "var(--v)"),
-            ("backgroundOrigin", "content-box"),
-            ("backgroundClip", "content-box var(--v)"),
+            ("backgroundPosition", "from-shorthand(content-box var(--v))"),
+            ("backgroundOrigin", "from-shorthand(content-box var(--v))"),
+            ("backgroundClip", "from-shorthand(content-box var(--v))"),
+            ("backgroundAttachment", "from-shorthand(content-box var(--v))"),
             ("backgroundColor", "var(--v)"),
         ])
     );

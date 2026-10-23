@@ -16,7 +16,7 @@ use impeccable_core::checks::measures::{
 };
 use impeccable_core::checks::rules::Corners;
 use impeccable_core::checks::sampled_contrast::{
-    paints_no_tile, repeat_tiles, uniform_wash, wash_fills_box,
+    attachment_depends_on_layout, paints_no_tile, repeat_tiles, uniform_wash, wash_fills_box,
 };
 use impeccable_core::color::{
     composite_color_over, is_no_paint_color_value, parse_any_color, parse_gradient_colors,
@@ -865,6 +865,9 @@ pub struct ImageLayer {
     /// layer painted inside the element's padding (`sampled_ground`).
     pub origin: String,
     pub clip: String,
+    /// The layer's `background-attachment` entry: `fixed` meets the box
+    /// where layout says (`sampled_ground`).
+    pub attachment: String,
     /// Uniform washes listed above the image in the same declaration.
     pub washes: Vec<Rgba>,
     /// The element's own background color, painted beneath the image.
@@ -1045,6 +1048,11 @@ pub fn analyze_level(cur: &StaticElement<'_>) -> LevelPaint {
         return LevelPaint::Stop;
     }
     let color = bg.filter(|c| a_gt(c, 0.1));
+    // A `var()` in the background shorthand added or removed layers once
+    // resolved: nothing stored per layer lines up with what paints.
+    if sv(style, "backgroundLayersUnknown") == "1" {
+        return LevelPaint::Stop;
+    }
     let bg_image = sv(style, "backgroundImage");
     let font_size = js::parse_float(sv(style, "fontSize"));
     let font_size = if font_size > 0.0 { font_size } else { 16.0 };
@@ -1063,6 +1071,9 @@ pub fn analyze_level(cur: &StaticElement<'_>) -> LevelPaint {
             if paints_no_tile(&size) {
                 continue;
             }
+            // A layer fixed to the viewport meets the box where layout says.
+            let attachment = layer_entry(sv(style, "backgroundAttachment"), index);
+            let fixed = attachment_depends_on_layout(&attachment);
             if let Some((name, open)) = top_level_call(bg_image, from, to, is_gradient_name) {
                 // An opaque gradient is the ground; a scrim that varies is
                 // placed under the text on purpose, and without layout the
@@ -1080,7 +1091,7 @@ pub fn analyze_level(cur: &StaticElement<'_>) -> LevelPaint {
                 };
                 let repeat = layer_entry(sv(style, "backgroundRepeat"), index);
                 let position = layer_entry(sv(style, "backgroundPosition"), index);
-                if !wash_fills_box(&repeat, &size, &position, font_size) {
+                if fixed || !wash_fills_box(&repeat, &size, &position, font_size) {
                     return LevelPaint::Stop;
                 }
                 // A wash painted inside the padding tints the content box
@@ -1118,6 +1129,7 @@ pub fn analyze_level(cur: &StaticElement<'_>) -> LevelPaint {
                 position: layer_entry(sv(style, "backgroundPosition"), index),
                 origin: layer_entry(sv(style, "backgroundOrigin"), index),
                 clip: layer_entry(background_clip(style), index),
+                attachment,
                 washes,
                 color,
                 layers_beneath,

@@ -93,7 +93,8 @@ pub struct ImageSource {
     pub width: u32,
     pub height: u32,
     /// Samples the persistent cache already held when the source was
-    /// located, so no byte is read for them.
+    /// located, or that this process decoded for it (`store`), so no byte
+    /// is read for them.
     cached: RefCell<Option<Option<Rc<Samples>>>>,
 }
 
@@ -213,9 +214,13 @@ impl ImageSampler {
     }
 
     /// Keep what a decode said about a source's bytes, a failure included:
-    /// for this process, and in the persistent cache. A read that fails
-    /// says nothing about the bytes and is never stored.
+    /// on the source itself, so the page that located it never decodes it
+    /// twice however many images it names (the process cache below is
+    /// capped and cleared when full), for this process, and in the
+    /// persistent cache. A read that fails says nothing about the bytes
+    /// and is never stored.
     pub fn store(&self, source: &ImageSource, value: Option<Rc<Samples>>) {
+        *source.cached.borrow_mut() = Some(value.clone());
         remember(&source.key, value.clone());
         if let Some(file) = &source.cache_file {
             write_entry(file, source, value.as_deref());
@@ -760,6 +765,28 @@ mod tests {
 
     fn sampler(base: &Path, mode: ImageSamples, cache: &Path) -> ImageSampler {
         ImageSampler::new(&base.to_string_lossy(), mode, Some(cache))
+    }
+
+    #[test]
+    fn a_stored_result_stays_on_its_source_when_the_process_cache_clears() {
+        let dir = temp_dir("stays-on-source");
+        std::fs::write(dir.join("a.png"), png_bytes(16, 16, [250, 250, 250, 255])).unwrap();
+        let cache = dir.join("cache");
+        let sampler = sampler(&dir, ImageSamples::Decode, &cache);
+        let source = sampler.find_source("a.png").expect("source");
+        let value = decode_samples(&std::fs::read(dir.join("a.png")).unwrap()).map(Rc::new);
+        sampler.store(&source, value.clone());
+        // The page's other images push the process cache past its cap.
+        for i in 0..=CACHE_ENTRIES {
+            remember(&format!("evict-{i}"), None);
+        }
+        assert!(remembered(&source.key).is_none(), "the process cache was cleared");
+        assert_eq!(
+            source.cached.borrow().as_ref().map(|v| v.is_some()),
+            Some(true),
+            "the source keeps what was decoded for it"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn samples_of(sampler: &ImageSampler, url: &str) -> Option<Rc<Samples>> {

@@ -790,6 +790,13 @@ fn a_shifted_image_is_not_known_to_cover_a_color() {
     let css = ".hero { background: #17150f url(light.png) center / 100% 100% no-repeat; background-position: 0 200px; } p { color: #fdfdfd; }";
     let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
     assert!(found.is_empty(), "{found:?}");
+    // A `background-position` longhand holding a slash is invalid CSS a
+    // browser drops; the engine reads it as able to shift the image, the
+    // silent side (a tiled image fills the box wherever it starts, so the
+    // layer here does not tile).
+    let css = ".hero { background: #17150f url(light.png) no-repeat; background-size: 100% 100%; background-position: center / cover; } p { color: #fdfdfd; }";
+    let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
+    assert!(found.is_empty(), "{found:?}");
     // A position held in a custom property that stands alone among the
     // shorthand's tokens, the repeat and the color named by others, is read
     // once the property resolves: a length offset leaves the color as the
@@ -827,7 +834,7 @@ fn a_shifted_image_is_not_known_to_cover_a_color() {
         ("no-repeat", true),
         ("center no-repeat", true),
         ("no-repeat center", true),
-        ("fixed", true),
+        ("local", true),
         ("0 200px no-repeat", false),
     ] {
         let css = format!(
@@ -1365,4 +1372,77 @@ fn an_image_backed_placeholder_is_measured() {
     assert!(site.contrast_as(css, field, ImageSamples::CacheOnly).is_empty());
     assert_eq!(site.contrast(css, field).len(), 1);
     assert_eq!(site.contrast_as(css, field, ImageSamples::CacheOnly).len(), 1);
+}
+
+#[test]
+fn a_fixed_background_is_not_known_to_cover() {
+    let site = Site::new("fixed");
+    let body = "<section><div class=hero><p>White copy</p></div></section>";
+    // `background-attachment: fixed` positions the image against the
+    // viewport: where it meets the box depends on layout, so the ground is
+    // not known and the skip stands. `scroll` and `local` stay with the box.
+    for decl in [
+        "background: url(light.png) left top no-repeat fixed",
+        "background: url(light.png); background-attachment: fixed",
+        "background: url(light.png) fixed, none",
+    ] {
+        let css = format!("{DARK_SECTION} .hero {{ {decl}; }} p {{ color: #fdfdfd; }}");
+        let found = site.contrast(&css, body);
+        assert!(found.is_empty(), "{decl}: {found:?}");
+    }
+    for att in ["scroll", "local"] {
+        let css = format!("{DARK_SECTION} .hero {{ background: url(light.png) {att}; }} p {{ color: #fdfdfd; }}");
+        let found = site.contrast(&css, body);
+        assert!(sampled_on("light.png", &found), "{att}: {found:?}");
+    }
+    // A custom property holding the attachment is read like a keyword.
+    for (att, sampled) in [("fixed", false), ("scroll", true)] {
+        let css = format!(":root {{ --att: {att}; }} {DARK_SECTION} .hero {{ background: url(light.png) var(--att); }} p {{ color: #fdfdfd; }}");
+        let found = site.contrast(&css, body);
+        assert_eq!(sampled_on("light.png", &found), sampled, "{att}: {found:?}");
+    }
+    // A fixed wash over the image is not known to tint every sample: the
+    // walk stops rather than darken the ink's ground.
+    let css = ".hero { background: linear-gradient(rgba(23, 21, 15, 0.9), rgba(23, 21, 15, 0.9)) fixed, url(light.png); } p { color: #262421; }";
+    let found = site.contrast(css, "<div class=hero><p>Ink</p></div>");
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn a_pseudo_overlay_split_across_rules_still_stops_the_walk() {
+    let site = Site::new("split-pseudo");
+    let body = "<div class=hero><p>White copy</p></div>";
+    // The overlay's geometry and its paint come from two rules on the same
+    // pseudo-element; combined, they are the stretched dark overlay the
+    // walk gives up on, as it does when one rule carries both.
+    let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; } .hero::before { background: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.7)); } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(found.is_empty(), "{found:?}");
+    // The two rules may sit on two selectors that match the same element.
+    let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; } .dark::before { background: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.7)); } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, "<div class=\"hero dark\"><p>White copy</p></div>");
+    assert!(found.is_empty(), "{found:?}");
+    // A later rule that takes the paint away leaves the image as the ground
+    // (an opaque fill is the analytic path's surface, read rule by rule as
+    // the JS did, so the scrim here is translucent).
+    let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.5); } .hero::before { background: none; } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
+}
+
+#[test]
+fn a_custom_property_that_adds_layers_leaves_the_level_unknown() {
+    let site = Site::new("var-layers");
+    let body = "<div class=hero><p>Ink outside the patch</p></div>";
+    // `--wash` holds a whole layer and a comma, so the shorthand's single
+    // layer becomes two once resolved and nothing stored per layer lines up
+    // with them: the level is not known and the skip stands, rather than a
+    // 20px patch tinting every sample.
+    let css = ":root { --wash: linear-gradient(rgba(23, 21, 15, 0.9), rgba(23, 21, 15, 0.9)) 0 0 / 20px 20px no-repeat,; } .hero { background: var(--wash) url(light.png) center / cover; } p { color: #262421; }";
+    let found = site.contrast(css, body);
+    assert!(found.is_empty(), "{found:?}");
+    // A property holding exactly one layer's tokens still lines up.
+    let css = ":root { --layer: center / cover no-repeat; } .hero { background: #111 url(light.png) var(--layer); } p { color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
 }
