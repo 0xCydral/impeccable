@@ -519,8 +519,10 @@ pub fn build_static_style_map(
                 };
                 for node in matched {
                     for decl in &rule.declarations {
+                        // A `::placeholder` rule contributes its ink alone:
+                        // the color, and the `opacity` that fades it.
                         if placeholder_host.is_some()
-                            && js::to_lower_case(&decl.prop) != "color"
+                            && !matches!(js::to_lower_case(&decl.prop).as_str(), "color" | "opacity")
                         {
                             continue;
                         }
@@ -814,6 +816,19 @@ fn compute_styles(
                 );
                 let mut ph_style = StyleValues::default();
                 ph_style.insert("color".to_string(), next);
+                // The rule's own `opacity` fades the placeholder's ink
+                // (`::placeholder { opacity: 0 }` hides it); the contrast
+                // checks read it beside the color (#560).
+                if let Some(opacity_decl) = ph_map.get("opacity") {
+                    let next = normalize_static_css_value(
+                        "opacity",
+                        &opacity_decl.value,
+                        &custom_props,
+                        Some(&values),
+                        Some(&values),
+                    );
+                    ph_style.insert("opacity".to_string(), next);
+                }
                 placeholder_out.push((node, ph_style));
             }
         }

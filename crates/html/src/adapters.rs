@@ -1206,7 +1206,8 @@ pub fn check_element_colors(
         let ph_color = custom_props
             .and_then(|m| measures::parse_color_resolved(sv_opt(ph_style, "color"), Some(m)))
             .or_else(|| parse_rgb(sv_opt(ph_style, "color")))
-            .or_else(|| parse_any_color(sv_opt(ph_style, "color")));
+            .or_else(|| parse_any_color(sv_opt(ph_style, "color")))
+            .map(|c| placeholder_ink(c, ph_style));
         if let Some(ph_color) = ph_color {
             // The placeholder sits where the host's own text would: over a
             // `url()` layer the engine can read, its pixels are the ground
@@ -1395,6 +1396,22 @@ fn scored_placeholder<'a>(
     Some((placeholder, ph_style))
 }
 
+/// The placeholder's ink as seen: its color faded by the `::placeholder`
+/// rule's own `opacity` (`opacity: 0` hides it, a floating label's trick;
+/// the host's and its ancestors' opacity is `fade_layers`'s), so both the
+/// analytic and the sampled placeholder check read what the page shows, and
+/// ink at or under their alpha floors is not measured.
+fn placeholder_ink(color: Rgba, ph_style: &StyleValues) -> Rgba {
+    let opacity = opacity_of(ph_style);
+    if opacity >= 1.0 {
+        return color;
+    }
+    Rgba {
+        a: Some(color.alpha_or_one() * opacity.max(0.0)),
+        ..color
+    }
+}
+
 pub(crate) fn text_may_be_sampled(el: &StaticElement<'_>) -> bool {
     let tag = el.tag_lower();
     let text = el.direct_text();
@@ -1436,11 +1453,11 @@ pub(crate) fn text_may_be_sampled(el: &StaticElement<'_>) -> bool {
     if clip == "text" {
         return false;
     }
-    let ink = match placeholder {
-        Some((_, ph_style)) => sv_opt(ph_style, "color"),
-        None => sv_opt(style, "color"),
-    };
-    parse_any_color(ink).map_or(true, |c| c.alpha_or_one() > 0.1)
+    match placeholder {
+        Some((_, ph_style)) => parse_any_color(sv_opt(ph_style, "color"))
+            .map_or(true, |c| placeholder_ink(c, ph_style).alpha_or_one() > 0.1),
+        None => parse_any_color(sv_opt(style, "color")).map_or(true, |c| c.alpha_or_one() > 0.1),
+    }
 }
 
 /// The ground a text element would be sampled against, with its source

@@ -1338,6 +1338,26 @@ fn an_image_backed_placeholder_is_measured() {
     assert!(found[0].contains("sampled (coarse)"), "{found:?}");
     let css = ".search { background: #f4f1ea url(dark.png) center / cover; border: 0; } .search::placeholder { color: #fdfdfd; }";
     assert!(site.contrast(css, field).is_empty());
+    // The placeholder's own `opacity` fades its ink before either check:
+    // hidden at zero, measured as seen otherwise (white at 0.3 over the
+    // dark image fails). The host's own opacity fades image and ink alike
+    // and, as for the host's text, is not applied.
+    let css = ".search { background: url(light.png); border: 0; } .search::placeholder { color: #fdfdfd; opacity: 0; }";
+    assert!(site.contrast(css, field).is_empty(), "hidden placeholder");
+    let placeholder_sampled_on = |image: &str, found: &[String]| {
+        found.len() == 1
+            && found[0].starts_with("placeholder \"Search the site\" sampled (coarse) ")
+            && found[0].contains(&format!(" on {image};"))
+    };
+    let css = ".search { background: url(dark.png); border: 0; } .search::placeholder { color: #fdfdfd; opacity: 0.3; }";
+    let found = site.contrast(css, field);
+    assert!(placeholder_sampled_on("dark.png", &found), "{found:?}");
+    let css = ".search { background: url(dark.png); border: 0; opacity: 0.3; } .search::placeholder { color: #fdfdfd; }";
+    assert!(site.contrast(css, field).is_empty(), "host opacity");
+    // And the analytic check reads the same faded ink: gray ink at zero
+    // opacity on a white field is not flagged against the white.
+    let css = ".search { background: #fdfdfd; border: 0; } .search::placeholder { color: #999; opacity: 0; }";
+    assert!(site.contrast(css, field).is_empty(), "hidden placeholder on a color");
     // The hook reads only what `detect` sampled: an image no scan sampled
     // yet is silent there, and read once `detect` has cached it.
     site.png("field.png", 320, 200, LIGHT);
