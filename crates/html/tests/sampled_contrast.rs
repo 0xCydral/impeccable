@@ -1432,6 +1432,16 @@ fn a_pseudo_overlay_split_across_rules_still_stops_the_walk() {
     let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.5); } .hero::before { background-color: transparent; } p { position: relative; color: #fdfdfd; }";
     let found = site.contrast(css, body);
     assert!(sampled_on("light.png", &found), "{found:?}");
+    // The shorthand's image part paints whatever a later longhand does to
+    // the color: a cleared color under a gradient is still the gradient.
+    let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; background: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.7)); } .hero::before { background-color: transparent; } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(found.is_empty(), "{found:?}");
+    // A clear color declared after the shorthand in the same rule wins its
+    // slot, however the earlier rules ordered the keys: nothing is painted.
+    let css = ".hero { background: url(light.png); position: relative; } .hero::before { background-color: rgba(0, 0, 0, 0); } .hero::before { content: ''; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.5); background-color: rgba(0, 0, 0, 0); } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
     // The two rules may sit on two selectors that match the same element.
     let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; } .dark::before { background: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.7)); } p { position: relative; color: #fdfdfd; }";
     let found = site.contrast(css, "<div class=\"hero dark\"><p>White copy</p></div>");

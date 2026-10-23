@@ -279,6 +279,13 @@ static ZERO_LEN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^0(?:px)?$").expect(
 static WS_SPLIT_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(&format!("{}+", js::WS)).expect("WS_SPLIT_RE"));
 static GRADIENT_RE: Lazy<Regex> = Lazy::new(|| Regex::new("(?i)gradient").expect("GRADIENT_RE"));
+// What a `background-image` value, or the image part of a `background`
+// shorthand, paints on its own: a gradient, a `url()`, another image
+// function, or a value still holding a `var()` the engine cannot read.
+static IMAGE_PAINT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?i)gradient\(|url\(|image-set\(|image\(|cross-fade\(|element\(|paint\(|var\(")
+        .expect("IMAGE_PAINT_RE")
+});
 
 fn resolve_root(raw: &str, root: &impeccable_core::checks::css_scan::CustomProps) -> String {
     let lookup = |name: &str| root.get(name).cloned();
@@ -389,27 +396,37 @@ fn mark_pseudo_analytic(
     }
 }
 
-/// One declaration into a merged pseudo map, by the cascade's priority
-/// (a later declaration of equal priority wins, as within one rule). A
-/// `background` shorthand also takes the `background-color` and
-/// `background-image` keys, since it resets both longhands: a longhand
-/// declared before it loses its slot, one declared after it wins the slot
-/// back, and the readers below prefer the longhand key.
+/// One winner into a merged pseudo map, by the cascade's priority (a later
+/// declaration of equal priority wins, as within one rule).
+fn put_pseudo_decl(
+    map: &mut IndexMap<String, (String, DeclMeta)>,
+    key: &str,
+    value: &str,
+    meta: &DeclMeta,
+) {
+    if compare_static_priority(map.get(key).map(|(_, m)| m), meta) {
+        map.insert(key.to_string(), (value.to_string(), meta.clone()));
+    }
+}
+
+/// One declaration of a rule into a merged pseudo map. A `background`
+/// shorthand also takes the `background-color` and `background-image`
+/// keys, since it resets both longhands: a longhand declared before it
+/// loses its slot, one declared after it wins the slot back, and the
+/// readers below prefer the longhand key. Winners already expanded this
+/// way merge key by key (`put_pseudo_decl`), never through here again: a
+/// replay would hand a longhand's slot back to a shorthand of the same
+/// priority that it had already beaten.
 fn merge_pseudo_decl(
     map: &mut IndexMap<String, (String, DeclMeta)>,
     key: &str,
     value: &str,
     meta: &DeclMeta,
 ) {
-    let mut put = |key: &str| {
-        if compare_static_priority(map.get(key).map(|(_, m)| m), meta) {
-            map.insert(key.to_string(), (value.to_string(), meta.clone()));
-        }
-    };
-    put(key);
+    put_pseudo_decl(map, key, value, meta);
     if key == "background" {
-        put("background-color");
-        put("background-image");
+        put_pseudo_decl(map, "background-color", value, meta);
+        put_pseudo_decl(map, "background-image", value, meta);
     }
 }
 
@@ -462,25 +479,30 @@ fn mark_pseudo_paint(
     // picture under that element's content: the hero photo written as
     // `.hero::before { position: absolute; inset: 0; background: url() }`.
     // The contrast pass stands down over it, as it does over an `<img>`.
-    let picture = js::to_lower_case(&first_of("background-image", "background")).contains("url(");
-    let surf_raw = resolve_root(
+    let image_raw = resolve_root(
+        &first_of("background-image", "background"),
+        root_custom_props,
+    );
+    let picture = js::to_lower_case(&image_raw).contains("url(");
+    let color_raw = resolve_root(
         &first_of("background-color", "background"),
         root_custom_props,
     );
     let token = COLOR_TOKEN_RE
-        .find(&surf_raw)
+        .find(&color_raw)
         .map(|m| m.as_str().to_string());
-    let surf = parse_any_color(Some(token.as_deref().unwrap_or(&surf_raw)));
+    let color = parse_any_color(Some(token.as_deref().unwrap_or(&color_raw)));
     // Anything the pseudo paints over the box, however faint, sits between
-    // the box's own image and its text (#560). Only nothing, `none`,
-    // `transparent` (which no color parser reads), and a color too faint to
-    // see are known not to paint; a value the engine cannot read counts as
-    // paint.
-    let no_paint = surf_raw.is_empty()
-        || surf_raw.eq_ignore_ascii_case("none")
-        || surf_raw.eq_ignore_ascii_case("transparent")
-        || surf.is_some_and(|c| c.alpha_or_one() <= 0.02);
-    let paints = !no_paint || GRADIENT_RE.is_match(&surf_raw) || picture;
+    // the box's own image and its text (#560). Of the color, only nothing,
+    // `none`, `transparent` (which no color parser reads), and a color too
+    // faint to see are known not to paint, and a value the engine cannot
+    // read counts as paint; the image part paints on its own terms, whatever
+    // a later longhand did to the color.
+    let color_no_paint = color_raw.is_empty()
+        || color_raw.eq_ignore_ascii_case("none")
+        || color_raw.eq_ignore_ascii_case("transparent")
+        || color.is_some_and(|c| c.alpha_or_one() <= 0.02);
+    let paints = !color_no_paint || IMAGE_PAINT_RE.is_match(&image_raw);
     for id in ids {
         if picture {
             doc.set_pseudo_picture(*id);
@@ -644,7 +666,7 @@ pub fn build_static_style_map(
                 for id in ids {
                     let merged = pseudo_by_node.entry((id, *after)).or_default();
                     for (key, (value, meta)) in decls {
-                        merge_pseudo_decl(merged, key, value, meta);
+                        put_pseudo_decl(merged, key, value, meta);
                     }
                 }
             }
