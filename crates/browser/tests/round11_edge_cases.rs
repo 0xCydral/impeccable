@@ -113,3 +113,20 @@ fn only_the_part_that_names_the_site_is_a_wordmark() {
     assert_eq!(severity("flag-faint-page-name"), Some("warning"), "{low:#?}");
     assert_eq!(severity("advisory-faint-site-name"), Some("advisory"), "{low:#?}");
 }
+
+/// A label set at 1px under `scale: 16` draws 16px letters, so laid over a
+/// caption it collides with it; the same label unscaled draws a dot.
+#[test]
+fn scaled_1px_text_is_read_at_its_drawn_size() {
+    let Some(engine) = engine() else { return };
+    let port = serve();
+    let findings = scan(&engine, port, "text-occlusion-scaled-1px.html");
+    let rows: Vec<(&str, &str)> = findings
+        .iter()
+        .filter(|f| f.antipattern == "text-occlusion")
+        .map(|f| (selector(f), f.snippet.as_str()))
+        .collect();
+    eprintln!("{rows:#?}");
+    assert!(rows.iter().any(|(s, d)| s.contains("flag-") || d.contains("flag-")), "{rows:#?}");
+    assert!(!rows.iter().any(|(s, d)| s.contains("pass-") || d.contains("pass-")), "{rows:#?}");
+}
