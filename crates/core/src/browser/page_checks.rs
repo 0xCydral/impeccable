@@ -5171,7 +5171,9 @@ pub fn check_text_occlusion_dom(dom: &dyn Dom) -> Vec<ElFinding> {
                     .iter()
                     .any(|p| !matches!(dom.style(e, p).as_str(), "" | "none"))
             };
-            if shaped(top) {
+            // A rotated or skewed card's rect is its bounding box, whose empty
+            // corners cover nothing: the painted overlap cannot be read.
+            if shaped(top) || drawn_tilted(dom, top) || drawn_tilted(dom, under) {
                 continue;
             }
             let overlap = Rect::from_xywh(
@@ -8223,8 +8225,8 @@ mod tests {
     }
 
     /// A transform lifts a static card into a layer of its own, painted over
-    /// a later static sibling; a clip-path on the card on top leaves its
-    /// painted shape unknown, so the overlap is not counted.
+    /// a later static sibling; a clip-path or a tilt on the card on top leaves
+    /// its painted shape unknown, so the overlap is not counted.
     #[test]
     fn text_occlusion_sibling_cards_follow_layers_and_skip_clipped_covers() {
         let run = |first: &[(&str, &str)], second: &[(&str, &str)]| {
@@ -8262,6 +8264,8 @@ mod tests {
             &[("position", "relative"), ("zIndex", "1")],
         );
         assert_eq!(hits, vec![Some(quotes[0])], "the positioned z-index 1 card is on top");
+        let (hits, _) = run(&[], &[("transform", "matrix(0.966, 0.259, -0.259, 0.966, 0, 0)")]);
+        assert!(hits.is_empty(), "a tilted cover: {hits:?}");
         let (hits, _) = run(&[], &[("clipPath", "inset(0px 0px 0px 80px)")]);
         assert!(hits.is_empty(), "{hits:?}");
     }
