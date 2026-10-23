@@ -7197,6 +7197,26 @@ Review round, 2026-10-22 (#998 review threads): a zero length now counts as zero
 
 The per-edit pass now records each project root it writes a cache in under a per-user session index, `~/.impeccable/hook-sessions/` (`docs/CLI-CONTRACT.md`, "Session index"), and the Stop pass scans those roots after the walk-up root. New case `hook-stop-umbrella-cwd` on the new workspace `hook-umbrella` (a plain folder holding `site/` and `app/`, each with a `package.json`), recorded from a release build of the binary and reviewed by hand: an edit in each project from the umbrella cwd, then a Stop that reports both files in one grouped list with project-relative paths (`app/src/b.css`, `site/src/a.css`, short footer because the per-edit pass already showed the full one in `app`), then a silent second Stop. The index lives in the case's isolated HOME, so the golden snapshots only the two project caches, and no `.impeccable/` appears in the umbrella folder. No existing golden moved: without a recorded root the Stop pass is the walk up alone.
 
+## Recorded 2026-10-22: a signed value in a stylesheet shorthand keeps its space
+
+The static cascade reads a stylesheet declaration back through the css-tree generator, which drops the space before a signed number wherever re-tokenizing gives the same tokens: `margin: 0 0 0 -24px` came back as `0 0 0-24px`, so the box expansion saw three values and the left margin was never negative (`margin: 0 -8px 0 0` read `0-8px` as its top margin and lost the right one; `inset: 0 -1px` and `-1px +2px` merged the same way). A `style=""` attribute was read from its raw text and never had the gap. At the top level of a declaration value, a number, percentage or dimension after another one or after a function (`10% 0`, written `10%0`; `var(--x) 0`, written `var(--x)0`) now keeps its space; text inside a function stays as css-tree writes it. `cramped-padding-shell.html` gains `flag-shell-shorthand-pull`, the `flag-shell-negative-margin` case written as a shorthand. Re-recorded from the binary and reviewed by hand: `detect-fixture-json-cramped-padding-shell-html` and `detect-fixture-text-cramped-padding-shell-html` gain that one finding, and the seven directory, scope and no-advisory sweeps (`detect-dir-{json,text,quiet}-all-fixtures`, `detect-no-advisory-{json,text}`, `detect-scope-both`, `detect-scope-layout-text`) gain the same finding and its count, and nothing else in them moved: no other fixture's finding depended on the merged text.
+
+## Recorded 2026-10-22: CSP meta revert restores the original bytes (issue #1125)
+
+The JS `revertCspMeta` removed the `data-impeccable-csp-original` marker with a
+regex built from `\s*` plus the raw marker text. The `\s*` also ate the newline
+before the marker when the attributes ended on their own line, so the reverted
+tag lost that line break, and a base64 value holding `+` never matched, so the
+marker stayed behind. The engine now removes the marker and the one space the
+patch put before it literally. The goldens of `live-inject-vite-csp-meta` and
+`live-inject-next-jsx` were re-recorded from the engine after a line-level
+review: the only change is that the reverted file keeps the newline before
+`/>`, which makes it byte-identical to the file before inject. They are
+ordinary goldens again, not accepted deltas. The new cases
+`live-inject-csp-meta-quote-styles` and `live-inject-csp-meta-quote-styles-remove`
+pin the in-place patch of the raw content value (references kept, inserted
+sources encoded for the quote style) and the round trip.
+
 ## Recorded 2026-10-22: resting states (corpus/round13-resting)
 
 New fixture `low-contrast-resting-states.html`: a stepper's inactive item beside the active one (opacity 0.3 by stylesheet with an opacity transition, the bright item carrying one more class token) reports as advisory in the URL engine (r13-t1), as does a checkout stepper's next step; text a script parked in its `style` attribute at the start of a reveal (Framer's start values, a scrubbed `max(.2, var(...))` opacity, a set of keys parked alike whose component the page shows lit elsewhere) is not at rest there and passes at its declared colour. The should-flag column carries the review's twins: a lone parked badge, parked nav links, an inline design token, a faint modifier, a clickable plan option, identical class lists. New cases `detect-fixture-json-low-contrast-resting-states-html` and `detect-fixture-text-low-contrast-resting-states-html`, recorded from the binary and reviewed by hand: the static engine reads no transition, transform or `will-change`, so it reports fourteen `low-contrast` warnings (the twelve URL-engine findings, both advisories at full severity, plus the parked card and keys at their faded colour; it does not resolve the scrubbed opacity and scores that copy as declared), exit 2. The URL behaviour is pinned by `crates/browser/tests/transient_opacity.rs`. No existing per-fixture golden moved. The directory sweeps (`detect-dir-json-all-fixtures` and the other sweep cases) also gain these fourteen findings, but they are not re-recorded here: earlier entries list them as accepted deltas, so the oracle no longer compares them. The snapshot capture also reads computed `cursor` now (`STYLE_PROPS`); older recordings read it as empty.
