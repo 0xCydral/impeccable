@@ -205,9 +205,11 @@ fn site_names(dom: &dyn Dom) -> Vec<String> {
             let run = |text: &str| -> String {
                 text.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
             };
-            // The host read the same way: `get-acme-studio.com` holds
-            // `Acme Studio`.
-            let host_run = run(&labels.concat());
+            // The host read the same way, without its top-level label:
+            // `get-acme-studio.com` holds `Acme Studio`, and a part that only
+            // repeats the TLD (`Studio` on acme.studio) names nothing.
+            let site_labels = if labels.len() > 1 { &labels[..labels.len() - 1] } else { &labels[..] };
+            let host_run = run(&site_labels.concat());
             for part in parts {
                 let joined = run(&part);
                 if joined.chars().count() >= 3 && host_run.contains(&joined) {
@@ -429,6 +431,9 @@ mod tests {
         assert_eq!(build("getacme.io", None, "Pricing | Acme", "Acme"), wordmark);
         assert_eq!(build("getacme.io", None, "Pricing | Acme", "Pricing"), None);
         assert_eq!(build("get-acme-studio.com", None, "Pricing | Acme Studio", "Acme Studio"), wordmark);
+        assert_eq!(build("acme.studio", None, "Pricing | Studio", "Studio"), None);
+        assert_eq!(build("www.acme.io", None, "Acme | io", "io"), None);
+        assert_eq!(build("www.acme.io", None, "Acme | io", "Acme"), wordmark);
         assert_eq!(build("", Some("Acme"), "Pricing | Acme", "Acme"), wordmark);
         assert_eq!(build("", Some("Acme"), "Pricing | Acme", "Pricing"), None);
         // A title of one part is the site's name, opened word for word.
