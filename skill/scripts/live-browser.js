@@ -3124,6 +3124,11 @@
   let paramsPanelBody = null;   // grid holding the knob cells
   let paramsCurrentValues = {}; // {paramId: value} - mirror of the visible variant's live values
   let tuneOpen = false;         // whether the Tune popover is open right now
+  // Tune values a saved session carried across a reload: {sessionId, variant,
+  // values}. Cycling refreshes of that session and variant restore them (a
+  // resume refreshes more than once); a refresh for any other variant, or a
+  // knob edit, drops them.
+  let restoredParamValues = null;
 
   // Theme-aware Tune popover. Appears as a drawer that slides out from the
   // contextual bar's bar-facing edge (below if the bar sits below the
@@ -3260,6 +3265,51 @@
     }
   }
 
+  function rememberSavedParamValues(saved) {
+    const values = saved.paramValues;
+    if (!values || typeof values !== 'object' || Array.isArray(values)) return;
+    if (Object.keys(values).length === 0) return;
+    const variant = Number(saved.visible != null ? saved.visible : saved.visibleVariant) || 0;
+    restoredParamValues = { sessionId: saved.id || null, variant, values: { ...values } };
+  }
+
+  function restoredParamValuesForVisibleVariant() {
+    const restored = restoredParamValues;
+    if (!restored) return null;
+    if (restored.sessionId === currentSessionId && restored.variant === visibleVariant) return restored.values;
+    restoredParamValues = null;
+    return null;
+  }
+
+  function noteParamEdited() {
+    restoredParamValues = null;
+    queueCheckpoint('param_changed');
+  }
+
+  // A saved value comes from storage the page does not own, and the variant
+  // may have been regenerated since, so it must still fit the param it names.
+  function isValidSavedParamValue(p, value) {
+    if (p.kind === 'range') {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return false;
+      const min = p.min != null ? Number(p.min) : 0;
+      const max = p.max != null ? Number(p.max) : 1;
+      return value >= min && value <= max;
+    }
+    if (p.kind === 'toggle') return typeof value === 'boolean';
+    if (p.kind === 'steps') {
+      return (p.options || []).some(o => (o && typeof o === 'object' ? o.value : o) === value);
+    }
+    return false;
+  }
+
+  function applySavedParamValues(variantEl, params, saved) {
+    for (const p of params) {
+      if (!Object.hasOwn(saved, p.id) || !isValidSavedParamValue(p, saved[p.id])) continue;
+      paramsCurrentValues[p.id] = saved[p.id];
+      applyParamValue(variantEl, p, saved[p.id]);
+    }
+  }
+
   function formatRangeValue(input) {
     const max = parseFloat(input.max), min = parseFloat(input.min);
     const v = parseFloat(input.value);
@@ -3314,7 +3364,7 @@
           paramsCurrentValues[p.id] = v;
           readout.textContent = formatRangeValue(input);
           applyParamValue(variantEl, p, v);
-          queueCheckpoint('param_changed');
+          noteParamEdited();
         });
         row.appendChild(input);
       } else if (p.kind === 'toggle') {
@@ -3345,7 +3395,7 @@
           knob.style.left = next ? '18px' : '2px';
           readout.textContent = next ? 'On' : 'Off';
           applyParamValue(variantEl, p, next);
-          queueCheckpoint('param_changed');
+          noteParamEdited();
         });
         row.appendChild(track);
       } else if (p.kind === 'steps') {
@@ -3382,7 +3432,7 @@
               btn.style.color = on ? C.ink : P.text;
             });
             applyParamValue(variantEl, p, o.value);
-            queueCheckpoint('param_changed');
+            noteParamEdited();
           });
           segRow.appendChild(b);
           segBtns.push({ btn: b, val: o.value });
@@ -4931,6 +4981,9 @@
     }
     const variantEl = getVisibleVariantEl();
     const params = parseVariantParams(variantEl);
+    // Values saved before a reload come back for the variant they were saved
+    // on; a switch to any other variant starts from its defaults.
+    const restored = restoredParamValuesForVisibleVariant();
     if (!variantEl || params.length === 0) {
       paramsCurrentValues = {};
       tuneOpen = false;
@@ -4939,6 +4992,7 @@
       return;
     }
     applyParamDefaults(variantEl, params);
+    if (restored) applySavedParamValues(variantEl, params, restored);
     buildParamsPanel(variantEl, params);
     if (tuneOpen) {
       // If already visible (variant cycled while open), refresh in place
@@ -9525,6 +9579,7 @@ void main() {
     if (saved.previewMode) currentPreviewMode = saved.previewMode;
     if (saved.paramValues && typeof saved.paramValues === 'object') {
       paramsCurrentValues = { ...saved.paramValues };
+      rememberSavedParamValues(saved);
     }
     if (saved.parameterState) parameterGenerationState = saved.parameterState;
     sessionOrigin = saved.origin === 'agent' ? 'agent' : null;
@@ -10156,10 +10211,9 @@ void main() {
       hideShaderOverlay();
       if (isInsert) finalizeInsertSession();
       disableInlineEdit();
-      // Build the params panel for the restored visible variant. Previously
-      // this was missed on page-reload resume: showVariantInDOM above fires
-      // refreshParamsPanel, but state was still IDLE at that moment so it
-      // hid. Now that state is CYCLING, re-fire.
+      // Build the params panel for the restored visible variant, with any
+      // Tune values saved before the reload (showVariantInDOM above may
+      // already have refreshed; a repeat for the same variant keeps them).
       refreshParamsPanel();
     }
     saveSession();
