@@ -142,6 +142,25 @@ fn text_occlusion_needs_text_under_the_cover() {
     assert!(deck.0.contains("on an opaque layer (div.deck-card.deck-front"), "{deck:?}");
 }
 
+/// A review report's visitor cards sat 220px apart while a quote ran 277px,
+/// so each card covered the last line of the one above: a line or two, far
+/// under the share the hit-test pass needs. A sibling card laid over another
+/// card's text line reports; cards that fit, a shared 1px border, an avatar
+/// stack, a card over only the empty body of the one behind and a slide
+/// parked at opacity 0 do not.
+#[test]
+fn text_occlusion_reads_a_card_laid_over_a_sibling_card() {
+    let Some(engine) = engine() else { return };
+    let port = serve();
+    let found = findings(&engine, port, "text-occlusion-sibling-cards.html", "text-occlusion");
+    assert_cases(
+        &found,
+        &["flag-grid-quote", "flag-board-quote", "flag-side-quote", "flag-pulled-quote"],
+        &["pass-grid-fits", "pass-shared-border", "pass-avatar", "pass-folder-title", "pass-current-slide"],
+        "text-occlusion",
+    );
+}
+
 #[test]
 fn a_link_menu_is_not_a_column_and_a_disabled_control_takes_no_verdict() {
     let Some(engine) = engine() else { return };
