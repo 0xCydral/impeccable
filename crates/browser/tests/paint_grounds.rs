@@ -123,11 +123,13 @@ fn grounds_painted_by_halves_faces_clips_and_echoes() {
         "#flag-grey-under-12-tint",
         "#flag-grey-over-parked-fill",
         "#flag-pale-below-skewed-edge",
+        "#flag-pale-on-top-white-face",
     ] {
         assert!(!low(selector).is_empty(), "missing low-contrast on {selector} in {flagged:#?}");
     }
     for selector in [
         "#pass-pale-on-skewed-band",
+        "#pass-pale-on-top-dark-face",
         "#pass-white-across-slate-seam",
         "#pass-label-over-parked-face",
         "#pass-stat-clipped-on-two-layers",

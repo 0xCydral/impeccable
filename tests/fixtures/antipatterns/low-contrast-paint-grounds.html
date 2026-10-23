@@ -96,6 +96,13 @@
     #flag-grey-under-15-tint { color: #a9a9a9; }
     #flag-grey-under-12-tint { color: #a8a8a8; }
     #flag-grey-over-parked-fill { color: #a7a7a7; }
+    /* Two solid faces over each other: the `::after` paints last and is
+       the ground, whatever the `::before` under it is. */
+    .band.faces::before { background-color: #222222; }
+    .band.faces::after { content: ""; position: absolute; left: 0; top: 0; width: 560px; height: 80px; background-color: #ffffff; }
+    .band.faces.swap::before { background-color: #ffffff; }
+    .band.faces.swap::after { background-color: #222222; }
+    .band.faces p { z-index: 1; color: #cccccc; }
 
     /* A dark band skewed about its top-left corner: the copy at its right
        end sits below the band's real edge, on the white page. */
@@ -134,6 +141,7 @@
       <div class="case band tint12"><p id="flag-grey-under-12-tint">Grey copy under a 12 percent tint</p></div>
       <div class="case band parked"><p id="flag-grey-over-parked-fill">Grey copy over a parked hover fill</p></div>
       <div class="case diagonal"><p id="flag-pale-below-skewed-edge">Pale copy off the band</p></div>
+      <div class="case band faces"><p id="flag-pale-on-top-white-face">Pale copy on a white face over a dark one</p></div>
       <div class="case echo">
         <p class="copy under-plain" aria-hidden="true">Ship it today</p>
         <p class="copy over" id="flag-pale-green-opaque-copy">Ship it today</p>
@@ -148,6 +156,7 @@
         <span class="button parked" id="pass-label-over-parked-face">Download</span>
       </div>
       <div class="case diagonal"><p id="pass-pale-on-skewed-band">Pale on band</p></div>
+      <div class="case band faces swap"><p id="pass-pale-on-top-dark-face">Pale copy on a dark face over a white one</p></div>
       <div class="case">
         <p class="stat" id="pass-stat-clipped-on-two-layers">135+</p>
       </div>

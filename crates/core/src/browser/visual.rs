@@ -974,7 +974,11 @@ fn pseudo_paint(dom: &dyn Dom, node: ElId, text: &Rect) -> Option<Paint> {
 /// paint the walk cannot read.
 fn pseudo_paint_placed(dom: &dyn Dom, node: ElId, text: &Rect) -> Option<(Paint, bool)> {
     let mut parts: Vec<(Paint, Order, Quad)> = Vec::new();
-    for which in ["::before", "::after"] {
+    // Each pseudo that covers the run alone: its paint, whether it is
+    // placed for certain, and where it paints in the stack (its `z-index`,
+    // then `::after` over `::before`).
+    let mut covering: Vec<(Paint, bool, f64, usize)> = Vec::new();
+    for (index, which) in ["::before", "::after"].into_iter().enumerate() {
         let get = |prop: &str| dom.pseudo_style(node, which, prop).unwrap_or_default();
         let content = get("content");
         let content = js::trim(&content);
@@ -1015,11 +1019,23 @@ fn pseudo_paint_placed(dom: &dyn Dom, node: ElId, text: &Rect) -> Option<(Paint,
         };
         if covers {
             let certain = placed && order == Order::Over;
-            return Some((if certain { paint } else { paint.unplaced() }, certain));
+            let z = parse_float(&get("zIndex"));
+            covering.push((if certain { paint } else { paint.unplaced() }, certain, if z.is_finite() { z } else { 0.0 }, index));
+            continue;
         }
         if let Some(q) = quad {
             parts.push((paint, order, q));
         }
+    }
+    // Where both cover the run, the one painted last is what shows: the
+    // ground where it is opaque, and otherwise paint over the other that the
+    // walk cannot read (a dark `::before` under an opaque white `::after` is
+    // not the ground).
+    if let Some(top) = covering.iter().max_by(|a, b| a.2.total_cmp(&b.2).then(a.3.cmp(&b.3))) {
+        if covering.len() == 1 || matches!(top.0, Paint::PseudoFill(_) | Paint::Picture | Paint::Gradient { .. }) {
+            return Some((top.0, top.1));
+        }
+        return Some((Paint::Unmodelled, false));
     }
     // Two halves that each paint part of the run: only where together they
     // cover all of it, and the capture places both.
@@ -1074,6 +1090,11 @@ fn pseudo_layer_paint(dom: &dyn Dom, node: ElId, which: &str) -> Option<Paint> {
         );
     }
     let c = fill?;
+    // A filter repaints the fill (`invert(1)` turns black white), which its
+    // colour does not say: paint the walk cannot read, for the pixels.
+    if !matches!(js::trim(&get("filter")), "" | "none") {
+        return (c.alpha_or_one() > 0.1).then_some(Paint::Unmodelled);
+    }
     // The fill paints at its alpha times the pseudo's own `opacity`: a black
     // tint at `opacity: .15` is a wash over the box, not a black ground.
     let opacity = get("opacity");
@@ -5621,6 +5642,66 @@ mod tests {
         d.set_pseudo_style(section, "::before", "backgroundImage", opaque);
         d.set_pseudo_style(section, "::before", "opacity", "0.42");
         assert!(!handed_over_unmeasured(&d, p, verdict), "faded once");
+    }
+
+    /// A section with a solid `::before` face and a second solid `::after`
+    /// face over it, both covering the copy (the `::before` of `washed`).
+    fn two_faces(before: &str, after: &str) -> (FakeDom, ElId) {
+        let (mut d, p) = washed("rgb(255, 255, 255)", 0.42);
+        let section = d.parent(d.parent(p).unwrap()).unwrap();
+        d.set_pseudo_style(section, "::before", "backgroundImage", "none");
+        d.set_pseudo_style(section, "::before", "backgroundColor", before);
+        for (prop, value) in [
+            ("content", "\"\""),
+            ("position", "absolute"),
+            ("display", "block"),
+            ("opacity", "1"),
+            ("top", "0px"),
+            ("left", "0px"),
+            ("width", "1280px"),
+            ("height", "150px"),
+            ("backgroundColor", after),
+            ("backgroundImage", "none"),
+            ("zIndex", "auto"),
+        ] {
+            d.set_pseudo_style(section, "::after", prop, value);
+        }
+        d.set_style(p, "color", "rgb(204, 204, 204)");
+        (d, p)
+    }
+
+    #[test]
+    fn the_face_painted_last_is_the_ground() {
+        let white = Rgba { r: 255.0, g: 255.0, b: 255.0, a: Some(1.0) };
+        let dark = Rgba { r: 34.0, g: 34.0, b: 34.0, a: Some(1.0) };
+        // A dark `::before` under an opaque white `::after`: the pale copy
+        // sits on the white, where it fails.
+        let (d, p) = two_faces("rgb(34, 34, 34)", "rgb(255, 255, 255)");
+        assert_eq!(layer_under_text(&d, p), LayerUnder::Detached(white));
+        // Swapped, it sits on the dark face and passes there.
+        let (d, p) = two_faces("rgb(255, 255, 255)", "rgb(34, 34, 34)");
+        assert_eq!(layer_under_text(&d, p), LayerUnder::Detached(dark));
+        // A `::before` raised over the `::after` by its `z-index` shows.
+        let (mut d, p) = two_faces("rgb(34, 34, 34)", "rgb(255, 255, 255)");
+        let section = d.parent(d.parent(p).unwrap()).unwrap();
+        d.set_pseudo_style(section, "::before", "zIndex", "1");
+        assert_eq!(layer_under_text(&d, p), LayerUnder::Detached(dark));
+        // A translucent `::after` over the dark face leaves a ground the walk
+        // cannot read.
+        let (d, p) = two_faces("rgb(34, 34, 34)", "rgba(255, 255, 255, 0.5)");
+        assert_eq!(layer_under_text(&d, p), LayerUnder::Unmodelled);
+    }
+
+    #[test]
+    fn a_filtered_fill_is_not_a_ground() {
+        // `invert(1)` paints the black face white: its colour says nothing.
+        let (mut d, p) = washed("rgb(255, 255, 255)", 0.42);
+        let section = d.parent(d.parent(p).unwrap()).unwrap();
+        d.set_pseudo_style(section, "::before", "backgroundImage", "none");
+        d.set_pseudo_style(section, "::before", "backgroundColor", "rgb(0, 0, 0)");
+        assert_eq!(layer_under_text(&d, p), LayerUnder::Detached(Rgba { r: 0.0, g: 0.0, b: 0.0, a: Some(1.0) }));
+        d.set_pseudo_style(section, "::before", "filter", "invert(1)");
+        assert_eq!(layer_under_text(&d, p), LayerUnder::Unmodelled);
     }
 
     #[test]
