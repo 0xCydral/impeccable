@@ -1264,15 +1264,31 @@ fn opacity_at_rest(dom: &dyn Dom, el: ElId, opacity: f64) -> bool {
 /// as dimmed for a reveal or a state rather than styled faint.
 const STATE_DIM_OPACITY: f64 = 0.5;
 
-/// The value the element's `style` attribute gives `property`, trimmed, if
-/// it declares one.
+/// The value the element's `style` attribute gives `property`, trimmed and
+/// without `!important`, if it declares one: the declaration that wins, the
+/// last one unless an earlier one is `!important` and it is not. A custom
+/// property's name is matched case-sensitively (`--Muted` is not
+/// `--muted`); any other name is not.
 fn inline_value(dom: &dyn Dom, el: ElId, property: &str) -> Option<String> {
     let style = dom.attr(el, "style")?;
-    style
-        .split(';')
-        .filter_map(|decl| decl.split_once(':'))
-        .find(|(name, _)| js::to_lower_case(js::trim(name)) == property)
-        .map(|(_, value)| js::trim(value).to_string())
+    let custom = property.starts_with("--");
+    let mut winner: Option<(String, bool)> = None;
+    for (name, value) in style.split(';').filter_map(|decl| decl.split_once(':')) {
+        let name = js::trim(name);
+        let matches = if custom { name == property } else { js::to_lower_case(name) == property };
+        if !matches {
+            continue;
+        }
+        let value = js::trim(value);
+        let (value, important) = match value.rfind('!') {
+            Some(at) if js::trim(&value[at + 1..]).eq_ignore_ascii_case("important") => (js::trim(&value[..at]), true),
+            _ => (value, false),
+        };
+        if winner.as_ref().map_or(true, |(_, held)| important || !held) {
+            winner = Some((value.to_string(), important));
+        }
+    }
+    winner.map(|(value, _)| value)
 }
 
 /// Whether a dimmed box's class list and a bright one's name one component
@@ -1387,7 +1403,9 @@ fn scrubbed_opacity(dom: &dyn Dom, el: ElId, value: &str) -> bool {
     if ["max(", "min(", "clamp(", "calc("].iter().any(|f| lower.contains(f)) {
         return true;
     }
-    let names: Vec<String> = lower
+    // Custom property names are case-sensitive, so they are read from the
+    // value as written.
+    let names: Vec<String> = value
         .split("var(")
         .skip(1)
         .filter_map(|rest| {
@@ -1458,13 +1476,12 @@ fn touches_a_control(dom: &dyn Dom, el: ElId) -> bool {
         }
         cur = dom.parent(c);
     }
-    dom.query_all(
-        Some(el),
-        "a[href], button, input, select, textarea, summary, [role], [aria-selected]",
-    )
-    .unwrap_or_default()
-    .into_iter()
-    .any(|c| c != el && names_a_control(dom, c))
+    // Every descendant, not a selector for the tagged ones: a box that sets
+    // `cursor: pointer` around a short label is a control too.
+    dom.query_all(Some(el), "*")
+        .unwrap_or_default()
+        .into_iter()
+        .any(|c| c != el && names_a_control(dom, c))
 }
 
 /// The most text, in UTF-16 units, a box that sets `cursor: pointer` holds
@@ -1516,7 +1533,7 @@ fn names_a_control(dom: &dyn Dom, el: ElId) -> bool {
 /// or a faded control: an inactive tab's label is the name a visitor reads
 /// to pick it (partner.co.il's tab row at 0.4 beside the selected tab, which
 /// both corpus judges called harmful).
-fn dimmed_by_a_state(dom: &dyn Dom, el: ElId, host: Option<ElId>) -> bool {
+pub(crate) fn dimmed_by_a_state(dom: &dyn Dom, el: ElId, host: Option<ElId>) -> bool {
     const MAX_ANCESTORS: usize = 64;
     let mut cur = Some(el);
     for _ in 0..MAX_ANCESTORS {
@@ -6514,7 +6531,7 @@ mod tests {
     /// text is dim at rest, so it reports, as advisory.
     #[test]
     fn a_stepper_item_dimmed_by_its_state_is_advisory() {
-        let (d, _wrap, word, _) = stepper("feature", "feature is-active", "1");
+        let (mut d, _wrap, word, _) = stepper("feature", "feature is-active", "1");
         let hits = colors(&d, word);
         assert!(
             low_contrast(&hits).iter().any(|s| s.contains("text #b3b3b3 on #ffffff")),
@@ -6522,6 +6539,24 @@ mod tests {
         );
         assert_eq!(advisory(&hits), vec![true], "{hits:?}");
         assert!(!super::caught_mid_reveal(&d, word));
+        // Over a photo the fade goes to the pixel pass, which reads the item
+        // as advisory too (PR #1148 review): its candidate carries the
+        // decorative key, which a footer link faded alike does not.
+        let visual_decorative = |d: &mut FakeDom, word: ElId| {
+            // A paragraph, since the pixel pass leaves inline tags to the
+            // element pass.
+            d.el_mut(word).tag = "p".into();
+            let body = d.body().unwrap();
+            d.set_styles(body, &[("backgroundImage", "url(\"/hero.jpg\")"), ("backgroundSize", "cover")]);
+            crate::browser::visual::collect_visual_contrast_candidates(&*d, &serde_json::json!({}))
+                .iter()
+                .filter(|c| c.get("text").and_then(|t| t.as_str()) == Some("Sidebar tabs"))
+                .map(|c| c.get("decorative").and_then(|v| v.as_bool()) == Some(true))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(visual_decorative(&mut d, word), vec![true]);
+        let (mut d, _, word, _) = stepper("feature", "feature", "0.3");
+        assert_eq!(visual_decorative(&mut d, word), vec![false]);
 
         // Twins that keep their severity: every item faded alike (footer
         // links at .4 with a hover transition), a faded item with no
@@ -6633,7 +6668,23 @@ mod tests {
         let body = d.parent(wrap).unwrap();
         d.set_attr(body, "style", "--muted: 0");
         assert!(low_contrast(&colors(&d, word)).is_empty(), "{:?}", colors(&d, word));
+        // Custom property names are case-sensitive: `--Muted` set above
+        // does not scrub `var(--muted)` (PR #1148 review).
+        d.set_attr(body, "style", "--Muted: 0");
+        assert!(!low_contrast(&colors(&d, word)).is_empty(), "{:?}", colors(&d, word));
         d.set_attr(body, "style", "");
+        // The declaration that wins is read: a later plain number overrides
+        // the scrubbed value, and a later one does not override an
+        // `!important` scrub.
+        d.set_attr(wrap, "style", "opacity: max(.2, var(--p)); opacity: .2");
+        assert!(!low_contrast(&colors(&d, word)).is_empty(), "{:?}", colors(&d, word));
+        d.set_attr(wrap, "style", "opacity: max(.2, var(--p)) !important; opacity: .2");
+        assert!(low_contrast(&colors(&d, word)).is_empty(), "{:?}", colors(&d, word));
+        // A clickable child with a short label and no role is a control the
+        // box holds (PR #1148 review): the box stays at rest and fades.
+        d.set_style(word, "cursor", "pointer");
+        assert!(!low_contrast(&colors(&d, word)).is_empty(), "{:?}", colors(&d, word));
+        d.set_style(word, "cursor", "auto");
         d.set_attr(wrap, "style", "opacity:max(.2, var(--card-animation-1))");
         d.set_style(wrap, "opacity", "0.6");
         d.set_style(word, "color", "rgb(150, 150, 150)");
