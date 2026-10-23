@@ -23,7 +23,10 @@
   pass takes no candidate inside a declared mockup.
 
   A box whose aria-label names a screenshot is described, not hidden: its
-  findings report as advisory (taste call r13-t5).
+  findings report as advisory (taste call r13-t5), from the pixel pass too,
+  and its advisory verdicts never hide the page's own text wearing the same
+  colours. Text under display: none is no run of a drawing and none of the
+  page's words.
 -->
 <style>
   body { font-family: system-ui, sans-serif; font-size: 16px; color: #1a1a1a; background: #ffffff; margin: 24px; }
@@ -130,6 +133,32 @@
   <div class="frame" id="adv-screenshot" aria-label="A screenshot of the billing screen">
     <span class="label" style="color: #a9a9a9">Billing</span>
     <div class="inner" id="adv-screenshot-inner"><p style="color: #a9a9a9">Pro plan, renews on June 3</p><p style="color: #a9a9a9">Two seats in use</p></div>
+  </div>
+
+  <!-- the page's own text in the labelled screenshot's colours, after it:
+       the screenshot's advisory verdict never claims the pair -->
+  <span class="label" id="fail-after-shot" style="color: #a9a9a9">Your plan renews next month</span>
+
+  <!-- pale labels over a raster ground with nothing hidden: the pixel pass
+       reports them -->
+  <div class="frame shot" id="fail-pixel-live">
+    <span class="label" id="fail-pixel-live-a" style="color: #f3f3f3">Build queued</span><span class="label" style="color: #f3f3f3">Tests running</span><span class="label" style="color: #f3f3f3">Preview ready</span>
+  </div>
+
+  <!-- the same over a raster ground in a box labelled as a screenshot:
+       the pixel pass reports them as advisory -->
+  <div class="frame shot" id="adv-pixel-shot" aria-label="A screenshot of the deploy screen">
+    <span class="label" id="adv-pixel-shot-a" style="color: #f2f2f2">Release notes</span><span class="label" style="color: #f2f2f2">Rollback ready</span><span class="label" style="color: #f2f2f2">Two regions live</span>
+  </div>
+
+  <!-- an aria-hidden window drawing two runs, with three more under
+       display: none: text that does not render is no run of a drawing.
+       Wrapped alone, so no shown peer of the same class holds it -->
+  <div id="fail-unrendered-runs-wrap">
+    <div class="frame" id="fail-unrendered-runs" aria-hidden="true">
+      <div class="inner" id="fail-unrendered-runs-inner"><p style="color: #afafaf">Build the future</p><p style="color: #afafaf">Ship it today</p></div>
+      <div style="display: none"><span>Starter</span><span>Team</span><span>Enterprise</span></div>
+    </div>
   </div>
 
   <!-- GSAP SplitText: the host's aria-label reads the line, each visual

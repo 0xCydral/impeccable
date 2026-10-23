@@ -340,13 +340,16 @@ struct SubtreeText {
 /// subtree is too large to be a drawing.
 fn subtree_text(dom: &dyn Dom, el: ElId) -> Option<SubtreeText> {
     let mut out = SubtreeText { runs: 0, chars: 0, text: String::new(), h1: false, working: false };
-    // Each entry carries whether a link with an `href` holds it.
-    let mut stack = vec![(el, false)];
+    // Each entry carries whether a link with an `href` holds it, and
+    // whether it is rendered: text under `display: none` is no run of the
+    // drawing (a hidden responsive copy inside it), though a field, a label
+    // or an `h1` there still keeps the base behaviour.
+    let mut stack = vec![(el, false, true)];
     let mut visited = 0usize;
     let mut fields = 0usize;
     let mut labelled_form = false;
     let mut link_runs = 0usize;
-    while let Some((n, in_link)) = stack.pop() {
+    while let Some((n, in_link, rendered)) = stack.pop() {
         visited += 1;
         if visited > MAX_ROOT_NODES {
             return None;
@@ -366,8 +369,13 @@ fn subtree_text(dom: &dyn Dom, el: ElId) -> Option<SubtreeText> {
         }
         let in_link = in_link
             || (tag == "a" && dom.attr(n, "href").is_some_and(|h| !js::trim(&h).is_empty()));
-        let direct = dom.direct_text_nodes(n).join(" ");
-        let chars = direct.chars().filter(|c| !c.is_whitespace()).count();
+        let rendered = rendered && dom.style(n, "display") != "none";
+        let chars = if rendered && dom.style(n, "visibility") != "hidden" {
+            let direct = dom.direct_text_nodes(n).join(" ");
+            direct.chars().filter(|c| !c.is_whitespace()).count()
+        } else {
+            0
+        };
         if chars > 0 {
             out.runs += 1;
             out.chars += chars;
@@ -375,7 +383,7 @@ fn subtree_text(dom: &dyn Dom, el: ElId) -> Option<SubtreeText> {
                 link_runs += 1;
             }
         }
-        stack.extend(dom.children(n).into_iter().rev().map(|c| (c, in_link)));
+        stack.extend(dom.children(n).into_iter().rev().map(|c| (c, in_link, rendered)));
     }
     // Working UI the page hid for a while: a form (two fields or more, or
     // a field with a `label`), or a list of links (half the runs or more).
@@ -388,10 +396,6 @@ fn subtree_text(dom: &dyn Dom, el: ElId) -> Option<SubtreeText> {
 
 fn squash(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
-}
-
-fn collapse(s: &str) -> String {
-    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Whether the root is one copy of content the page also shows: a sibling
@@ -483,13 +487,19 @@ fn has_readable_alternative(dom: &dyn Dom, el: ElId) -> bool {
     })
 }
 
-/// The page's rendered words, counted once.
+/// The page's rendered words, counted once. A subtree under `display:
+/// none` (a responsive copy, a closed menu) paints no words, and text under
+/// `visibility: hidden` none of its own.
 fn page_text_chars(dom: &dyn Dom) -> usize {
     let Some(root) = dom.body().or_else(|| dom.document_element()) else { return 0 };
     let mut count = 0usize;
     let mut stack = vec![root];
     while let Some(n) = stack.pop() {
-        if SOURCE_TEXT_TAGS.contains(&tag_lower(dom, n).as_str()) {
+        if SOURCE_TEXT_TAGS.contains(&tag_lower(dom, n).as_str()) || dom.style(n, "display") == "none" {
+            continue;
+        }
+        if dom.style(n, "visibility") == "hidden" {
+            stack.extend(dom.children(n));
             continue;
         }
         count += dom
@@ -592,6 +602,56 @@ mod tests {
         let (w, runs) = window(&mut d, body, &["Build", "faster"]);
         d.set_attr(w, "aria-hidden", "true");
         assert!(!HiddenMockups::scan(&d).declared(runs[0]));
+    }
+
+    #[test]
+    fn text_that_does_not_render_is_no_run() {
+        // Two drawn runs, and three more under `display: none`.
+        let (mut d, body) = page();
+        let (w, runs) = window(&mut d, body, &["Build", "faster"]);
+        d.set_attr(w, "aria-hidden", "true");
+        let parked = d.add(Some(w), "div");
+        d.set_style(parked, "display", "none");
+        for l in ["Starter", "Team", "Enterprise"] {
+            let s = d.add(Some(parked), "span");
+            d.add_text(s, l);
+        }
+        assert!(!HiddenMockups::scan(&d).declared(runs[0]));
+        // The twin: a third drawn run makes it a drawing again, the parked
+        // copy notwithstanding.
+        let third = d.add(Some(w), "span");
+        d.set_rect(third, 110.0, 470.0, 100.0, 14.0);
+        d.add_text(third, "Sent");
+        assert!(HiddenMockups::scan(&d).declared(runs[0]));
+    }
+
+    #[test]
+    fn words_that_do_not_render_are_not_the_pages() {
+        // An inert box holding most of the words the page shows is the
+        // page, even where a responsive copy under `display: none` doubles
+        // the words in the markup.
+        let mut d = FakeDom::new();
+        let (_html, body) = d.with_page();
+        d.set_rect(body, 0.0, 0.0, 1280.0, 4000.0);
+        let intro = d.add(Some(body), "p");
+        d.set_rect(intro, 0.0, 0.0, 800.0, 40.0);
+        d.add_text(intro, "A short line of the page's own copy.");
+        let line = "A paragraph of the application's own copy that a visitor reads every day.";
+        let (w, runs) = window(&mut d, body, &[line, line, line, line]);
+        d.set_attr(w, "inert", "");
+        assert!(!HiddenMockups::scan(&d).declared(runs[0]), "most of the page");
+        let copy = d.add(Some(body), "section");
+        d.set_style(copy, "display", "none");
+        for _ in 0..8 {
+            let p = d.add(Some(copy), "p");
+            d.add_text(p, line);
+        }
+        assert!(!HiddenMockups::scan(&d).declared(runs[0]), "the hidden copy is not counted");
+        // The twin: the same words shown elsewhere on the page make the box
+        // a small part of it.
+        d.set_style(copy, "display", "block");
+        d.set_rect(copy, 0.0, 900.0, 800.0, 400.0);
+        assert!(HiddenMockups::scan(&d).declared(runs[0]), "shown words count");
     }
 
     #[test]

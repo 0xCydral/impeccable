@@ -2325,8 +2325,15 @@ pub fn check_element_colors_dom_in(
     // signature, a mockup's labels) reports as advisory, asked only of an
     // element that failed.
     let decorative = std::cell::OnceCell::new();
-    let is_decorative =
-        || *decorative.get_or_init(|| super::decorative_text::is_decorative_text_dom(dom, el));
+    // Text under a box labelled as a screenshot is advisory too (r13-t5),
+    // decided here so it claims only the advisory pairs and never hides
+    // the page's own text wearing the same colours.
+    let is_decorative = || {
+        *decorative.get_or_init(|| {
+            super::decorative_text::is_decorative_text_dom(dom, el)
+                || mockups.is_some_and(|m| m.signal(el) == Some(super::hidden_mockup::MockupSignal::Labelled))
+        })
+    };
     // A word caught part way through a scripted colour reveal is not at the
     // colour it rests at, so no contrast verdict is about what a reader
     // reads, and it claims no colour pair. Asked once, only of an element

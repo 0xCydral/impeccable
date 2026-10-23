@@ -10,9 +10,11 @@
 //! runs of text, an inert dialog, split-text lines under a labelled host, a
 //! resting carousel slide beside a current one with a state class, a band
 //! beside a screen-reader copy of its words, a hidden list of links and an
-//! inert form step keep their findings. The pixel pass takes no candidate
-//! inside a declared mockup. A box labelled as
-//! a screenshot reports as advisory (taste call r13-t5).
+//! inert form step keep their findings, and so does a hidden box whose
+//! third run of text does not render. The pixel pass takes no candidate
+//! inside a declared mockup. A box labelled as a screenshot reports as
+//! advisory from both passes (taste call r13-t5), and never hides the
+//! page's own text in the same colours.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -130,7 +132,7 @@ fn guarded_hidden_boxes_keep_their_findings() {
     let Some(f) = scan("declared-mockups.html") else { return };
     // (nested-cards never reads a dialog's first card as nested, hidden or
     // not, so the dialog row is held to low-contrast alone.)
-    for id in ["#fail-live-inner", "#fail-copy-inner", "#fail-two-runs-inner"] {
+    for id in ["#fail-live-inner", "#fail-copy-inner", "#fail-two-runs-inner", "#fail-unrendered-runs-inner"] {
         assert_eq!(on(&f, "nested-cards", id), ["warning"], "nested-cards {id}: {f:#?}");
     }
     for id in [
@@ -138,7 +140,13 @@ fn guarded_hidden_boxes_keep_their_findings() {
         "#fail-copy",
         "#fail-badge",
         "#fail-two-runs",
+        // Two drawn runs and three under `display: none` are two runs.
+        "#fail-unrendered-runs",
         "#fail-dialog",
+        // The page's own text after a labelled screenshot in its colours.
+        "#fail-after-shot",
+        // Pale labels over a raster ground, read from the pixels.
+        "#fail-pixel-live",
         "#fail-carousel-rest",
         "#fail-rail",
         // The split lines, the stats band and the form step print no id of
@@ -156,6 +164,9 @@ fn guarded_hidden_boxes_keep_their_findings() {
 fn a_labelled_screenshot_is_advisory() {
     let Some(f) = scan("declared-mockups.html") else { return };
     assert_eq!(on(&f, "nested-cards", "#adv-screenshot-inner"), ["advisory"], "{f:#?}");
-    let sev = on(&f, "low-contrast", "#adv-screenshot");
-    assert!(!sev.is_empty() && sev.iter().all(|s| *s == "advisory"), "{f:#?}");
+    // From the element pass and from the pixels alike.
+    for id in ["#adv-screenshot", "#adv-pixel-shot"] {
+        let sev = on(&f, "low-contrast", id);
+        assert!(!sev.is_empty() && sev.iter().all(|s| *s == "advisory"), "{id}: {f:#?}");
+    }
 }
