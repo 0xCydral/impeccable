@@ -1340,6 +1340,10 @@ fn has_revealed_peer_on_page(dom: &dyn Dom, el: ElId) -> bool {
         }
         bright_state_classes(&own, &crate::browser::painted::class_tokens(dom, other))
             && crate::browser::painted::declares_transition_of(dom, other, "opacity")
+            // The peer is shown lit: painted (not `display: none`, hidden,
+            // or inside such a box) and faded by no ancestor either.
+            && is_painted_for_browser_rule(dom, other)
+            && effective_opacity_dom(dom, other) >= 0.999
     })
 }
 
@@ -1492,14 +1496,16 @@ fn touches_a_control(dom: &dyn Dom, el: ElId) -> bool {
 const POINTER_CONTROL_MAX_CHARS: usize = 80;
 
 /// Whether the box is a control whose text names it: a button, a field, a
-/// tab, a link, an option or a menu item, by tag or by role, a box that
-/// carries `aria-selected`, or a box that sets `cursor: pointer` (its parent
+/// tab, a link, an option or a menu item (checkbox and radio ones too), by
+/// tag or by role, a disclosure's `summary`, a box that carries
+/// `aria-selected`, or a box that sets `cursor: pointer` (its parent
 /// does not) around at most [`POINTER_CONTROL_MAX_CHARS`] of text.
 fn names_a_control(dom: &dyn Dom, el: ElId) -> bool {
     let tag = js::to_lower_case(&dom.tag_name(el));
     let role = dom.attr(el, "role");
     if crate::checks::embedded_content::control_of(&tag, dom.attr(el, "type").as_deref(), role.as_deref()).is_some()
         || (tag == "a" && dom.attr(el, "href").is_some())
+        || tag == "summary"
         || dom.attr(el, "aria-selected").is_some()
     {
         return true;
@@ -1514,7 +1520,7 @@ fn names_a_control(dom: &dyn Dom, el: ElId) -> bool {
         r.split_ascii_whitespace().any(|t| {
             matches!(
                 js::to_lower_case(t).as_str(),
-                "link" | "option" | "menuitem" | "menuitemradio" | "treeitem"
+                "link" | "option" | "menuitem" | "menuitemradio" | "menuitemcheckbox" | "treeitem"
             )
         })
     })
@@ -6624,6 +6630,20 @@ mod tests {
         let (mut d, wrap, word, _) = stepper("tab", "tab selected", "1");
         d.set_attr(wrap, "aria-selected", "false");
         assert_eq!(advisory(&colors(&d, word)), vec![false]);
+        // A menu's unchecked checkbox item and a disclosure's `summary` are
+        // controls too (PR #1148 review).
+        let (mut d, wrap, word, _) = stepper("item", "item checked", "1");
+        d.set_attr(wrap, "role", "menuitemcheckbox");
+        assert_eq!(advisory(&colors(&d, word)), vec![false]);
+        let (mut d, wrap, word, _) = stepper("faq", "faq open", "1");
+        d.el_mut(wrap).tag = "summary".into();
+        let body = d.parent(wrap).unwrap();
+        for c in d.children(body) {
+            if c != wrap {
+                d.el_mut(c).tag = "summary".into();
+            }
+        }
+        assert_eq!(advisory(&colors(&d, word)), vec![false]);
         let (mut d, _, word, _) = stepper("tab", "tab selected", "1");
         d.set_attr(word, "href", "#pricing");
         d.el_mut(word).tag = "a".into();
@@ -6774,6 +6794,19 @@ mod tests {
         d.set_style(lit, "transitionDuration", "0s");
         assert!(!low_contrast(&colors(&d, word)).is_empty());
         d.set_style(lit, "transitionDuration", "1.5s");
+        // A lit peer that is not shown (PR #1148 review): `display: none`,
+        // `visibility: hidden`, or faded by an ancestor. The key is at rest
+        // and fades.
+        d.set_style(lit, "display", "none");
+        assert!(!low_contrast(&colors(&d, word)).is_empty());
+        d.set_style(lit, "display", "block");
+        d.set_style(lit, "visibility", "hidden");
+        assert!(!low_contrast(&colors(&d, word)).is_empty());
+        d.set_style(lit, "visibility", "visible");
+        d.set_style(row, "opacity", "0.2");
+        assert!(!low_contrast(&colors(&d, word)).is_empty());
+        d.set_style(row, "opacity", "1");
+        assert!(low_contrast(&colors(&d, word)).is_empty(), "{:?}", colors(&d, word));
         d.set_attr(lit, "class", "key glowing wide");
         assert!(!low_contrast(&colors(&d, word)).is_empty());
         // A lit sibling in the same row is a state, not a reveal: the key

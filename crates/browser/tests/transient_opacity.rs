@@ -132,6 +132,9 @@ fn the_url_engine_demotes_a_state_and_skips_a_parked_reveal() {
         ("a clickable plan option", "text #abacac on #ffffff", false),
         ("identical classes, one dimmed inline", "text #acacad on #ffffff", false),
         ("a checkout stepper's next step", "text #adadad on #ffffff", true),
+        ("disclosure summaries beside the open one", "text #b0b1b1 on #ffffff", false),
+        ("unchecked menu checkbox items", "text #b1b1b1 on #ffffff", false),
+        ("keys parked alike, the lit peer not shown", "text #dbdcdc on #ffffff", false),
     ] {
         assert!(
             contrast.iter().any(|(s, a)| s.contains(expected) && *a == advisory),
@@ -140,7 +143,7 @@ fn the_url_engine_demotes_a_state_and_skips_a_parked_reveal() {
     }
     assert_eq!(
         contrast.len(),
-        12,
+        15,
         "the three parked reveals should not report, got {contrast:?}"
     );
 }

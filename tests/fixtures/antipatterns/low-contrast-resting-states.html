@@ -14,8 +14,9 @@
        same shape. Items all faded alike, an item faded with no transition, an
        inactive tab or clickable option (its label names the control a
        visitor picks), a faint modifier on the dimmed box, identical class
-       lists, a lone box parked inline with a lit namesake elsewhere, parked
-       nav links, a design token written inline, and a number written inline
+       lists, a disclosure `summary` or menu checkbox item, a lone box parked
+       inline with a lit namesake elsewhere, keys parked alike whose lit peer
+       is not shown, parked nav links, a design token written inline, and a number written inline
        with nothing to show it moves keep their severity.
 
        A box a script parked in its `style` attribute at the start of a
@@ -83,6 +84,18 @@
     .checkout-copy { color: #313233; }
     .checkout-current-copy { color: #111111; }
 
+    .faq { display: block; opacity: 0.4; transition: opacity 0.2s; }
+    .faq.open { opacity: 1; }
+    .faq-copy { color: #3a3b3c; }
+    .faq-open-copy { color: #111111; }
+    .menu-item { opacity: 0.4; transition: opacity 0.2s; }
+    .menu-item.checked { opacity: 1; }
+    .menu-copy { color: #3b3c3d; }
+    .menu-checked-copy { color: #111111; }
+    .cap { display: inline-block; width: 64px; transition: opacity 0.4s; }
+    .cap.glowing { display: none; transition: opacity 1.5s; }
+    .cap-label { color: #4a4e52; }
+    .cap-lit-label { color: #111111; }
     /* Parked for a reveal: not at rest. */
     .parked-card-copy { color: #050a0f; }
     .scrubbed { transition: opacity 0.3s, transform 0.3s; }
@@ -162,6 +175,28 @@
         <li class="checkout-step current"><span class="checkout-current-copy">1. Cart</span></li>
         <li class="checkout-step"><span class="checkout-copy">2. Shipping</span></li>
       </ol></div>
+
+      <h3>Disclosure summaries beside the open one (a control)</h3>
+      <div class="case">
+        <summary class="faq open"><span class="faq-open-copy">Can I pause my plan?</span></summary>
+        <summary class="faq"><span class="faq-copy">Do you offer refunds?</span></summary>
+      </div>
+
+      <h3>Unchecked menu checkbox items beside a checked one (a control)</h3>
+      <div class="case" role="menu">
+        <div class="menu-item checked" role="menuitemcheckbox" aria-checked="true"><span class="menu-checked-copy">Show grid</span></div>
+        <div class="menu-item" role="menuitemcheckbox" aria-checked="false"><span class="menu-copy">Show rulers</span></div>
+      </div>
+
+      <h3>Keys parked alike, the lit peer not shown (display: none)</h3>
+      <div class="case">
+        <div class="cap" style="opacity: 0.2"><span class="cap-label">fn</span></div>
+        <div class="cap" style="opacity: 0.2"><span class="cap-label">ctrl</span></div>
+        <div class="cap" style="opacity: 0.2"><span class="cap-label">opt</span></div>
+      </div>
+      <div class="case">
+        <div class="cap glowing"><span class="cap-lit-label">cmd</span></div>
+      </div>
     </section>
 
     <section class="col" data-col="pass">
