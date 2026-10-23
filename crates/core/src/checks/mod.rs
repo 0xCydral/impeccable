@@ -65,3 +65,5 @@ pub mod text_rules;
 pub mod vectors_a;
 #[cfg(feature = "vectors")]
 pub mod vectors_b;
+
+pub mod hard_offset_shadow;
