@@ -555,8 +555,13 @@ const HIDE_COVERS_JS: &str = r#"(async (resolve, { selector, identity, node }, c
     return false;
   };
   // A fixed backdrop that wraps an open dialog is the modal too: hiding it
-  // would take the dialog with it.
-  const holdsModal = layer => modal(layer) || !!layer.querySelector('dialog[open], [aria-modal="true"]');
+  // would take the dialog with it. Only a dialog the page renders counts: a
+  // cookie banner's hidden preferences panel does not keep the banner.
+  const shown = n => n.checkVisibility
+    ? n.checkVisibility({ opacityProperty: true, visibilityProperty: true })
+    : n.getClientRects().length > 0;
+  const holdsModal = layer => modal(layer)
+    || [...layer.querySelectorAll('dialog[open], [aria-modal="true"]')].some(shown);
   const covers = [...layers].filter(layer => !scrollsAlong(layer) && !holdsModal(layer));
   if (check) {
     // Whether the last tile serves this element too: it hid every layer

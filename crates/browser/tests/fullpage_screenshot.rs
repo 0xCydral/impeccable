@@ -1008,6 +1008,32 @@ fn an_element_shot_keeps_a_modal_wrapped_in_a_fixed_backdrop() {
     assert!(r > 0.8, "the modal's backdrop was hidden: {r}");
 }
 
+/// The twin: a fixed sheet holding a modal panel the page has not opened
+/// (a cookie banner's preferences) is still a cover.
+const SHEET_WITH_CLOSED_MODAL_PAGE: &str = r#"<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Closed modal</title>
+<style>
+  body { margin: 0; background: #ffffff; color: #111111; font: 16px/1.5 Arial, sans-serif; }
+  .spacer { height: 4000px; }
+  .tiny { margin: 40px 20px; width: 300px; height: 60px; font-size: 9px; color: #222222; background: #ffffff; }
+  .sheet { position: fixed; left: 0; right: 0; top: 30%; bottom: 0; z-index: 40; background: #d00000; color: #ffffff; }
+  .prefs { display: none; }
+</style></head><body>
+<h1>A long read</h1><div class="spacer"></div>
+<p class="tiny" id="under-banner">Small print under a banner with a closed panel.</p>
+<div class="spacer" style="height: 1200px"></div>
+<aside class="sheet"><p>Cookies</p><div class="prefs" role="dialog" aria-modal="true">Preferences</div></aside>
+</body></html>"#;
+
+#[test]
+fn an_element_shot_hides_a_sheet_whose_modal_is_closed() {
+    let Some(engine) = engine() else { return };
+    let (img, shot) = shot_of(&engine, SHEET_WITH_CLOSED_MODAL_PAGE, "#under-banner");
+    let r = share(&img, shot.rect, red);
+    assert!(r < 0.2, "the banner covers the element in its shot: {r}");
+    assert_eq!(shot.hidden_covers, vec!["aside.sheet".to_string()]);
+}
+
 #[test]
 fn an_element_shot_keeps_an_open_modal() {
     let Some(engine) = engine() else { return };
