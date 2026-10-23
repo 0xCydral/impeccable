@@ -1056,8 +1056,11 @@ fn pseudo_layer_paint(dom: &dyn Dom, node: ElId, which: &str) -> Option<Paint> {
         let filter = get("filter");
         // A filter repaints the colours (linear.app's `brightness(0.8)`
         // panel face), which the stops do not say.
+        // A mask can cut a hole where the box looks covered, so the stops
+        // say nothing certain about what is under the run.
         let opaque = (js::trim(&opacity).is_empty() || parse_float(&opacity) >= 0.999)
-            && matches!(js::trim(&filter), "" | "none");
+            && matches!(js::trim(&filter), "" | "none")
+            && !pseudo_masked(dom, node, which);
         return Some(
             match fill.filter(|c| opaque && c.alpha_or_one() >= 0.999) {
                 Some(ground) => gradient_over(&image, ground).unwrap_or(Paint::Unmodelled),
@@ -1075,6 +1078,14 @@ fn pseudo_layer_paint(dom: &dyn Dom, node: ElId, which: &str) -> Option<Paint> {
         return Some(Paint::PseudoFill(c));
     }
     (alpha > 0.1).then_some(Paint::Unmodelled)
+}
+
+/// Whether a pseudo-element's recorded `mask-image` is set: what it paints
+/// is then cut to a shape its box does not give. An unrecorded column (a
+/// capture older than it) reads as unmasked, as before.
+fn pseudo_masked(dom: &dyn Dom, node: ElId, which: &str) -> bool {
+    let mask = dom.pseudo_style(node, which, "maskImage").unwrap_or_default();
+    !matches!(js::trim(&mask), "" | "none")
 }
 
 /// The colours one gradient layer `image` makes over an opaque `ground`, as
@@ -1682,6 +1693,7 @@ pub fn surface_unread(
                 || (dom.contains(n, el) && {
                     let text = dom.direct_text_rect(el).unwrap_or_else(|| dom.rect(el));
                     pseudo_paint_placed(dom, n, &text).is_some_and(|(_, certain)| certain)
+                        && !["::before", "::after"].iter().any(|w| pseudo_masked(dom, n, w))
                 })
         }),
         TextLayers::Covered | TextLayers::UnreadSurface | TextLayers::Undecided => true,
@@ -2572,19 +2584,21 @@ pub fn handed_over_unmeasured(dom: &dyn Dom, el: ElId, snippet: &str) -> bool {
     }
 }
 
-/// One layer of paint the walk cannot model over a run: the colours it
-/// paints, the opacity it paints them at, and its `z-index` where it set
+/// One layer of paint the walk cannot model over a run: what it paints,
+/// bottom to top (its fill, then each background layer, each as the colours
+/// its stops give), the opacity it paints at, and its `z-index` where it set
 /// one.
 struct UnreadPaint {
-    colours: Vec<Rgba>,
+    sublayers: Vec<Vec<Rgba>>,
     opacity: f64,
     z: Option<f64>,
 }
 
 /// The layers of unread paint `found` puts over `text`: its pseudo-elements
-/// that reach the run, else its own gradient. `None` where any of them
-/// paints colours the capture does not give (a raster, an SVG shape, stops
-/// it cannot read).
+/// that reach the run and paint there (not hidden, not faded under 0.1, not
+/// under the box's own opaque fill), else its own gradient. `None` where any
+/// of them paints colours the capture does not give (a raster, an SVG
+/// shape, stops it cannot read).
 fn unread_paint_layers(dom: &dyn Dom, found: ElId, text: &Rect) -> Option<Vec<UnreadPaint>> {
     let opacity_of = |raw: String| {
         let v = parse_float(&raw);
@@ -2595,16 +2609,25 @@ fn unread_paint_layers(dom: &dyn Dom, found: ElId, text: &Rect) -> Option<Vec<Un
         }
     };
     let z_of = |raw: String| Some(parse_float(&raw)).filter(|z| z.is_finite());
-    let read = |image: &str, fill: &str| {
+    let read = |image: &str, fill: &str| -> Option<Vec<Vec<Rgba>>> {
         if URL_RE.is_match(image) {
             return None;
         }
-        let mut colours = parse_gradient_colors(Some(image));
-        if GRADIENT_RE.is_match(image) && colours.is_empty() {
-            return None;
+        let mut sublayers: Vec<Vec<Rgba>> = parse_rgb_or_any(fill).into_iter().map(|c| vec![c]).collect();
+        if GRADIENT_RE.is_match(image) {
+            // The first listed background layer paints on top.
+            for layer in split_top_level_commas(image).iter().rev() {
+                if !layer.contains("gradient(") {
+                    continue;
+                }
+                let stops = parse_gradient_colors(Some(layer));
+                if stops.is_empty() {
+                    return None;
+                }
+                sublayers.push(stops);
+            }
         }
-        colours.extend(parse_rgb_or_any(fill));
-        (!colours.is_empty()).then_some(colours)
+        (!sublayers.is_empty()).then_some(sublayers)
     };
     let mut out = Vec::new();
     if pseudo_paint(dom, found, text).is_some() {
@@ -2615,6 +2638,13 @@ fn unread_paint_layers(dom: &dyn Dom, found: ElId, text: &Rect) -> Option<Vec<Un
             if content.is_empty() || content == "none" || content == "normal" || get("display") == "none" {
                 continue;
             }
+            if get("visibility") == "hidden" {
+                continue;
+            }
+            let opacity = get("opacity");
+            if !js::trim(&opacity).is_empty() && parse_float(&opacity) < 0.1 {
+                continue;
+            }
             let position = get("position");
             if position != "absolute" && position != "fixed" {
                 continue;
@@ -2622,15 +2652,18 @@ fn unread_paint_layers(dom: &dyn Dom, found: ElId, text: &Rect) -> Option<Vec<Un
             if pseudo_box(dom, found, which).is_some_and(|(b, _)| !rects_overlap(&b, text)) {
                 continue;
             }
+            if pseudo_order(dom, found, which) == Order::Under {
+                continue;
+            }
             out.push(UnreadPaint {
-                colours: read(&get("backgroundImage"), &get("backgroundColor"))?,
-                opacity: opacity_of(get("opacity")),
+                sublayers: read(&get("backgroundImage"), &get("backgroundColor"))?,
+                opacity: opacity_of(opacity),
                 z: z_of(get("zIndex")),
             });
         }
     } else {
         out.push(UnreadPaint {
-            colours: read(&dom.style(found, "backgroundImage"), &dom.style(found, "backgroundColor"))?,
+            sublayers: read(&dom.style(found, "backgroundImage"), &dom.style(found, "backgroundColor"))?,
             opacity: own_opacity(dom, found),
             z: None,
         });
@@ -2638,17 +2671,22 @@ fn unread_paint_layers(dom: &dyn Dom, found: ElId, text: &Rect) -> Option<Vec<Un
     (!out.is_empty()).then_some(out)
 }
 
+/// How many ways a stack of washes may combine before the measure gives up
+/// and calls the verdict unmeasured.
+const WASH_COMBINATIONS_MAX: usize = 4096;
+
 /// Whether a verdict of `ink` failing `need` on `ground` measured something
 /// through the unread paint `found` lays over `text` (round 13 decision 2,
 /// "measure through it"). Paint drawn over the text and its ground alike (a
 /// `z-index` above every one on the text's way up, as smartbi.ca's fixed
 /// full-window scrim is) is a cover: it dims both, and a failing ratio of the
 /// text's own colours stays measured at any opacity. Paint under the text is
-/// a wash over the ground: each colour it paints, at its alpha times the
-/// layer's opacity, is composited over the ground, and the ratio stands only
-/// where the ink fails on the ground and on every one of them (opencodex.me's
-/// faint glows over white). A wash the ink passes on somewhere, or paint
-/// whose colours the capture does not give, measured nothing.
+/// a wash over the ground. Its layers stack where they overlap, so the
+/// ratio stands only where the ink fails on the ground and on every way the
+/// washes can combine there: each layer, bottom to top, absent or painting
+/// one of its colours at that colour's alpha times its opacity
+/// (opencodex.me's faint glows over white). A combination the ink passes
+/// on, or paint whose colours the capture does not give, measured nothing.
 fn measured_through(dom: &dyn Dom, el: ElId, found: ElId, text: &Rect, ink: Rgba, ground: Rgba, need: f64) -> bool {
     let Some(layers) = unread_paint_layers(dom, found, text) else {
         return false;
@@ -2671,10 +2709,28 @@ fn measured_through(dom: &dyn Dom, el: ElId, found: ElId, text: &Rect, ink: Rgba
     if !fails(&ground) {
         return false;
     }
-    layers.iter().all(|l| {
-        l.z.is_some_and(|z| z > 0.0 && z > text_z)
-            || l.colours.iter().all(|c| fails(&mix(c, &ground, c.alpha_or_one() * l.opacity)))
-    })
+    // The washes in paint order (a stable sort keeps `::before` under
+    // `::after` at the same `z-index`), each background layer its own step.
+    let mut washes: Vec<&UnreadPaint> =
+        layers.iter().filter(|l| !l.z.is_some_and(|z| z > 0.0 && z > text_z)).collect();
+    washes.sort_by(|a, b| a.z.unwrap_or(0.0).total_cmp(&b.z.unwrap_or(0.0)));
+    let steps: Vec<(&[Rgba], f64)> =
+        washes.iter().flat_map(|l| l.sublayers.iter().map(move |s| (s.as_slice(), l.opacity))).collect();
+    let mut ways = 1usize;
+    for (colours, _) in &steps {
+        ways = ways.saturating_mul(colours.len() + 1);
+        if ways > WASH_COMBINATIONS_MAX {
+            return false;
+        }
+    }
+    fn all_fail(steps: &[(&[Rgba], f64)], under: Rgba, fails: &dyn Fn(&Rgba) -> bool) -> bool {
+        let Some(((colours, opacity), rest)) = steps.split_first() else {
+            return fails(&under);
+        };
+        all_fail(rest, under, fails)
+            && colours.iter().all(|c| all_fail(rest, mix(c, &under, c.alpha_or_one() * opacity), fails))
+    }
+    all_fail(&steps, ground, &fails)
 }
 
 /// Whether two rects share any area.
@@ -5296,6 +5352,22 @@ mod tests {
     }
 
     #[test]
+    fn a_masked_half_is_not_a_ground() {
+        // A mask can cut a hole under the run where the box looks covered,
+        // so the halves' stops decide nothing there.
+        let orange = "linear-gradient(rgba(254, 143, 24, 0) 0%, rgb(254, 143, 24) 100%)";
+        let (mut d, section) = chevron_section("rgb(253, 196, 43)", orange);
+        d.set_pseudo_style(section, "::after", "maskImage", "linear-gradient(black, transparent)");
+        let seam = text_run(&mut d, section, "h2", "Servers", (560.0, 1450.0, 160.0, 30.0));
+        assert_eq!(layer_under_text(&d, seam), LayerUnder::Unmodelled);
+        // Recorded as `none`, the half is read as before.
+        let (mut d, section) = chevron_section("rgb(253, 196, 43)", orange);
+        d.set_pseudo_style(section, "::after", "maskImage", "none");
+        let seam = text_run(&mut d, section, "h2", "Servers", (560.0, 1450.0, 160.0, 30.0));
+        assert!(matches!(layer_under_text(&d, seam), LayerUnder::Gradient { .. }));
+    }
+
+    #[test]
     fn a_skew_is_certain_only_whatever_its_origin() {
         // A dark band skewed by -6deg. About its centre it reaches down to
         // the copy at x 1000; about `0 0`, which the capture does not record,
@@ -5459,6 +5531,45 @@ mod tests {
         // failing ratio against #ccc measured nothing.
         let (d, p) = washed("rgb(204, 204, 204)", 0.5);
         assert!(handed_over_unmeasured(&d, p, "1.6:1 (need 4.5:1) — text #ffffff on #cccccc"));
+    }
+
+    #[test]
+    fn washes_that_overlap_stack() {
+        let verdict = "1.2:1 (need 4.5:1) — text #ffffff on #eeeeee";
+        // One black wash at 0.42 leaves about #8a8a8a, where white fails.
+        let (mut d, p) = washed("rgb(238, 238, 238)", 0.42);
+        assert!(!handed_over_unmeasured(&d, p, verdict));
+        // A second one over it leaves about #505050, where white passes:
+        // the ratio against #eee measured nothing.
+        let section = d.parent(d.parent(p).unwrap()).unwrap();
+        for (prop, value) in [
+            ("content", "\"\""),
+            ("position", "absolute"),
+            ("display", "block"),
+            ("opacity", "1"),
+            ("top", "0px"),
+            ("left", "0px"),
+            ("width", "1280px"),
+            ("height", "150px"),
+            ("backgroundColor", "rgba(0, 0, 0, 0)"),
+            ("backgroundImage", "linear-gradient(rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0.42))"),
+            ("zIndex", "auto"),
+        ] {
+            d.set_pseudo_style(section, "::after", prop, value);
+        }
+        assert!(handed_over_unmeasured(&d, p, verdict), "two washes");
+        // The second one hidden, or faded out, paints nothing there.
+        d.set_pseudo_style(section, "::after", "visibility", "hidden");
+        assert!(!handed_over_unmeasured(&d, p, verdict), "hidden");
+        d.set_pseudo_style(section, "::after", "visibility", "visible");
+        d.set_pseudo_style(section, "::after", "opacity", "0");
+        assert!(!handed_over_unmeasured(&d, p, verdict), "at opacity 0");
+        // Two layers in one background stack the same way.
+        let (mut d, p) = washed("rgb(238, 238, 238)", 0.42);
+        let section = d.parent(d.parent(p).unwrap()).unwrap();
+        let two = "linear-gradient(rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0.42)), linear-gradient(rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0.42))";
+        d.set_pseudo_style(section, "::before", "backgroundImage", two);
+        assert!(handed_over_unmeasured(&d, p, verdict), "two background layers");
     }
 
     #[test]

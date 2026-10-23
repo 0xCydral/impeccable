@@ -104,7 +104,7 @@
       transform: skewY(-12deg); transform-origin: 0 0; z-index: -1; }
     .diagonal p { position: absolute; margin: 0; width: 120px; font: 400 16px/20px system-ui, sans-serif; }
     #flag-pale-below-skewed-edge { left: 300px; top: 140px; color: #cdcdcd; }
-    #pass-pale-on-skewed-band { left: 40px; top: 140px; color: #cccccc; }
+    #pass-pale-on-skewed-band { left: 40px; top: 140px; color: #cccccc; white-space: nowrap; } /* one short line whatever the font, inside the band for every origin */
 
     /* A headline and a copy of it in the same place. */
     .echo { position: relative; width: 560px; height: 72px; }
@@ -147,7 +147,7 @@
       <div class="case">
         <span class="button parked" id="pass-label-over-parked-face">Download</span>
       </div>
-      <div class="case diagonal"><p id="pass-pale-on-skewed-band">Pale copy on the band</p></div>
+      <div class="case diagonal"><p id="pass-pale-on-skewed-band">Pale on band</p></div>
       <div class="case">
         <p class="stat" id="pass-stat-clipped-on-two-layers">135+</p>
       </div>
