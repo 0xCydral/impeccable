@@ -1049,6 +1049,29 @@ fn is_disclosure_widget<N: ContextNode>(c: &N) -> bool {
 /// body (about a screen of 14px text).
 pub const LEGAL_PAGE_MIN_CHARS: usize = 2000;
 
+/// [`rendered_text_chars`] without hidden subtrees (a `hidden` attribute,
+/// `aria-hidden="true"` or `display: none`): a hidden mobile copy of a
+/// policy is not text a visitor reads, on either side of the comparison.
+fn visible_text_chars<N: ContextNode>(n: &N, cap: usize) -> usize {
+    let mut count = 0usize;
+    let mut stack = vec![n.clone()];
+    while let Some(e) = stack.pop() {
+        if count > cap {
+            break;
+        }
+        if SOURCE_TEXT_TAGS.contains(&e.tag().as_str())
+            || e.attr("hidden").is_some()
+            || e.attr("aria-hidden").is_some_and(|v| v.trim().eq_ignore_ascii_case("true"))
+            || e.style("display").trim() == "none"
+        {
+            continue;
+        }
+        count += e.direct_text().chars().filter(|ch| !ch.is_whitespace()).count();
+        stack.extend(e.children());
+    }
+    count
+}
+
 /// Whether a box marked as a legal block is a policy page's own body text
 /// rather than a block on the page: it sits under no `footer` or
 /// `role="contentinfo"`, holds at least [`LEGAL_PAGE_MIN_CHARS`]
@@ -1065,11 +1088,11 @@ fn is_legal_page_body<N: ContextNode>(el: &N, marked: &N) -> bool {
         root = c.clone();
         cur = c.parent();
     }
-    let own = rendered_text_chars(marked, usize::MAX);
+    let own = visible_text_chars(marked, usize::MAX);
     if own < LEGAL_PAGE_MIN_CHARS {
         return false;
     }
-    let page = rendered_text_chars(&root, own.saturating_mul(2).saturating_add(1));
+    let page = visible_text_chars(&root, own.saturating_mul(2).saturating_add(1));
     page > 0 && own * 2 >= page
 }
 
@@ -1189,6 +1212,9 @@ pub fn fine_print<N: ContextNode>(el: &N) -> FinePrint {
     // The walk climbs past a `small` or a weaker marker: mercury.com sets
     // its banner disclaimer in a `small` inside `#disclaimer-banner`.
     let mut found = FinePrint::No;
+    // Every legal-marked box in reach, inner first: an inner `p.footnote`
+    // inside a marked accordion or policy body is demoted with it.
+    let mut legal: Vec<N> = Vec::new();
     let mut cur = Some(el.clone());
     for _ in 0..=FINE_PRINT_MARKER_DEPTH {
         let Some(c) = cur else { break };
@@ -1198,17 +1224,20 @@ pub fn fine_print<N: ContextNode>(el: &N) -> FinePrint {
         }
         let marker = fine_print_marker(&c.class_list()).max(fine_print_marker(&c.id_attr()));
         if marker == FinePrint::Exempt {
-            // An accordion panel and a policy page's body are demoted, not
-            // dropped (decision 3 review, round 13).
-            if is_disclosure_widget(&c) || is_legal_page_body(el, &c) {
-                return FinePrint::Advisory;
-            }
-            return FinePrint::Exempt;
-        }
-        if tag == "small" || marker == FinePrint::Advisory {
+            legal.push(c.clone());
+        } else if tag == "small" || marker == FinePrint::Advisory {
             found = FinePrint::Advisory;
         }
         cur = c.parent();
+    }
+    if let Some(outer) = legal.last() {
+        // An accordion panel and a policy page's body are demoted, not
+        // dropped (decision 3 review, round 13). The outermost marked box
+        // holds the most text, so it alone settles the policy-page test.
+        if legal.iter().any(is_disclosure_widget) || is_legal_page_body(el, outer) {
+            return FinePrint::Advisory;
+        }
+        return FinePrint::Exempt;
     }
     if found == FinePrint::No && opens_with_footnote_mark(el) {
         found = FinePrint::Advisory;
@@ -2343,6 +2372,14 @@ mod tests {
         faq.add("button").attr("aria-expanded", "true").text("How do refunds work?");
         let p = faq.add("div").add("p").text("Refunds go back to the card you paid with.");
         assert_eq!(fine_print(&p), FinePrint::Advisory);
+        // An inner marker does not hide the marked accordion around it.
+        let acc = body.add("details").class("footer-footnote-accordion");
+        acc.add("summary").text("Rates");
+        let p = acc.add("p").class("footnote").text("Rates apply to new customers and may change at any time.");
+        assert_eq!(fine_print(&p), FinePrint::Advisory);
+        // Should-flag twin: the same inner marker under a plain box is exempt.
+        let p = body.add("div").add("p").class("footnote").text("Rates apply to new customers and may change at any time.");
+        assert_eq!(fine_print(&p), FinePrint::Exempt);
     }
 
     #[test]
@@ -2369,6 +2406,30 @@ mod tests {
         let body = body.font(14.0);
         body.add("main").add("p").font(16.0).text(&long.repeat(2));
         let p = body.add("div").class("disclaimers").add("p").text(&long);
+        assert_eq!(fine_print(&p), FinePrint::Exempt);
+        // A marked paragraph inside a marked policy body: the outer box
+        // settles it.
+        let (_t, body) = Tree::new();
+        let body = body.font(14.0);
+        body.add("h1").font(32.0).text("Privacy policy");
+        let policy = body.add("div").class("legal-content");
+        let p = policy.add("p").class("legal-paragraph").text("Offer subject to credit approval.");
+        policy.add("p").class("legal-paragraph").text(&long);
+        assert_eq!(fine_print(&p), FinePrint::Advisory);
+        // A hidden copy of the policy is not page text.
+        let (_t, body) = Tree::new();
+        let body = body.font(14.0);
+        body.add("h1").font(32.0).text("Privacy policy");
+        let p = body.add("div").class("legal-content").add("p").text(&long);
+        body.add("div").attr("hidden", "").class("legal-content-mobile").add("p").text(&long);
+        assert_eq!(fine_print(&p), FinePrint::Advisory);
+        // Should-flag twin: the same copy left visible is half the page, and
+        // the policy is a block on it.
+        let (_t, body) = Tree::new();
+        let body = body.font(14.0);
+        body.add("h1").font(32.0).text("Privacy policy");
+        let p = body.add("div").class("legal-content").add("p").text(&long);
+        body.add("div").class("legal-content-mobile").add("p").text(&long);
         assert_eq!(fine_print(&p), FinePrint::Exempt);
     }
 

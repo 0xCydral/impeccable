@@ -95,18 +95,18 @@ fn fine_print_is_advisory_and_a_consent_label_fails() {
     let f = scan_fixture("fine-print.html");
     // Advisory under tiny-text: a small element, an asterisk, a leading
     // sup, an input hint in a small, a terms row, a disclosure widget's
-    // panel, a footnote accordion and a `text-footnote` class. A legal class, a
+    // panel, a footnote accordion, a footnote inside it and a `text-footnote` class. A legal class, a
     // disclaimer id, a paragraph under a marked list, a disclaimer banner
     // and a footnote report no tiny-text (decision 3, round 13).
-    assert_eq!(count(&f, "tiny-text", true), 8, "{f:#?}");
+    assert_eq!(count(&f, "tiny-text", true), 9, "{f:#?}");
     for quote in ["Requires a new line", "Offer available through", "Trade-in values vary", "Mercury is a financial", "for how the annual yield"] {
         assert!(
             !f.iter().any(|x| x.antipattern == "tiny-text" && x.snippet.contains(quote)),
             "{quote}: {f:#?}"
         );
     }
-    // tight-leading stays advisory in both tiers: the thirteen 11px rows.
-    assert_eq!(count(&f, "tight-leading", true), 13, "{f:#?}");
+    // tight-leading stays advisory in both tiers: the fourteen 11px rows.
+    assert_eq!(count(&f, "tight-leading", true), 14, "{f:#?}");
     // Links inside a footnote and a terms row keep undersized-ui-text.
     for quote in ["rate disclosure", "Privacy"] {
         let links: Vec<&str> = f
