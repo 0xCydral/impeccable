@@ -705,11 +705,14 @@ const RELAYOUT_PAGE: &str = r#"<!DOCTYPE html>
   .head { height: 60px; background: #ffffff; }
   .bar { position: sticky; top: 0; height: 50px; background: #d00000; }
   .later { position: sticky; top: 0; height: 50px; background: #0030d0; }
+  .third { position: sticky; top: 64px; height: 50px; background: #8000c0; }
+  .fourth { position: sticky; top: 0; height: 50px; background: #ff8c00; }
   .section { height: 4000px; }
 </style></head><body>
 <div class="head"></div><div class="bar"></div>
 <div class="main"><div class="block"></div><div class="row"></div><div class="row"></div><div class="tall"></div></div>
-<div class="section"><div class="later"></div></div>
+<div class="section"><div class="later"></div><div style="height: 820px"></div><div class="third"></div></div>
+<div style="height: 50px"></div><div class="section" style="height: 1000px"><div class="fourth"></div></div>
 <script>
   addEventListener('resize', () => {
     document.body.classList.add('folded');
@@ -766,15 +769,30 @@ fn a_page_that_relays_itself_for_the_capture_is_stitched() {
     assert!(share(&img, [0.0, 65.0, 1280.0, 40.0], red) > 0.9, "the bar is missing where it sits");
     let later_top = 60.0 + 50.0 + 300.0 + 2.0 * 220.0 + 1500.0;
     assert!(share(&img, [0.0, later_top + 5.0, 1280.0, 40.0], blue) > 0.9, "the later bar is missing where it sits");
+    // A bar whose section starts 20px into a tile sticks at 64px there: that
+    // tile is the only one that paints it, so it stays (it shows 44px low).
+    let purple = |p: [u8; 3]| p[0] > 90 && p[0] < 170 && p[1] < 50 && p[2] > 150;
+    let third_tile = 4.0 * 800.0;
+    assert_eq!(later_top + 50.0 + 820.0, third_tile + 20.0);
+    assert!(share(&img, [0.0, third_tile + 69.0, 1280.0, 40.0], purple) > 0.9, "the bar stuck on its own tile is missing");
+    // A bar that sits at its offset only because its section starts on a
+    // tile's top edge is in place there, not stuck, and stays.
+    let orange = |p: [u8; 3]| p[0] > 220 && p[1] > 100 && p[1] < 180 && p[2] < 60;
+    let fourth_top = later_top + 4000.0 + 50.0;
+    assert_eq!(fourth_top, 8.0 * 800.0);
+    assert!(share(&img, [0.0, fourth_top + 5.0, 1280.0, 40.0], orange) > 0.9, "the bar on a tile edge is missing");
     let tiles = (shot.height / 800.0).ceil() as usize;
     for tile in 1..tiles {
         let top = tile as f64 * 800.0;
-        if (top - later_top).abs() < 60.0 {
+        if (top - later_top).abs() < 60.0 || (top - fourth_top).abs() < 60.0 {
             continue;
         }
         let row = [0.0, top + 5.0, 1280.0, 40.0];
         assert!(share(&img, row, red) < 0.1, "the stuck bar repeats on tile {tile}");
         assert!(share(&img, row, blue) < 0.1, "the later bar repeats on tile {tile}");
+        if top > third_tile {
+            assert!(share(&img, [0.0, top + 69.0, 1280.0, 40.0], purple) < 0.1, "the third bar repeats on tile {tile}");
+        }
     }
 }
 
@@ -955,6 +973,40 @@ const MODAL_PAGE: &str = r#"<!DOCTYPE html>
 <dialog id="modal"><p>Subscribe</p></dialog>
 <script>document.getElementById('modal').showModal();</script>
 </body></html>"#;
+
+/// An `aria-modal` dialog laid out normally inside a fixed backdrop: the
+/// backdrop is the fixed layer the walk meets, and it holds the modal.
+const WRAPPED_MODAL_PAGE: &str = r#"<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Wrapped modal</title>
+<style>
+  body { margin: 0; background: #ffffff; color: #111111; font: 16px/1.5 Arial, sans-serif; }
+  .spacer { height: 4000px; }
+  .tiny { margin: 40px 20px; width: 300px; height: 60px; font-size: 9px; color: #222222; background: #ffffff; }
+  .backdrop { position: fixed; inset: 0; z-index: 50; background: #d00000; }
+  .panel { margin: 20px; height: 80px; background: #2050c0; }
+</style></head><body>
+<h1>A long read</h1><div class="spacer"></div>
+<p class="tiny" id="under-wrapped-modal">Small print under an open modal.</p>
+<div class="spacer" style="height: 1200px"></div>
+<div class="backdrop"><div class="panel" role="dialog" aria-modal="true">Subscribe</div></div>
+</body></html>"#;
+
+#[test]
+fn an_element_shot_keeps_a_modal_wrapped_in_a_fixed_backdrop() {
+    let Some(engine) = engine() else { return };
+    let request = EvidenceRequest {
+        max_screenshot_height: 1500.0,
+        ..EvidenceRequest::default()
+    };
+    let (_, evidence) = scan_page(&engine, WRAPPED_MODAL_PAGE, (390, 844), &request);
+    let Some(shot) = evidence.element_shots.iter().find(|s| s.selector == "#under-wrapped-modal") else {
+        return;
+    };
+    assert!(shot.hidden_covers.is_empty(), "{:?}", shot.hidden_covers);
+    let img = decode(&shot.jpeg_base64);
+    let r = share(&img, shot.rect, red);
+    assert!(r > 0.8, "the modal's backdrop was hidden: {r}");
+}
 
 #[test]
 fn an_element_shot_keeps_an_open_modal() {

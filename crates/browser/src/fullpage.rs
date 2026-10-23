@@ -298,6 +298,19 @@ const SCROLL_TO_JS: &str = r#"(async ({ x, y, useScroller, hideFixed, docY }) =>
   // lands on every tile; a beyond-viewport capture shows it once, at the top.
   // Every tile after the first hides it, by opacity, since a child can
   // override a hidden parent's visibility.
+  // A sticky box the document's scroll has stuck at its `top` offset, whose
+  // own place in the document is above this tile, so an earlier tile painted
+  // it there. `anchorTop` is where it sat on the anchor tile. A box only at
+  // its offset because its section starts there, or stuck on the tile its
+  // section starts on, is painted on this tile and stays.
+  const stuckSincePainted = (node, r, anchorTop) => {
+    const cs = getComputedStyle(node);
+    if (cs.position !== 'sticky') return false;
+    const offset = parseFloat(cs.top);
+    if (!Number.isFinite(offset) || Math.abs(r.top - offset) >= 0.5) return false;
+    const anchors = window.__impeccableShotAnchors;
+    return !!anchors && anchors.y + anchorTop < pos.y - 0.5;
+  };
   if (hideFixed && !window.__impeccableShotHidden) {
     const hidden = [];
     const hide = node => {
@@ -330,37 +343,27 @@ const SCROLL_TO_JS: &str = r#"(async ({ x, y, useScroller, hideFixed, docY }) =>
     // (a section bar under a header that scrolls away).
     const anchors = window.__impeccableShotAnchors;
     if (anchors && Math.abs(pos.x - anchors.x) + Math.abs(pos.y - anchors.y) >= 1) {
-      const stuck = (node, r) => {
-        if (el) return false;
-        const cs = getComputedStyle(node);
-        if (cs.position !== 'sticky') return false;
-        const offset = parseFloat(cs.top);
-        return Number.isFinite(offset) && Math.abs(r.top - offset) < 0.5;
-      };
       for (const [node, left, top] of anchors.boxes) {
         if (!node.isConnected || (el && holds(node, el))) continue;
         const r = node.getBoundingClientRect();
         if (r.width < 1 || r.height < 1) continue;
-        if (Math.abs(r.left - left) + Math.abs(r.top - top) < 0.5 || stuck(node, r)) hide(node);
+        if (Math.abs(r.left - left) + Math.abs(r.top - top) < 0.5 || (!el && stuckSincePainted(node, r, top))) hide(node);
       }
     }
     window.__impeccableShotHidden = hidden;
     await frame();
   } else if (hideFixed && !el && window.__impeccableShotHidden && window.__impeccableShotAnchors) {
     // Each later tile: a sticky box that sticks only now (a section bar
-    // further down) goes too. Once hidden it stays hidden: its place at the
-    // top of its section is on an earlier tile.
+    // further down) goes too, once its place at the top of its section is on
+    // an earlier tile. Once hidden it stays hidden.
     const hidden = window.__impeccableShotHidden;
     const done = new Set(hidden.map(h => h[0]));
     let added = false;
-    for (const [node] of window.__impeccableShotAnchors.boxes) {
+    for (const [node, , top] of window.__impeccableShotAnchors.boxes) {
       if (done.has(node) || !node.isConnected) continue;
-      const cs = getComputedStyle(node);
-      if (cs.position !== 'sticky') continue;
       const r = node.getBoundingClientRect();
       if (r.width < 1 || r.height < 1) continue;
-      const offset = parseFloat(cs.top);
-      if (!Number.isFinite(offset) || Math.abs(r.top - offset) >= 0.5) continue;
+      if (!stuckSincePainted(node, r, top)) continue;
       hidden.push([node, node.style.getPropertyValue('opacity'), node.style.getPropertyPriority('opacity')]);
       node.style.setProperty('opacity', '0', 'important');
       added = true;
@@ -551,7 +554,10 @@ const HIDE_COVERS_JS: &str = r#"(async (resolve, { selector, identity, node }, c
     }
     return false;
   };
-  const covers = [...layers].filter(layer => !scrollsAlong(layer) && !modal(layer));
+  // A fixed backdrop that wraps an open dialog is the modal too: hiding it
+  // would take the dialog with it.
+  const holdsModal = layer => modal(layer) || !!layer.querySelector('dialog[open], [aria-modal="true"]');
+  const covers = [...layers].filter(layer => !scrollsAlong(layer) && !holdsModal(layer));
   if (check) {
     // Whether the last tile serves this element too: it hid every layer
     // over this one, and none that holds it.
