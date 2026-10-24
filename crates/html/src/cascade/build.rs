@@ -499,11 +499,12 @@ fn pseudo_paints_a_box(decls: &IndexMap<String, String>) -> bool {
 }
 
 /// Whether a `::before` / `::after` rule names the geometry, the paint, or
-/// the box the merged read below needs, so its matches are worth looking
-/// up: a rule naming only `content` (an icon font's) cannot complete an
-/// overlay on its own and merges on its own selector alone, while one
-/// taking the box away (`content: none`, `display: none`, `visibility`,
-/// `opacity`) can undo one and is looked up.
+/// the box's visibility the merged read below needs, so its matches are
+/// worth looking up over the document. A rule naming only `content` (an
+/// icon font's, by the thousand) cannot complete an overlay on its own; it
+/// is matched against the elements those rules found instead, since one
+/// that turns the box on or off from another selector must reach the
+/// merge too.
 fn names_pseudo_paint_or_geometry(decls: &IndexMap<String, (String, DeclMeta)>) -> bool {
     [
         "position",
@@ -523,9 +524,6 @@ fn names_pseudo_paint_or_geometry(decls: &IndexMap<String, (String, DeclMeta)>) 
     ]
     .iter()
     .any(|key| decls.contains_key(*key))
-        || decls
-            .get("content")
-            .is_some_and(|(value, _)| content_generates_no_box(value))
 }
 
 /// The sampled path's marks (#560) on a pseudo stretched over its element
@@ -750,6 +748,32 @@ pub fn build_static_style_map(
                     let merged = pseudo_by_node.entry((id, *after)).or_default();
                     for (key, (value, meta)) in decls {
                         put_pseudo_decl(merged, key, value, meta);
+                    }
+                }
+            }
+            // A rule naming only `content` is matched against those
+            // elements alone, never looked up over the document: one that
+            // turns the box on (`.enabled::before { content: '' }`) or off
+            // from another selector merges where it matches.
+            let candidates: Vec<NodeId> = {
+                let mut ids: Vec<NodeId> = pseudo_by_node.keys().map(|(id, _)| *id).collect();
+                ids.dedup();
+                ids
+            };
+            if !candidates.is_empty() {
+                for ((base, after), decls) in &pseudo_merged {
+                    if names_pseudo_paint_or_geometry(decls) || !decls.contains_key("content") {
+                        continue;
+                    }
+                    let Some(ids) = doc.matching_ids_quiet(base, &candidates) else {
+                        continue;
+                    };
+                    for id in ids {
+                        if let Some(merged) = pseudo_by_node.get_mut(&(id, *after)) {
+                            for (key, (value, meta)) in decls {
+                                put_pseudo_decl(merged, key, value, meta);
+                            }
+                        }
                     }
                 }
             }

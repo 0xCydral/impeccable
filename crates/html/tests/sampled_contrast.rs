@@ -1615,3 +1615,20 @@ fn a_shorthand_color_the_engine_cannot_read_is_paint() {
     let found = site.contrast(css, body);
     assert!(sampled_on("light.png", &found), "{found:?}");
 }
+
+#[test]
+fn a_content_only_rule_on_another_selector_switches_the_box() {
+    let site = Site::new("content-switch");
+    // The geometry and paint sit on `.hero::before` with the box off; a
+    // content-only rule on another selector turns it on for this element.
+    let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: none; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.7); } .enabled::before { content: ''; } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, "<div class=\"hero enabled\"><p>White copy</p></div>");
+    assert!(found.is_empty(), "{found:?}");
+    // Without the enabling class, the box stays off and the image samples.
+    let found = site.contrast(css, "<div class=hero><p>White copy</p></div>");
+    assert!(sampled_on("light.png", &found), "{found:?}");
+    // And the other way round: a content-only rule turns the box off.
+    let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.7); } .plain::before { content: none; } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, "<div class=\"hero plain\"><p>White copy</p></div>");
+    assert!(sampled_on("light.png", &found), "{found:?}");
+}

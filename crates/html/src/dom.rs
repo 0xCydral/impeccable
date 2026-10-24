@@ -300,6 +300,24 @@ impl StaticDocument {
         )
     }
 
+    /// The ids among `candidates` whose element matches `selector`, parsed
+    /// quietly like [`Self::select_ids_quiet`]; `None` when the matcher
+    /// refuses it. For a selector tested against a handful of elements
+    /// rather than the whole document.
+    pub fn matching_ids_quiet(&self, selector: &str, candidates: &[NodeId]) -> Option<Vec<NodeId>> {
+        let sel = Selector::parse(selector).ok()?;
+        Some(
+            candidates
+                .iter()
+                .copied()
+                .filter(|id| {
+                    self.element(*id)
+                        .is_some_and(|el| sel.matches(&El(el.node)))
+                })
+                .collect(),
+        )
+    }
+
     /// JS `document.querySelector(selector)`.
     pub fn query_selector(&self, selector: &str) -> Option<StaticElement<'_>> {
         match self.compile(selector) {
