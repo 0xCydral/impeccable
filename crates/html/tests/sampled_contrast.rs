@@ -1470,3 +1470,68 @@ fn a_custom_property_that_adds_layers_leaves_the_level_unknown() {
     let found = site.contrast(css, body);
     assert!(sampled_on("light.png", &found), "{found:?}");
 }
+
+#[test]
+fn a_cleared_image_leaves_a_pseudo_painting_nothing() {
+    let site = Site::new("cleared-image");
+    let body = "<div class=hero><p>White copy</p></div>";
+    // The shorthand named a picture; a later `background-image: none` takes
+    // it away and the shorthand named no color, so the pseudo paints
+    // nothing and the host's image stays the ground.
+    let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; background: url(dark.png); } .hero::before { background-image: none; } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
+    // The shorthand's color stays when only the image is cleared.
+    let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; background: #000 url(dark.png); } .hero::before { background-image: none; } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(found.is_empty(), "{found:?}");
+    // A shorthand held in a custom property is read once resolved: a
+    // gradient in it is an image, cleared by the later longhand too.
+    let css = ":root { --scrim: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.7)); } .hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; background: var(--scrim); } .hero::before { background-image: none; } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
+    let css = ":root { --scrim: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.7)); } .hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; background: var(--scrim); } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn a_side_declared_later_moves_the_pseudo_off_the_box() {
+    let site = Site::new("shifted-pseudo");
+    let body = "<div class=hero><p>White copy</p></div>";
+    // `inset: 0` in one rule and `top: 200px` in a later one: the pseudo
+    // starts below the heading, so it is not read as an overlay over it.
+    let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.5); } .hero::before { top: 200px; } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
+    // The same two declarations in one rule read the same way.
+    let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; top: 200px; background: rgba(0, 0, 0, 0.5); } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
+    // A later rule that puts the side back to zero restores the overlay.
+    let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; top: 200px; background: rgba(0, 0, 0, 0.5); } .hero::before { top: 0; } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn a_wash_clipped_to_the_content_box_is_not_known_to_tint() {
+    let site = Site::new("clipped-wash");
+    let body = "<div class=hero><div class=wrap><p>Ink</p></div></div>";
+    // A wrapper's translucent color clipped to its content box leaves its
+    // padding untinted, and without layout the walk cannot tell text in the
+    // padding from text in the content box: it stops rather than darken
+    // every sample.
+    for clip in ["content-box", "text", "border-box, content-box"] {
+        let css = format!(".hero {{ background: url(light.png); }} .wrap {{ padding: 24px; background: rgba(23, 21, 15, 0.7); background-clip: {clip}; }} p {{ color: #262421; }}");
+        let found = site.contrast(&css, body);
+        assert!(found.is_empty(), "{clip}: {found:?}");
+    }
+    // Clipped to the padding or border box, or to the content box without
+    // padding, the wash covers the box and tints every sample.
+    for (clip, padding) in [("padding-box", "24px"), ("border-box", "24px"), ("content-box", "0")] {
+        let css = format!(".hero {{ background: url(light.png); }} .wrap {{ padding: {padding}; background: rgba(23, 21, 15, 0.7); background-clip: {clip}; }} p {{ color: #262421; }}");
+        let found = site.contrast(&css, body);
+        assert!(sampled_on("light.png", &found), "{clip} {padding}: {found:?}");
+    }
+}

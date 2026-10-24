@@ -9,7 +9,7 @@
 //! (`customPropMap` is `null`, `overrides` is `null`).
 
 use super::checks_shim::CustomProps;
-use super::shorthand::{expand_shorthand_slot, names_background_geometry};
+use super::shorthand::{background_paint_parts, expand_shorthand_slot, names_background_geometry};
 use super::{
     apply_static_declaration, collect_static_css_rules, collect_static_css_rules_from,
     compare_static_priority, is_static_inherited_prop, make_default_style,
@@ -292,18 +292,48 @@ fn resolve_root(raw: &str, root: &impeccable_core::checks::css_scan::CustomProps
     measures::resolve_var_refs(raw, &lookup, 0)
 }
 
+/// The four sides an `inset` shorthand sets, top, right, bottom, left, as
+/// CSS reads one to four values. Anything else (nothing, or more than four
+/// values) is handed to every side as it came, which no side reads as zero.
+fn inset_sides(value: &str) -> [String; 4] {
+    let raw = js::trim(value);
+    let parts: Vec<&str> = if raw.is_empty() {
+        Vec::new()
+    } else {
+        WS_SPLIT_RE.split(raw).collect()
+    };
+    let s = |i: usize| parts[i].to_string();
+    match parts.len() {
+        1 => [s(0), s(0), s(0), s(0)],
+        2 => [s(0), s(1), s(0), s(1)],
+        3 => [s(0), s(1), s(2), s(1)],
+        4 => [s(0), s(1), s(2), s(3)],
+        _ => [raw.to_string(), raw.to_string(), raw.to_string(), raw.to_string()],
+    }
+}
+
+const SIDES: [&str; 4] = ["top", "right", "bottom", "left"];
+
 /// The declarations of one `::before` / `::after` rule, by lowercased
-/// property.
+/// property, with `inset` expanded to its four sides in declaration order
+/// so a side named later wins, as it does in CSS.
 fn pseudo_decls(rule: &CssRule) -> IndexMap<String, String> {
     let mut decls: IndexMap<String, String> = IndexMap::new();
     for d in &rule.declarations {
-        decls.insert(js::to_lower_case(&d.prop), d.value.clone());
+        let key = js::to_lower_case(&d.prop);
+        if key == "inset" {
+            for (side, value) in SIDES.iter().zip(inset_sides(&d.value)) {
+                decls.insert(side.to_string(), value);
+            }
+        }
+        decls.insert(key, d.value.clone());
     }
     decls
 }
 
 /// Whether a pseudo with these declarations is stretched over its element:
-/// positioned, and inset to every edge or 100% by 100%.
+/// positioned, and at zero on every side (`inset` having been expanded into
+/// the sides) or 100% by 100%.
 fn pseudo_covers_box(decls: &IndexMap<String, String>) -> bool {
     let get = |k: &str| decls.get(k).map(|s| s.as_str());
     let pseudo_pos = js::to_lower_case(get("position").unwrap_or(""));
@@ -311,14 +341,7 @@ fn pseudo_covers_box(decls: &IndexMap<String, String>) -> bool {
         return false;
     }
     let zero_len = |v: Option<&str>| v.is_some_and(|s| ZERO_LEN_RE.is_match(js::trim(s)));
-    let inset_raw = js::trim(get("inset").unwrap_or(""));
-    (!inset_raw.is_empty()
-        && WS_SPLIT_RE
-            .split(inset_raw)
-            .all(|t| ZERO_LEN_RE.is_match(t)))
-        || ["top", "right", "bottom", "left"]
-            .iter()
-            .all(|side| zero_len(get(side)))
+    SIDES.iter().all(|side| zero_len(get(side)))
         || (js::trim(get("width").unwrap_or("")) == "100%"
             && js::trim(get("height").unwrap_or("")) == "100%")
 }
@@ -411,22 +434,35 @@ fn put_pseudo_decl(
 
 /// One declaration of a rule into a merged pseudo map. A `background`
 /// shorthand also takes the `background-color` and `background-image`
-/// keys, since it resets both longhands: a longhand declared before it
+/// keys, with the color and the image list it names
+/// (`background_paint_parts`: `transparent` and `none` where it names
+/// neither), since it resets both longhands: a longhand declared before it
 /// loses its slot, one declared after it wins the slot back, and the
-/// readers below prefer the longhand key. Winners already expanded this
-/// way merge key by key (`put_pseudo_decl`), never through here again: a
-/// replay would hand a longhand's slot back to a shorthand of the same
-/// priority that it had already beaten.
+/// readers below prefer the longhand key. `inset` takes the four side keys
+/// the same way. Winners already expanded this way merge key by key
+/// (`put_pseudo_decl`), never through here again: a replay would hand a
+/// longhand's slot back to a shorthand of the same priority that it had
+/// already beaten. The shorthand is resolved against the root's custom
+/// properties before it is split, so `var(--scrim)` holding a gradient
+/// lands in the image slot alone.
 fn merge_pseudo_decl(
     map: &mut IndexMap<String, (String, DeclMeta)>,
     key: &str,
     value: &str,
     meta: &DeclMeta,
+    root_custom_props: &impeccable_core::checks::css_scan::CustomProps,
 ) {
     put_pseudo_decl(map, key, value, meta);
     if key == "background" {
-        put_pseudo_decl(map, "background-color", value, meta);
-        put_pseudo_decl(map, "background-image", value, meta);
+        // Resolved first, so a `var()` holding a gradient or a color reads
+        // as that and not as one unreadable value in both slots.
+        let (color, image) = background_paint_parts(&resolve_root(value, root_custom_props));
+        put_pseudo_decl(map, "background-color", &color, meta);
+        put_pseudo_decl(map, "background-image", &image, meta);
+    } else if key == "inset" {
+        for (side, side_value) in SIDES.iter().zip(inset_sides(value)) {
+            put_pseudo_decl(map, side, &side_value, meta);
+        }
     }
 }
 
@@ -584,7 +620,13 @@ pub fn build_static_style_map(
                                 order: rule.order,
                                 inline: false,
                             };
-                            merge_pseudo_decl(merged, &js::to_lower_case(&d.prop), &d.value, &meta);
+                            merge_pseudo_decl(
+                                merged,
+                                &js::to_lower_case(&d.prop),
+                                &d.value,
+                                &meta,
+                                &root_custom_props,
+                            );
                         }
                         continue;
                     }

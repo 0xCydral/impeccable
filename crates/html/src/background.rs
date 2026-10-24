@@ -997,6 +997,32 @@ pub(crate) fn layer_inset_by_padding(
     )
 }
 
+/// Whether an element's own color, which the last `background-clip` entry
+/// clips, may leave part of the box to what is beneath it: clipped to the
+/// content box (or by an entry still holding a `var()`) with padding on
+/// any side not known to be zero, so the padding is untinted, or clipped to
+/// the text, so it paints glyphs and no ground at all. Without layout the
+/// walk cannot tell text in the padding from text in the content box, so a
+/// wash so clipped is not known to tint every sample.
+fn color_leaves_box(style: &StyleValues) -> bool {
+    let last = background_clip(style)
+        .rsplit(',')
+        .next()
+        .map(js::trim)
+        .unwrap_or("");
+    let names = |keyword: &str| {
+        last.split_whitespace()
+            .any(|token| token.eq_ignore_ascii_case(keyword))
+    };
+    if names("text") {
+        return true;
+    }
+    (last.contains("var(") || names("content-box"))
+        && ["paddingTop", "paddingRight", "paddingBottom", "paddingLeft"]
+            .iter()
+            .any(|side| !zero_length(sv(style, side)))
+}
+
 /// A padding the box does not have: zero in any unit. What layout would
 /// have to resolve (`var()`, `calc()`) is not known to be zero.
 fn zero_length(value: &str) -> bool {
@@ -1048,6 +1074,12 @@ pub fn analyze_level(cur: &StaticElement<'_>) -> LevelPaint {
         return LevelPaint::Stop;
     }
     let color = bg.filter(|c| a_gt(c, 0.1));
+    // A color clipped away from part of the box does not tint every sample
+    // as a wash, nor lie under every pixel of an image above it: the walk
+    // gives up rather than darken the ground.
+    if color.is_some() && color_leaves_box(style) {
+        return LevelPaint::Stop;
+    }
     // A `var()` in the background shorthand added or removed layers once
     // resolved: nothing stored per layer lines up with what paints.
     if sv(style, "backgroundLayersUnknown") == "1" {

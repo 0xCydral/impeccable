@@ -10,7 +10,9 @@
 //! paints, the wash and compositing rules, the percentile verdict and its
 //! label. Reading and decoding the image is the html crate's job.
 
-use crate::checks::rules::{contrast_severity, scores_safe_tag_text, ColorOpts, RuleHit};
+use crate::checks::rules::{
+    background_clips_to_text, contrast_severity, scores_safe_tag_text, ColorOpts, RuleHit,
+};
 use crate::color::{color_to_hex, composite_color_over, contrast_ratio, Rgba};
 use crate::constants::{WCAG_LARGE_BOLD_TEXT_PX, WCAG_LARGE_TEXT_PX};
 use crate::js::{number_to_string, parse_float, to_fixed};
@@ -34,7 +36,10 @@ const MIN_TEXT_ALPHA: f64 = 0.1;
 /// is not emoji-only or glyph-only, and is not clipped to its background.
 /// What `sampled_contrast_pairs` requires of any ink, a control's
 /// placeholder included (the analytic placeholder check skips the
-/// `SAFE_TAGS` gate the same way).
+/// `SAFE_TAGS` gate the same way). Glyphs that paint no colour of their
+/// own take no verdict on either path: a background clipped to the text on
+/// every layer (`background-clip: text, text`), or ink the adapter marks
+/// unread, as `check_colors` reads them.
 pub fn ink_applies(opts: &ColorOpts) -> bool {
     opts.has_direct_text
         && opts
@@ -42,7 +47,8 @@ pub fn ink_applies(opts: &ColorOpts) -> bool {
             .is_some_and(|c| c.alpha_or_one() > MIN_TEXT_ALPHA)
         && !opts.is_emoji_only
         && !opts.is_glyph_only
-        && opts.bg_clip.as_deref() != Some("text")
+        && !opts.bg_clip.as_deref().is_some_and(background_clips_to_text)
+        && !opts.ink_unread
 }
 
 /// The color rule's own gates plus the alpha floor, so the sampler never
@@ -547,6 +553,24 @@ mod tests {
         assert!(!paints_no_tile("-10px"));
         assert!(!paints_no_tile("-1%"));
         assert!(covers("repeat", "-10px"));
+    }
+
+    #[test]
+    fn glyphs_that_paint_no_colour_of_their_own_are_not_sampled() {
+        let ink = opts(rgba(255.0, 255.0, 255.0, 1.0), 16.0);
+        assert!(ink_applies(&ink));
+        let clipped = |clip: &str| ColorOpts {
+            bg_clip: Some(clip.to_string()),
+            ..ink.clone()
+        };
+        assert!(!ink_applies(&clipped("text")));
+        assert!(!ink_applies(&clipped("text, text")));
+        assert!(ink_applies(&clipped("text, border-box")));
+        assert!(ink_applies(&clipped("border-box")));
+        assert!(!ink_applies(&ColorOpts {
+            ink_unread: true,
+            ..ink.clone()
+        }));
     }
 
     #[test]

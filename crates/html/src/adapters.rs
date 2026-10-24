@@ -1451,7 +1451,7 @@ pub(crate) fn text_may_be_sampled(el: &StaticElement<'_>) -> bool {
             a
         }
     };
-    if clip == "text" {
+    if impeccable_core::checks::rules::background_clips_to_text(clip) {
         return false;
     }
     match placeholder {

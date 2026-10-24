@@ -9,6 +9,7 @@ use super::values::{
     css_call_end, css_prop_to_camel, extract_static_color, split_css_list, split_css_tokens,
 };
 use impeccable_core::js;
+use impeccable_core::color::parse_any_color;
 use once_cell::sync::Lazy;
 use regex::Regex;
 
@@ -679,6 +680,50 @@ pub fn expand_shorthand_slot(prop: &str, value: &str) -> (String, bool) {
     (entries.join(", "), unknown)
 }
 
+static COLOR_KEYWORD_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)^(?:transparent|currentcolor)$").expect("COLOR_KEYWORD_RE"));
+
+/// The color and the image list a `background` shorthand paints, for the
+/// pseudo pre-pass, which reads them apart: `#000 url(x) center / cover`
+/// is color `#000` and image `url(x)`, `url(a), linear-gradient(...)` is
+/// color `transparent` and both images, `none` is `transparent` and `none`.
+/// The color is the first token that reads as one outside the image calls
+/// (a hex or color function, a keyword, a named color), `transparent` when
+/// the shorthand names none, as the shorthand resets it; the images are the
+/// layers' image calls, `none` when there are none. A value still holding a
+/// `var()` is returned whole for both, unread until it resolves.
+pub fn background_paint_parts(value: &str) -> (String, String) {
+    if VAR_ANYWHERE_RE.is_match(value) {
+        return (value.to_string(), value.to_string());
+    }
+    let mut images: Vec<String> = Vec::new();
+    let mut color: Option<String> = None;
+    for layer in split_layers(value) {
+        for token in split_tokens(&layer).iter().flat_map(|t| unglue(t)) {
+            if let Some(call) = BG_IMAGE_CALL_RE.find(&token) {
+                let end = css_call_end(&token, call.end() - 1);
+                images.push(token[..end].to_string());
+                continue;
+            }
+            if color.is_none()
+                && (COLOR_KEYWORD_RE.is_match(&token)
+                    || !extract_static_color(&token).is_empty()
+                    || parse_any_color(Some(&token)).is_some())
+            {
+                color = Some(token.clone());
+            }
+        }
+    }
+    (
+        color.unwrap_or_else(|| "transparent".to_string()),
+        if images.is_empty() {
+            "none".to_string()
+        } else {
+            images.join(", ")
+        },
+    )
+}
+
 /// The background color a shorthand names where `expand_static_declaration`
 /// does not look: after the image (`url(x) #17150f`), or as the final layer
 /// of a list (`url(x), #17150f`). `None` when the expansion already read one
@@ -1075,6 +1120,29 @@ pub fn expand_static_declaration(prop: &str, value: &str) -> Vec<Expanded> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shorthands_color_and_images_are_read_apart() {
+        let parts = |v: &str| background_paint_parts(v);
+        let pair = |c: &str, i: &str| (c.to_string(), i.to_string());
+        assert_eq!(parts("url(x.png) center / cover no-repeat"), pair("transparent", "url(x.png)"));
+        assert_eq!(parts("#000 url(x.png)"), pair("#000", "url(x.png)"));
+        assert_eq!(parts("url(x.png)#000"), pair("#000", "url(x.png)"));
+        assert_eq!(
+            parts("url(x.png) rgba(0, 0, 0, 0.5) no-repeat"),
+            pair("rgba(0, 0, 0, 0.5)", "url(x.png)")
+        );
+        assert_eq!(
+            parts("linear-gradient(red, blue), url(x.png)"),
+            pair("transparent", "linear-gradient(red, blue), url(x.png)")
+        );
+        assert_eq!(parts("none"), pair("transparent", "none"));
+        assert_eq!(parts("transparent"), pair("transparent", "none"));
+        assert_eq!(parts("black"), pair("black", "none"));
+        assert_eq!(parts("rgba(0, 0, 0, 0)"), pair("rgba(0, 0, 0, 0)", "none"));
+        assert_eq!(parts("var(--scrim)"), pair("var(--scrim)", "var(--scrim)"));
+        assert_eq!(parts("url(x.png) var(--c)"), pair("url(x.png) var(--c)", "url(x.png) var(--c)"));
+    }
 
     #[test]
     fn a_layer_holding_a_var_is_re_read_once_resolved() {
