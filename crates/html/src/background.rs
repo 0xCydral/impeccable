@@ -997,19 +997,24 @@ pub(crate) fn layer_inset_by_padding(
     )
 }
 
-/// Whether an element's own color, which the last `background-clip` entry
-/// clips, may leave part of the box to what is beneath it: clipped to the
-/// content box (or by an entry still holding a `var()`) with padding on
-/// any side not known to be zero, so the padding is untinted, or clipped to
-/// the text, so it paints glyphs and no ground at all. Without layout the
-/// walk cannot tell text in the padding from text in the content box, so a
-/// wash so clipped is not known to tint every sample.
+/// Whether an element's own color may leave part of the box to what is
+/// beneath it. The color is clipped by the bottom layer's `background-clip`
+/// entry (the list cycles over the image layers and entries past them are
+/// ignored, so with one layer the first entry is the color's): clipped to
+/// the content box (or by an entry still holding a `var()`) with padding
+/// on any side not known to be zero, the padding is untinted; clipped to
+/// the text, it paints glyphs and no ground at all. Without layout the walk
+/// cannot tell text in the padding from text in the content box, so a wash
+/// so clipped is not known to tint every sample.
 fn color_leaves_box(style: &StyleValues) -> bool {
-    let last = background_clip(style)
-        .rsplit(',')
-        .next()
-        .map(js::trim)
-        .unwrap_or("");
+    let bg_image = sv(style, "backgroundImage");
+    let layers = if bg_image.is_empty() {
+        1
+    } else {
+        layer_spans(bg_image).len().max(1)
+    };
+    let entry = layer_entry(background_clip(style), layers - 1);
+    let last = js::trim(&entry);
     let names = |keyword: &str| {
         last.split_whitespace()
             .any(|token| token.eq_ignore_ascii_case(keyword))
@@ -1101,6 +1106,15 @@ pub fn analyze_level(cur: &StaticElement<'_>) -> LevelPaint {
             // `none`.
             let size = layer_entry(sv(style, "backgroundSize"), index);
             if paints_no_tile(&size) {
+                continue;
+            }
+            // A layer clipped to the text paints the glyphs and no ground:
+            // read past, like `none` (a list clipped on every layer is the
+            // ink gate's to refuse).
+            if layer_entry(background_clip(style), index)
+                .split_whitespace()
+                .any(|token| token.eq_ignore_ascii_case("text"))
+            {
                 continue;
             }
             // A layer fixed to the viewport meets the box where layout says.

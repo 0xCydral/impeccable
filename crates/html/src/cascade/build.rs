@@ -466,10 +466,44 @@ fn merge_pseudo_decl(
     }
 }
 
-/// Whether a `::before` / `::after` rule names the geometry or the paint
-/// the merged read below needs, so its matches are worth looking up: a rule
-/// naming only `content` (an icon font's) cannot complete an overlay on its
-/// own and merges on its own selector alone.
+/// A `content` value that generates no box: `none`, or `normal`, which
+/// computes to `none` on `::before` and `::after`.
+fn content_generates_no_box(value: &str) -> bool {
+    let value = js::to_lower_case(js::trim(value));
+    value == "none" || value == "normal"
+}
+
+/// Whether a pseudo with these declarations generates a box that paints:
+/// a `content` other than `none` or `normal` (a value the engine cannot
+/// read is taken to generate one), no `display: none` or `visibility:
+/// hidden`, and an opacity above 0.02 (one the engine cannot read is taken
+/// to paint).
+fn pseudo_paints_a_box(decls: &IndexMap<String, String>) -> bool {
+    let get = |k: &str| decls.get(k).map(|s| js::to_lower_case(js::trim(s)));
+    let Some(content) = get("content") else {
+        return false;
+    };
+    if content_generates_no_box(&content)
+        || get("display").as_deref() == Some("none")
+        || get("visibility").as_deref() == Some("hidden")
+    {
+        return false;
+    }
+    match get("opacity") {
+        Some(opacity) => {
+            let value = js::parse_float(&opacity);
+            value.is_nan() || value > 0.02
+        }
+        None => true,
+    }
+}
+
+/// Whether a `::before` / `::after` rule names the geometry, the paint, or
+/// the box the merged read below needs, so its matches are worth looking
+/// up: a rule naming only `content` (an icon font's) cannot complete an
+/// overlay on its own and merges on its own selector alone, while one
+/// taking the box away (`content: none`, `display: none`, `visibility`,
+/// `opacity`) can undo one and is looked up.
 fn names_pseudo_paint_or_geometry(decls: &IndexMap<String, (String, DeclMeta)>) -> bool {
     [
         "position",
@@ -483,14 +517,21 @@ fn names_pseudo_paint_or_geometry(decls: &IndexMap<String, (String, DeclMeta)>) 
         "background",
         "background-color",
         "background-image",
+        "display",
+        "visibility",
+        "opacity",
     ]
     .iter()
     .any(|key| decls.contains_key(*key))
+        || decls
+            .get("content")
+            .is_some_and(|(value, _)| content_generates_no_box(value))
 }
 
-/// The sampled path's marks (#560) on a pseudo stretched over its element:
-/// a raster image makes it a picture under the element's content, and any
-/// paint at all makes it an overlay the walk gives up on. Read from the
+/// The sampled path's marks (#560) on a pseudo stretched over its element
+/// that generates a box which paints (`pseudo_paints_a_box`): a raster
+/// image makes it a picture under the element's content, and any paint at
+/// all makes it an overlay the walk gives up on. Read from the
 /// winning declarations of every rule on the same pseudo of the element
 /// (`build_static_style_map`), not rule by rule: the geometry and the paint
 /// may come from different rules, on one selector or two, and a later rule
@@ -501,7 +542,7 @@ fn mark_pseudo_paint(
     ids: &[NodeId],
     root_custom_props: &impeccable_core::checks::css_scan::CustomProps,
 ) {
-    if !pseudo_covers_box(decls) || !decls.contains_key("content") {
+    if !pseudo_covers_box(decls) || !pseudo_paints_a_box(decls) {
         return;
     }
     let get = |k: &str| decls.get(k).map(|s| s.as_str());

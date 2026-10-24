@@ -1522,7 +1522,7 @@ fn a_wash_clipped_to_the_content_box_is_not_known_to_tint() {
     // padding untinted, and without layout the walk cannot tell text in the
     // padding from text in the content box: it stops rather than darken
     // every sample.
-    for clip in ["content-box", "text", "border-box, content-box"] {
+    for clip in ["content-box", "text"] {
         let css = format!(".hero {{ background: url(light.png); }} .wrap {{ padding: 24px; background: rgba(23, 21, 15, 0.7); background-clip: {clip}; }} p {{ color: #262421; }}");
         let found = site.contrast(&css, body);
         assert!(found.is_empty(), "{clip}: {found:?}");
@@ -1534,4 +1534,84 @@ fn a_wash_clipped_to_the_content_box_is_not_known_to_tint() {
         let found = site.contrast(&css, body);
         assert!(sampled_on("light.png", &found), "{clip} {padding}: {found:?}");
     }
+}
+
+#[test]
+fn the_color_takes_the_bottom_layers_clip() {
+    let site = Site::new("color-clip-entry");
+    let body = "<div class=hero><div class=wrap><p>Ink</p></div></div>";
+    // One layer: the first clip entry is the layer's, the rest are ignored,
+    // so `content-box, border-box` clips the color to the content box.
+    let css = ".hero { background: url(light.png); } .wrap { padding: 24px; background: rgba(23, 21, 15, 0.7); background-clip: content-box, border-box; } p { color: #262421; }";
+    let found = site.contrast(css, body);
+    assert!(found.is_empty(), "{found:?}");
+    // `border-box, content-box` clips it to the border box: the wash tints.
+    let css = ".hero { background: url(light.png); } .wrap { padding: 24px; background: rgba(23, 21, 15, 0.7); background-clip: border-box, content-box; } p { color: #262421; }";
+    let found = site.contrast(css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
+    // Two layers: the color follows the second entry.
+    let css = ".hero { background: url(light.png); } .wrap { padding: 24px; background: linear-gradient(rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.1)), linear-gradient(rgba(0, 0, 0, 0.1), rgba(0, 0, 0, 0.1)); background-color: rgba(23, 21, 15, 0.7); background-clip: border-box, content-box; } p { color: #262421; }";
+    let found = site.contrast(css, body);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn a_pseudo_that_generates_no_box_paints_nothing() {
+    let site = Site::new("no-box-pseudo");
+    let body = "<div class=hero><p>White copy</p></div>";
+    for decl in [
+        "content: none",
+        "content: normal",
+        "content: ''; display: none",
+        "content: ''; visibility: hidden",
+        "content: ''; opacity: 0",
+    ] {
+        let css = format!(".hero {{ background: url(light.png); position: relative; }} .hero::before {{ {decl}; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.6); }} p {{ position: relative; color: #fdfdfd; }}");
+        let found = site.contrast(&css, body);
+        assert!(sampled_on("light.png", &found), "{decl}: {found:?}");
+    }
+    // A later rule can take the box away, and a faded box still paints.
+    let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.6); } .hero::before { content: none; } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
+    let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.6); opacity: 0.5; } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(found.is_empty(), "{found:?}");
+}
+
+#[test]
+fn a_layer_clipped_to_the_text_is_not_the_ground() {
+    let site = Site::new("text-clipped-layer");
+    let body = "<div class=hero><p>White copy</p></div>";
+    // The first layer paints the glyphs; the second is the ground the
+    // white text is read against, and it is dark.
+    let css = ".hero { background: #17150f; } p { background-image: url(light.png), url(dark.png); background-clip: text, border-box; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(!sampled_on("light.png", &found), "{found:?}");
+    assert!(found.is_empty(), "{found:?}");
+    // The other way round, the light layer beneath is the ground.
+    let css = ".hero { background: #17150f; } p { background-image: url(dark.png), url(light.png); background-clip: text, border-box; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
+    // A text-clipped wash tints no ground either.
+    let css = ".hero { background: url(light.png); } .tint { background: linear-gradient(rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.7)), none; background-clip: text, border-box; } p { color: #fdfdfd; }";
+    let found = site.contrast(css, "<div class=hero><div class=tint><p>White copy</p></div></div>");
+    assert!(sampled_on("light.png", &found), "{found:?}");
+}
+
+#[test]
+fn a_shorthand_color_the_engine_cannot_read_is_paint() {
+    let site = Site::new("unknown-color");
+    let body = "<div class=hero><p>White copy</p></div>";
+    // A named color outside the tables, and a color function the parsers
+    // do not know: unknown paint over the box, which stops the walk.
+    for color in ["darkslategray", "color(display-p3 0.1 0.1 0.1)"] {
+        let css = format!(".hero {{ background: url(light.png); position: relative; }} .hero::before {{ content: ''; position: absolute; inset: 0; background: {color}; }} p {{ position: relative; color: #fdfdfd; }}");
+        let found = site.contrast(&css, body);
+        assert!(found.is_empty(), "{color}: {found:?}");
+    }
+    // Geometry keywords alone still name no color.
+    let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; background: center / cover no-repeat; } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
 }

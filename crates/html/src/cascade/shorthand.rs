@@ -9,7 +9,6 @@ use super::values::{
     css_call_end, css_prop_to_camel, extract_static_color, split_css_list, split_css_tokens,
 };
 use impeccable_core::js;
-use impeccable_core::color::parse_any_color;
 use once_cell::sync::Lazy;
 use regex::Regex;
 
@@ -680,18 +679,31 @@ pub fn expand_shorthand_slot(prop: &str, value: &str) -> (String, bool) {
     (entries.join(", "), unknown)
 }
 
-static COLOR_KEYWORD_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)^(?:transparent|currentcolor)$").expect("COLOR_KEYWORD_RE"));
+/// A shorthand token the background grammar reads as geometry rather than
+/// paint: a repeat, position, size, box, or attachment keyword, a length or
+/// percentage, a size slash, or `none`.
+fn is_background_geometry_token(token: &str) -> bool {
+    token.eq_ignore_ascii_case("none")
+        || split_size_slash(token).is_some()
+        || BG_REPEAT_RE.is_match(token)
+        || BG_POSITION_RE.is_match(token)
+        || BG_SIZE_RE.is_match(token)
+        || BG_BOX_RE.is_match(token)
+        || BG_ATTACHMENT_RE.is_match(token)
+}
 
 /// The color and the image list a `background` shorthand paints, for the
 /// pseudo pre-pass, which reads them apart: `#000 url(x) center / cover`
 /// is color `#000` and image `url(x)`, `url(a), linear-gradient(...)` is
 /// color `transparent` and both images, `none` is `transparent` and `none`.
-/// The color is the first token that reads as one outside the image calls
-/// (a hex or color function, a keyword, a named color), `transparent` when
-/// the shorthand names none, as the shorthand resets it; the images are the
-/// layers' image calls, `none` when there are none. A value still holding a
-/// `var()` is returned whole for both, unread until it resolves.
+/// The color is the first token outside the image calls that is not
+/// geometry, kept as written: a hex or color function, a keyword, a named
+/// color, and equally one no parser here reads (`darkslategray`,
+/// `color()`), which the reader then takes for paint it cannot measure.
+/// It is `transparent` when the shorthand names none, as the shorthand
+/// resets it; the images are the layers' image calls, `none` when there
+/// are none. A value still holding a `var()` is returned whole for both,
+/// unread until it resolves.
 pub fn background_paint_parts(value: &str) -> (String, String) {
     if VAR_ANYWHERE_RE.is_match(value) {
         return (value.to_string(), value.to_string());
@@ -705,11 +717,7 @@ pub fn background_paint_parts(value: &str) -> (String, String) {
                 images.push(token[..end].to_string());
                 continue;
             }
-            if color.is_none()
-                && (COLOR_KEYWORD_RE.is_match(&token)
-                    || !extract_static_color(&token).is_empty()
-                    || parse_any_color(Some(&token)).is_some())
-            {
+            if color.is_none() && !is_background_geometry_token(&token) {
                 color = Some(token.clone());
             }
         }
@@ -1140,6 +1148,15 @@ mod tests {
         assert_eq!(parts("transparent"), pair("transparent", "none"));
         assert_eq!(parts("black"), pair("black", "none"));
         assert_eq!(parts("rgba(0, 0, 0, 0)"), pair("rgba(0, 0, 0, 0)", "none"));
+        // A color no parser here reads is kept, for the reader to count as
+        // paint; geometry alone names no color.
+        assert_eq!(parts("darkslategray url(x.png)"), pair("darkslategray", "url(x.png)"));
+        assert_eq!(
+            parts("url(x.png) color(display-p3 0.1 0.1 0.1)"),
+            pair("color(display-p3 0.1 0.1 0.1)", "url(x.png)")
+        );
+        assert_eq!(parts("center / cover no-repeat fixed border-box"), pair("transparent", "none"));
+        assert_eq!(parts("url(x.png) 0 0 / 100% auto"), pair("transparent", "url(x.png)"));
         assert_eq!(parts("var(--scrim)"), pair("var(--scrim)", "var(--scrim)"));
         assert_eq!(parts("url(x.png) var(--c)"), pair("url(x.png) var(--c)", "url(x.png) var(--c)"));
     }
