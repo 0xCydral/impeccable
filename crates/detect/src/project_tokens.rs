@@ -162,13 +162,14 @@ impl ProjectTokens {
         let merged = if maps.len() == 1 {
             maps.remove(0)
         } else {
-            // The nearest root's tokens win; wider roots only fill the gaps.
-            let mut merged = CustomProps::new();
-            for map in &maps {
+            // The widest root's tokens with each nearer root's laid over
+            // them, so the nearest wins. A nearer root sits inside the wider
+            // one, so its names are already there and `set` replaces them in
+            // place rather than growing the map.
+            let mut merged = (*maps.pop().expect("two roots")).clone();
+            for map in maps.iter().rev() {
                 for (name, value) in map.iter() {
-                    if !merged.has(name) {
-                        merged.set(name, value.clone());
-                    }
+                    merged.set(name, value.clone());
                 }
             }
             Rc::new(merged)
