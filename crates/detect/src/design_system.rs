@@ -1868,7 +1868,8 @@ fn check_font_stack(
 /// operands are never judged (#1168); var() still yields its fallback (#687).
 pub fn extract_radius_tokens(value: &str) -> Vec<String> {
     let mut tokens = Vec::new();
-    for part in split_top_level(value, |ch| js::is_js_whitespace(ch) || ch == '/') {
+    let value = IMPORTANT_TAIL_RE.replace(value, "");
+    for part in split_top_level(&value, |ch| js::is_js_whitespace(ch) || ch == '/') {
         let is_var = part
             .get(..4)
             .is_some_and(|prefix| prefix.eq_ignore_ascii_case("var("));
@@ -2695,7 +2696,7 @@ mod tests {
         let md = "---\nrounded:\n  md: \"8px\"\n---\nbody";
         let fm = parse_frontmatter(md).unwrap();
         let ds = normalize_design_system(Some(&fm), None, None, None, false);
-        let css = ".a {\n  border-radius: calc(var(--radius) * 2);\n}\n.b {\n  border-radius: min(12px, 2vw);\n}\n.c {\n  border-radius: 18px clamp(4px, 1vw, 40px);\n}\n.d {\n  border-radius: -webkit-calc(8px * 2);\n}\n";
+        let css = ".a {\n  border-radius: calc(var(--radius) * 2);\n}\n.b {\n  border-radius: min(12px, 2vw);\n}\n.c {\n  border-radius: 18px clamp(4px, 1vw, 40px);\n}\n.d {\n  border-radius: -webkit-calc(8px * 2);\n}\n.e {\n  border-radius: var(--r, 20px)!important;\n}\n";
         let f = check_source_design_system(css, "/tmp/radius-math.css", Some(&ds));
         let got: Vec<(String, Option<String>)> = f
             .iter()
@@ -2708,7 +2709,10 @@ mod tests {
             .collect();
         assert_eq!(
             got,
-            vec![("design-system-radius".to_string(), Some("18px".to_string()))]
+            vec![
+                ("design-system-radius".to_string(), Some("18px".to_string())),
+                ("design-system-radius".to_string(), Some("20px".to_string())),
+            ]
         );
     }
 
