@@ -654,7 +654,8 @@ pub fn check_element_inset_stripe_dom(dom: &dyn Dom, el: ElId) -> Vec<RuleHit> {
                 })
         };
         let bare = parse_rgb_or_any(&dom.style(el, "backgroundColor"))
-            .map_or(true, |c| c.alpha_or_one() < 0.1);
+            .map_or(true, |c| c.alpha_or_one() < 0.1)
+            && matches!(dom.style(el, "backgroundImage").as_str(), "" | "none");
         let flagged = status(el) || hosts.iter().any(|&e| status(e));
         (inset && (flagged || bare))
             .then(|| inset_stripe_detail(dom, el, &shadow, true, rect.width))
@@ -6819,6 +6820,9 @@ mod tests {
         assert_eq!(check_element_inset_stripe_dom(&d, plain).len(), 1);
         d.set_styles(plain, &[("borderRightWidth", "1px"), ("borderRightStyle", "solid"), ("borderRightColor", red)]);
         assert!(check_element_inset_stripe_dom(&d, plain).is_empty(), "another side drawn on a plain cell");
+        d.set_styles(plain, &stripe);
+        d.set_style(plain, "backgroundImage", "linear-gradient(rgb(248, 250, 252), rgb(226, 232, 240))");
+        assert!(check_element_inset_stripe_dom(&d, plain).is_empty(), "a plain cell shaded with a gradient");
         d.set_attr(tr, "aria-selected", "true");
         assert!(check_element_inset_stripe_dom(&d, td).is_empty(), "selected row");
     }
