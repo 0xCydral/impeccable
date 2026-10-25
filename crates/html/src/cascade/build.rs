@@ -332,18 +332,38 @@ fn pseudo_decls(rule: &CssRule) -> IndexMap<String, String> {
 }
 
 /// Whether a pseudo with these declarations is stretched over its element:
-/// positioned, and at zero on every side (`inset` having been expanded into
-/// the sides) or 100% by 100%.
+/// positioned, and either 100% by 100%, or at zero on every side (`inset`
+/// having been expanded into the sides) with no declared size to keep it
+/// small. Opposing offsets stretch a box only while its size is `auto` (or
+/// `100%`): a declared `width`, `height`, `inline-size`, or `block-size`
+/// wins over the far offset, and a `max-width` or `max-height` other than
+/// `none` caps it, so such a pseudo is a decoration, not an overlay.
 fn pseudo_covers_box(decls: &IndexMap<String, String>) -> bool {
-    let get = |k: &str| decls.get(k).map(|s| s.as_str());
-    let pseudo_pos = js::to_lower_case(get("position").unwrap_or(""));
+    let get = |k: &str| decls.get(k).map(|s| js::to_lower_case(js::trim(s)));
+    let pseudo_pos = get("position").unwrap_or_default();
     if pseudo_pos != "absolute" && pseudo_pos != "fixed" {
         return false;
     }
-    let zero_len = |v: Option<&str>| v.is_some_and(|s| ZERO_LEN_RE.is_match(js::trim(s)));
-    SIDES.iter().all(|side| zero_len(get(side)))
-        || (js::trim(get("width").unwrap_or("")) == "100%"
-            && js::trim(get("height").unwrap_or("")) == "100%")
+    let is_100 = |k: &str| get(k).as_deref() == Some("100%");
+    if is_100("width") && is_100("height") {
+        return true;
+    }
+    let zero_len = |k: &str| get(k).is_some_and(|s| ZERO_LEN_RE.is_match(&s));
+    let lets_stretch = |keys: [&str; 2]| {
+        keys.iter().all(|k| match get(k) {
+            None => true,
+            Some(v) => v == "auto" || v == "100%",
+        })
+    };
+    let uncapped = |k: &str| match get(k) {
+        None => true,
+        Some(v) => v == "none",
+    };
+    SIDES.iter().all(|side| zero_len(side))
+        && lets_stretch(["width", "inline-size"])
+        && lets_stretch(["height", "block-size"])
+        && uncapped("max-width")
+        && uncapped("max-height")
 }
 
 /// The `::before` / `::after` rule pre-pass as the JS read it, one rule at
@@ -515,6 +535,10 @@ fn names_pseudo_paint_or_geometry(decls: &IndexMap<String, (String, DeclMeta)>) 
         "left",
         "width",
         "height",
+        "inline-size",
+        "block-size",
+        "max-width",
+        "max-height",
         "background",
         "background-color",
         "background-image",

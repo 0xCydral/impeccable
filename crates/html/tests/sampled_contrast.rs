@@ -1632,3 +1632,27 @@ fn a_content_only_rule_on_another_selector_switches_the_box() {
     let found = site.contrast(css, "<div class=\"hero plain\"><p>White copy</p></div>");
     assert!(sampled_on("light.png", &found), "{found:?}");
 }
+
+#[test]
+fn a_sized_pseudo_is_a_decoration_not_an_overlay() {
+    let site = Site::new("sized-pseudo");
+    let body = "<div class=hero><p>White copy</p></div>";
+    // Zero offsets on every side do not stretch a pseudo that declares its
+    // own size: a 24px patch is not an overlay over the host's text.
+    for size in [
+        "width: 24px; height: 24px",
+        "inline-size: 24px; block-size: 24px",
+        "max-width: 24px",
+        "width: calc(100% - 20px)",
+    ] {
+        let css = format!(".hero {{ background: url(light.png); position: relative; }} .hero::before {{ content: ''; position: absolute; inset: 0; {size}; background: rgba(0, 0, 0, 0.6); }} p {{ position: relative; color: #fdfdfd; }}");
+        let found = site.contrast(&css, body);
+        assert!(sampled_on("light.png", &found), "{size}: {found:?}");
+    }
+    // `auto` and `100%` leave the offsets to stretch it.
+    for size in ["width: auto; height: auto", "width: 100%; height: 100%", "max-width: none"] {
+        let css = format!(".hero {{ background: url(light.png); position: relative; }} .hero::before {{ content: ''; position: absolute; inset: 0; {size}; background: rgba(0, 0, 0, 0.6); }} p {{ position: relative; color: #fdfdfd; }}");
+        let found = site.contrast(&css, body);
+        assert!(found.is_empty(), "{size}: {found:?}");
+    }
+}
