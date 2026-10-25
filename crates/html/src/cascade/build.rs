@@ -336,8 +336,9 @@ fn pseudo_decls(rule: &CssRule) -> IndexMap<String, String> {
 /// having been expanded into the sides) with no declared size to keep it
 /// small. Opposing offsets stretch a box only while its size is `auto` (or
 /// `100%`): a declared `width`, `height`, `inline-size`, or `block-size`
-/// wins over the far offset, and a `max-width` or `max-height` other than
-/// `none` caps it, so such a pseudo is a decoration, not an overlay.
+/// wins over the far offset, and a `max-width` or `max-height` below the
+/// box (anything but `none`, `100%`, or the initial value) caps it, so such
+/// a pseudo is a decoration, not an overlay.
 fn pseudo_covers_box(decls: &IndexMap<String, String>) -> bool {
     let get = |k: &str| decls.get(k).map(|s| js::to_lower_case(js::trim(s)));
     let pseudo_pos = get("position").unwrap_or_default();
@@ -357,7 +358,7 @@ fn pseudo_covers_box(decls: &IndexMap<String, String>) -> bool {
     };
     let uncapped = |k: &str| match get(k) {
         None => true,
-        Some(v) => v == "none",
+        Some(v) => matches!(v.as_str(), "none" | "100%" | "initial" | "unset" | "revert"),
     };
     SIDES.iter().all(|side| zero_len(side))
         && lets_stretch(["width", "inline-size"])

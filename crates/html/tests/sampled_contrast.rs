@@ -1649,8 +1649,15 @@ fn a_sized_pseudo_is_a_decoration_not_an_overlay() {
         let found = site.contrast(&css, body);
         assert!(sampled_on("light.png", &found), "{size}: {found:?}");
     }
-    // `auto` and `100%` leave the offsets to stretch it.
-    for size in ["width: auto; height: auto", "width: 100%; height: 100%", "max-width: none"] {
+    // `auto` and `100%` leave the offsets to stretch it, and a cap at or
+    // past the box (`100%`, `none`, the initial value) shrinks nothing.
+    for size in [
+        "width: auto; height: auto",
+        "width: 100%; height: 100%",
+        "max-width: none",
+        "max-width: 100%; max-height: 100%",
+        "max-width: initial",
+    ] {
         let css = format!(".hero {{ background: url(light.png); position: relative; }} .hero::before {{ content: ''; position: absolute; inset: 0; {size}; background: rgba(0, 0, 0, 0.6); }} p {{ position: relative; color: #fdfdfd; }}");
         let found = site.contrast(&css, body);
         assert!(found.is_empty(), "{size}: {found:?}");
