@@ -226,7 +226,7 @@ mod tests {
         }
         let file_a = dir.join("apps/a/src/Table.svelte").to_string_lossy().into_owned();
         let file_b = dir.join("apps/b/src/Table.svelte").to_string_lossy().into_owned();
-        assert_eq!(project_roots(&file_b), vec![dir.join("apps/b").to_string_lossy().into_owned(), root]);
+        assert_eq!(project_roots(&file_b), vec![dir.join("apps").join("b").to_string_lossy().into_owned(), root]);
         let mut project = ProjectTokens::default();
         let tokens = project.for_file(&file_b);
         assert_eq!(tokens.get("--danger").map(String::as_str), Some("#2563eb"));
