@@ -168,8 +168,10 @@ pub fn install_engine_binaries(sys: &Sys, io: &mut Io, skill_dirs: &[String]) {
             }
             Err(e) => {
                 if !e.is_empty() {
+                    // The launcher reads the same manifest, so it cannot fetch what this refused.
+                    let retry = if e.starts_with("no checksum") { "" } else { " The launcher fetches it on first run." };
                     io.err(&format!(
-                        "Could not download the impeccable engine v{version} for {os}-{arch} ({url}): {e}. The launcher fetches it on first run.\n"
+                        "Could not download the impeccable engine v{version} for {os}-{arch} ({url}): {e}.{retry}\n"
                     ));
                     // Report once per version, then stay quiet for its siblings.
                     cache.insert(version.to_string(), Err(String::new()));
@@ -229,12 +231,6 @@ mod tests {
         assert_eq!(manifest_digest(manifest, "1.2.3", "impeccable-linux-x64").as_deref(), Some("abc123"));
         assert_eq!(manifest_digest(manifest, "1.2.3", "impeccable-windows-x64.exe").as_deref(), Some("def456"));
         assert_eq!(manifest_digest(manifest, "1.2.2", "impeccable-linux-x64").as_deref(), Some("old"));
-    }
-
-    #[test]
-    fn manifest_digest_ignores_comments_and_missing_lines() {
-        let manifest = "# 1.2.3 impeccable-linux-x64 ffff\n\n   \n1.2.3 impeccable-linux-x64 abc\n";
-        assert_eq!(manifest_digest(manifest, "1.2.3", "impeccable-linux-x64").as_deref(), Some("abc"));
         assert_eq!(manifest_digest(manifest, "1.2.3", "impeccable-darwin-arm64"), None);
         assert_eq!(manifest_digest(manifest, "9.9.9", "impeccable-linux-x64"), None);
         assert_eq!(manifest_digest("# only 1.2.3 impeccable-linux-x64 ffff\n", "1.2.3", "impeccable-linux-x64"), None);

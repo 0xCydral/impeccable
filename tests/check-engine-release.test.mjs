@@ -4,8 +4,8 @@
  * Every engine download is verified against skill/scripts/engine-checksums.txt,
  * so the record step must write what the release serves and the check must
  * notice a manifest that no longer agrees with the release sidecars. The release
- * is a local server holding five fake binaries and their sidecars. npm is probed
- * on the real registry and cannot be redirected, so those entries are filtered out.
+ * is a local server holding five fake binaries, their sidecars and the npm
+ * platform packages.
  */
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -26,6 +26,11 @@ let base;
 
 before(async () => {
   server = http.createServer((req, res) => {
+    if (req.url.startsWith('/npm/@impeccable%2fcli-') && req.url.endsWith(`/${VERSION}`)) {
+      res.writeHead(200);
+      res.end('{}');
+      return;
+    }
     const [, tag, name] = req.url.split('/');
     const asset = name?.replace(/\.sha256$/, '');
     if (tag !== `engine-v${VERSION}` || !bodies.has(asset)) {
@@ -49,8 +54,8 @@ function stageRoot() {
   return { root, manifest: path.join(root, 'skill', 'scripts', 'engine-checksums.txt') };
 }
 
-const manifestProblems = async (root) =>
-  (await checkEngineRelease({ version: VERSION, base, root })).missing.filter((m) => m.kind === 'manifest');
+const check = (root) => checkEngineRelease({ version: VERSION, base, root, registry: `${base}/npm` });
+const manifestProblems = async (root) => (await check(root)).missing.filter((m) => m.kind === 'manifest');
 
 describe('engine checksum manifest', () => {
   it('records one correct line per release asset', async () => {
@@ -61,7 +66,7 @@ describe('engine checksum manifest', () => {
       lines.sort(),
       [...bodies].map(([asset, body]) => `${VERSION} ${asset} ${digest(body)}`).sort(),
     );
-    assert.deepEqual(await manifestProblems(root), []);
+    assert.deepEqual(await check(root), { ok: true, version: VERSION, base, missing: [] });
   });
 
   it('reports a line that no longer matches the release sidecar', async () => {

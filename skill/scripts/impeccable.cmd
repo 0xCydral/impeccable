@@ -50,13 +50,10 @@ if not defined IMPECCABLE_HOME set "IMPECCABLE_HOME=%USERPROFILE%\.impeccable"
 set "cached=%IMPECCABLE_HOME%\bin\%version%\impeccable.exe"
 set "asset=impeccable-windows-%arch%.exe"
 set "manifest=%~dp0engine-checksums.txt"
-set "expected="
-set "expected_x64="
-if exist "%manifest%" for /f "usebackq tokens=1-3" %%a in ("%manifest%") do if "%%a"=="%version%" if /I "%%b"=="%asset%" if not defined expected set "expected=%%c"
-if "%arch%"=="arm64" if exist "%manifest%" for /f "usebackq tokens=1-3" %%a in ("%manifest%") do if "%%a"=="%version%" if /I "%%b"=="impeccable-windows-x64.exe" if not defined expected_x64 set "expected_x64=%%c"
 if not defined version goto no_cache
 if not exist "%cached%" goto no_cache
 if exist "%cached%.verified" goto cache_trusted
+call :read_expected
 call :sha256 "%cached%" "%TEMP%\impeccable-hash-%RANDOM%%RANDOM%.txt"
 if not defined actual goto cache_unverified
 if /I "%actual%"=="%expected%" goto cache_verified
@@ -85,6 +82,7 @@ rem the version-pinned user cache, verify it, then run it. Never inside
 rem another launcher's probe: fail fast and quiet instead.
 if defined IMPECCABLE_LAUNCHER_PROBE exit /b 127
 if not defined version goto fail
+call :read_expected
 if not defined expected if not defined expected_x64 goto no_checksum
 where curl.exe >nul 2>nul
 if errorlevel 1 goto curl_missing
@@ -149,6 +147,23 @@ if errorlevel 1 exit /b 127
 call :discard_staging
 echo impeccable: cannot verify %url% (certutil could not hash it); refusing the unverified download 1>&2
 exit /b 127
+
+:read_expected
+rem Sets expected (and, on ARM64, expected_x64: Windows on ARM runs x64
+rem binaries) from engine-checksums.txt. Only called off the stamped path:
+rem hooks run this launcher on every edit.
+call :manifest_digest "%asset%" expected
+set "expected_x64="
+if "%arch%"=="arm64" call :manifest_digest impeccable-windows-x64.exe expected_x64
+exit /b 0
+
+:manifest_digest
+rem Sets the variable named %2 to the digest the first engine-checksums.txt
+rem line for this version and asset %1 records, empty when there is none.
+set "%~2="
+if not exist "%manifest%" exit /b 0
+for /f "usebackq tokens=1-3" %%a in ("%manifest%") do if "%%a"=="%version%" if /I "%%b"=="%~1" if not defined %~2 set "%~2=%%c"
+exit /b 0
 
 :sha256
 rem Sets actual to the sha256 of %~1, empty when certutil fails. %~2 is the

@@ -69,14 +69,14 @@ async function sidecarDigest(url) {
   }
 }
 
-function npmPackageUrl(target, version) {
+function npmPackageUrl(target, version, registry) {
   // Scoped name: the slash is percent-encoded for the registry path.
   const name = `@impeccable/cli-${target}`;
-  return `${NPM_REGISTRY}/${name.replace('/', '%2f')}/${version}`;
+  return `${registry}/${name.replace('/', '%2f')}/${version}`;
 }
 
-async function npmVersionExists(target, version) {
-  const url = npmPackageUrl(target, version);
+async function npmVersionExists(target, version, registry) {
+  const url = npmPackageUrl(target, version, registry);
   try {
     const res = await fetch(url, { redirect: 'follow' });
     return res.ok;
@@ -93,6 +93,7 @@ export async function checkEngineRelease({
   version = readEngineVersion(),
   base = process.env.IMPECCABLE_DOWNLOAD_BASE || DEFAULT_DOWNLOAD_BASE,
   root,
+  registry = NPM_REGISTRY,
 } = {}) {
   const missing = [];
 
@@ -100,12 +101,12 @@ export async function checkEngineRelease({
     ENGINE_TARGETS.map(async (target) => {
       const binUrl = assetUrl(version, target, base);
       const shaUrl = `${binUrl}.sha256`;
-      const npmUrl = npmPackageUrl(target, version);
+      const npmUrl = npmPackageUrl(target, version, registry);
 
       const [binOk, published, npmOk] = await Promise.all([
         urlExists(binUrl),
         sidecarDigest(shaUrl),
-        npmVersionExists(target, version),
+        npmVersionExists(target, version, registry),
       ]);
       const recorded = expectedChecksum(version, target, root);
 
@@ -161,16 +162,29 @@ function report(result) {
     console.log(`  release base: ${base}`);
     return;
   }
-  console.error(`✗ engine v${version} release is INCOMPLETE — ${missing.length} asset(s) missing:`);
-  for (const m of missing) {
-    console.error(`  · ${m.what}`);
-    console.error(`      ${m.url}`);
+  const unpublished = missing.filter((m) => m.kind !== 'manifest');
+  const stale = missing.filter((m) => m.kind === 'manifest');
+  const list = (entries) => {
+    for (const m of entries) {
+      console.error(`  · ${m.what}`);
+      console.error(`      ${m.url}`);
+    }
+  };
+  if (unpublished.length) {
+    console.error(`✗ engine v${version} release is INCOMPLETE — ${unpublished.length} asset(s) missing:`);
+    list(unpublished);
+    console.error('');
+    console.error(`Publish engine v${version} (tag engine-v${version}, bun run release:engine) AND the`);
+    console.error('five @impeccable/cli-<os>-<arch> npm platform packages BEFORE releasing the');
+    console.error('skill or merging rust-swap. Ordering: engine release → platform packages →');
+    console.error('skill release/merge. See CLAUDE.md "Releases" and docs REVIEW-TRIAGE.md D4.');
   }
-  console.error('');
-  console.error(`Publish engine v${version} (tag engine-v${version}, bun run release:engine) AND the`);
-  console.error('five @impeccable/cli-<os>-<arch> npm platform packages BEFORE releasing the');
-  console.error('skill or merging rust-swap. Ordering: engine release → platform packages →');
-  console.error('skill release/merge. See CLAUDE.md "Releases" and docs REVIEW-TRIAGE.md D4.');
+  if (stale.length) {
+    console.error(`✗ skill/scripts/engine-checksums.txt disagrees with the engine v${version} release:`);
+    list(stale);
+    console.error('');
+    console.error('Run node scripts/check-engine-release.mjs --record and commit the manifest.');
+  }
   console.error(`  release base: ${base}`);
 }
 
