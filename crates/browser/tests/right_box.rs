@@ -112,6 +112,13 @@ fn a_thin_stripe_is_read_against_the_far_corners() {
             ("border-right: 2px + border-radius: 12px".to_string(), "div.card.flag-right-far-rounded".to_string()),
         ]
     );
+    // observations-1010 rows 6 and 17: an arc on a ring and a band on a
+    // closed menu panel are not accents; the open panel is.
+    let bands = findings(&engine, port, "side-tab-far-corners.html", "border-accent-on-rounded");
+    assert_eq!(
+        bands,
+        vec![("border-top: 3px + border-radius: 4px".to_string(), "div.panel.flag-band-open-panel".to_string())]
+    );
 }
 
 #[test]

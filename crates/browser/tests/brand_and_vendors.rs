@@ -140,7 +140,7 @@ fn cyan_band_skips_emerald_sky_and_grayed_teal() {
     for flag in ["teal-cta", "cyan-950-panel"] {
         assert!(palette.iter().any(|(_, sel)| sel.contains(flag)), "{flag}: {palette:#?}");
     }
-    for pass in ["emerald-cta", "sky-cta", "grayed-teal-cta"] {
+    for pass in ["emerald-cta", "sky-cta", "grayed-teal-cta", "flat-fade-teal-cta"] {
         assert!(!palette.iter().any(|(_, sel)| sel.contains(pass)), "{pass}: {palette:#?}");
     }
 }

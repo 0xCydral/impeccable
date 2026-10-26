@@ -566,6 +566,18 @@ pub fn check_element_radial_spotlight(el: &StaticElement<'_>, style: &StyleValue
 
 // ─── Element adapters ───────────────────────────────────────────────────────
 
+/// The `[width, height]` a static element declares in px, for the circle
+/// test in `check_borders`; `None` when either is unset or in another unit
+/// (no layout here to resolve it).
+fn declared_px_size(style: &StyleValues) -> Option<[f64; 2]> {
+    let px = |prop: &str| -> Option<f64> {
+        let v = sv(style, prop).trim().to_ascii_lowercase();
+        let n: f64 = v.strip_suffix("px")?.trim().parse().ok()?;
+        (n.is_finite() && n > 0.0).then_some(n)
+    };
+    Some([px("width")?, px("height")?])
+}
+
 /// JS: checks.mjs#checkElementBorders(tag, style, overrides = null, resolvedRadius, el)
 pub fn check_element_borders(
     tag: &str,
@@ -603,6 +615,7 @@ pub fn check_element_borders(
             status_context: is_status_context_element(el),
             badge_like: own_bg.is_some_and(|c| c.alpha_or_one() > 0.1),
             corners,
+            box_size: declared_px_size(style),
         },
     )
 }

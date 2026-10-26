@@ -147,6 +147,12 @@
       width: 200px; height: 56px; border-radius: 10px;
       background-image: linear-gradient(135deg, rgb(95, 158, 160), rgb(106, 156, 153));
     }
+    /* One dark teal fading only to 0.8 (observations-1010 row 14,
+       articulation-hub.vercel.app) is that colour laid flat. */
+    .flat-fade-teal-cta {
+      width: 200px; height: 56px; border-radius: 10px;
+      background-image: linear-gradient(135deg, rgb(29, 74, 84), rgba(29, 74, 84, 0.8));
+    }
   </style>
 </head>
 <body>
@@ -252,6 +258,9 @@
       </div>
       <div class="dark-context">
         <div class="grayed-teal-cta"></div>
+      </div>
+      <div class="dark-context">
+        <div class="flat-fade-teal-cta"></div>
       </div>
 
       <h3>Color without painted glyphs</h3>

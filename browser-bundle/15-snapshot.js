@@ -313,6 +313,27 @@ function __snapTextWrapPrettySupported() {
   catch { return null; }
 }
 
+// Dom::document_font_faces (crates/foundation/src/browser/dom.rs): each
+// face in document.fonts as [family, status], quotes stripped, one entry per
+// distinct pair. null where the FontFaceSet cannot be read.
+function __snapFontFaces() {
+  try {
+    if (typeof document === 'undefined' || !document.fonts || typeof document.fonts.forEach !== 'function') return null;
+    const seen = new Set();
+    const out = [];
+    document.fonts.forEach((face) => {
+      if (out.length >= 512) return;
+      const family = String(face.family || '').trim().replace(/^['"]|['"]$/g, '');
+      const status = String(face.status || '');
+      const key = family + '\u0000' + status;
+      if (!family || seen.has(key)) return;
+      seen.add(key);
+      out.push([family, status]);
+    });
+    return out;
+  } catch { return null; }
+}
+
 function __snapConditionalCssRuleIsActive(rule) {
   const type = Number(rule?.type);
   const constructorName = rule?.constructor?.name || '';
@@ -896,6 +917,7 @@ const __impeccableSnapshot = {
       keyframeKeys,
       linkedCss: __snapLinkedStylesheetText(),
       prettyWrap: __snapTextWrapPrettySupported(),
+      fontFaces: __snapFontFaces(),
       styleProps: __SNAP_STYLE_PROPS,
       pseudoProps: __SNAP_PSEUDO_PROPS,
       strings,

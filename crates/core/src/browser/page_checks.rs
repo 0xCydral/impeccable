@@ -197,6 +197,35 @@ fn font_text_has_a_box(dom: &dyn Dom, el: ElId) -> bool {
     true
 }
 
+/// Faces on [`OVERUSED_FONTS`] that an operating system ships, so a page
+/// can name them and get them with no `@font-face` at all.
+pub const OVERUSED_SYSTEM_FACES: &[&str] = &["arial", "helvetica", "roboto"];
+
+/// Whether the browser shows that `font` (an [`OVERUSED_FONTS`] entry) never
+/// loaded, so the page's text is set in a fallback (taste call r12-t2;
+/// looot.ai and felixowolf.com name Inter in a stack nothing supplies). It
+/// takes all of: the capture listed `document.fonts`; `font` is not a face
+/// an operating system ships ([`OVERUSED_SYSTEM_FACES`]); and no face of
+/// that family in the list is `loaded`. A family Google Fonts splits into
+/// unicode-range faces needs one loaded subset; a face still `loading` or
+/// `unloaded` at capture keeps the finding, as does a capture that did not
+/// list the faces. The static engine has no browser to ask and keeps
+/// reporting.
+fn face_never_loaded(dom: &dyn Dom, font: &str) -> bool {
+    if OVERUSED_SYSTEM_FACES.contains(&font) {
+        return false;
+    }
+    let Some(faces) = dom.document_font_faces() else {
+        return false;
+    };
+    // A face still `loading`, or listed but not yet asked for
+    // (`unloaded`), may be the one the text gets once the browser is done.
+    !faces.iter().any(|(family, status)| {
+        let family = js::to_lower_case(&strip_edge_quotes(js::trim(family)));
+        (overused_font_name(&family) == Some(font) || family == font) && status != "error"
+    })
+}
+
 const IMPECCABLE_OWN: &str =
     ".impeccable-overlay, .impeccable-label, .impeccable-banner, .impeccable-tooltip";
 
@@ -289,6 +318,7 @@ pub fn check_typography(dom: &dyn Dom) -> Vec<BrowserFinding> {
                     && !is_brand_font_on_own_domain(font, Some(&hostname))
                     && !sets_next_to_none_of_the_text(font, &font_chars, total_text_chars)
                     && !latin_face_on_a_cjk_page(font, &letter_tally)
+                    && !face_never_loaded(dom, font)
                 {
                     findings.push(BrowserFinding::new(
                         "overused-font",
@@ -2636,6 +2666,113 @@ fn covering_ground(dom: &dyn Dom, body: ElId) -> Option<crate::color::Rgba> {
         _ => Some((c, h)),
     })
     .map(|(c, _)| c)
+}
+
+/// The share of the page's height that dark or pictured full-width bands
+/// may cover under an unpainted root before the white canvas stops being
+/// the page's ground.
+const UNPAINTED_ROOT_DARK_BAND_MAX_SHARE: f64 = 0.5;
+
+/// The share of the viewport, on each axis, an out-of-flow layer has to
+/// cover to stand in for the page's ground (a `fixed inset-0 -z-10` wash).
+const GROUND_LAYER_MIN_VIEWPORT_SHARE: f64 = 0.9;
+
+/// Whether a page whose `html` and `body` paint neither a fill nor an image
+/// shows the browser's white canvas as its ground (observations-1010 row 4,
+/// gseek.kr: a white portal with a `#222` footer, read as a dark page off a
+/// `background: #000` in its stylesheet). False, so the stylesheet decides
+/// as before, where something else may paint the ground: the root or body
+/// asks for a dark `color-scheme`, a layer out of flow painting a fill or a
+/// picture covers the viewport, or in-flow boxes as wide as the body that
+/// paint a dark fill, a picture or a gradient (looked through transparent
+/// boxes a few levels down, as [`covering_ground`] does) cover half the
+/// page's height or more.
+pub(crate) fn unpainted_root_reads_light(dom: &dyn Dom) -> bool {
+    let Some(body) = dom.body() else { return false };
+    let root = dom.document_element();
+    if [root, Some(body)]
+        .into_iter()
+        .flatten()
+        .any(|el| js::to_lower_case(&dom.style(el, "colorScheme")).contains("dark"))
+    {
+        return false;
+    }
+    let paints_picture = |el: ElId| {
+        let image = dom.style(el, "backgroundImage");
+        !image.is_empty() && image != "none"
+    };
+    let dark_fill = |el: ElId| {
+        super::background::read_own_background_color(dom, el)
+            .is_some_and(|f| f.alpha_or_one() > 0.5 && crate::color::relative_luminance(&f) < 0.1)
+    };
+    let (vw, vh) = (dom.inner_width(), dom.inner_height());
+    if !(vw > 0.0 && vh > 0.0) {
+        return false;
+    }
+    for el in dom.query_all(None, "*").unwrap_or_default() {
+        if !matches!(dom.style(el, "position").as_str(), "fixed" | "absolute") {
+            continue;
+        }
+        let r = dom.rect(el);
+        if !r.all_finite()
+            || r.width < GROUND_LAYER_MIN_VIEWPORT_SHARE * vw
+            || r.height < GROUND_LAYER_MIN_VIEWPORT_SHARE * vh
+        {
+            continue;
+        }
+        let fill = super::background::read_own_background_color(dom, el).is_some_and(|f| f.alpha_or_one() > 0.5);
+        if (fill || paints_picture(el)) && painted_at_capture(dom, el) {
+            return false;
+        }
+    }
+    let body_rect = dom.rect(body);
+    if !body_rect.all_finite() || body_rect.width <= 0.0 {
+        return false;
+    }
+    let sy = finite_or_zero(dom.scroll_y());
+    let page_bottom = root
+        .map(|r| dom.scroll_height(r))
+        .filter(|h| h.is_finite())
+        .unwrap_or(0.0)
+        .max(body_rect.bottom + sy);
+    let start = (body_rect.top + sy).max(0.0);
+    if page_bottom <= start {
+        return false;
+    }
+    let mut dark: Vec<(f64, f64)> = Vec::new();
+    let mut stack: Vec<(ElId, usize)> = vec![(body, 0)];
+    while let Some((el, depth)) = stack.pop() {
+        for child in dom.children(el) {
+            if !matches!(dom.style(child, "position").as_str(), "static" | "relative" | "sticky" | "") {
+                continue;
+            }
+            let r = dom.rect(child);
+            let over_body = r.right.min(body_rect.right) - r.left.max(body_rect.left);
+            if !r.all_finite() || r.height <= 0.0 || over_body < GROUND_COVER_MIN_SHARE * body_rect.width {
+                continue;
+            }
+            if !painted_at_capture(dom, child) {
+                continue;
+            }
+            if dark_fill(child) || paints_picture(child) {
+                dark.push(((r.top + sy).max(start), (r.bottom + sy).min(page_bottom)));
+            } else if depth + 1 < GROUND_BAND_MAX_DEPTH
+                && super::background::read_own_background_color(dom, child).map_or(true, |f| f.alpha_or_one() <= 0.0)
+            {
+                stack.push((child, depth + 1));
+            }
+        }
+    }
+    dark.retain(|(t, b)| b > t);
+    dark.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let (mut covered, mut reach) = (0.0, start);
+    for (t, b) in dark {
+        if b > reach {
+            covered += b - t.max(reach);
+            reach = b;
+        }
+    }
+    covered < UNPAINTED_ROOT_DARK_BAND_MAX_SHARE * (page_bottom - start)
 }
 
 /// Whether a painted in-flow box as wide as the body, up to
@@ -5452,6 +5589,47 @@ mod tests {
             typeset(&mut d, body, "p", "Copy", "\"Inter Tight\", sans-serif");
         }
         assert_eq!(font_finding(&d), None);
+    }
+
+    /// Taste call r12-t2 (looot.ai run 1010, felixowolf.com run 1006): a
+    /// page that names Inter in a stack nothing supplies sets its text in a
+    /// fallback. Where the capture listed `document.fonts` and no face of
+    /// the family is loaded, loading or waiting, the finding stands down.
+    /// A loaded subset, a face still on its way, a system face and a
+    /// capture that did not list the faces keep it.
+    #[test]
+    fn a_face_the_browser_never_loaded_is_not_the_page_face() {
+        let build = |faces: Option<Vec<(&str, &str)>>, family: &str| {
+            let mut d = FakeDom::new();
+            let (_h, body) = d.with_page();
+            for _ in 0..20 {
+                typeset(&mut d, body, "p", "Copy set in the named face", family);
+            }
+            d.font_faces = faces.map(|f| f.into_iter().map(|(a, b)| (a.to_string(), b.to_string())).collect());
+            d
+        };
+        let inter = "Inter, sans-serif";
+        let reported = Some("Primary font: inter (100% of text)".to_string());
+        // Never declared, or declared and failed.
+        assert_eq!(font_finding(&build(Some(vec![]), inter)), None);
+        assert_eq!(font_finding(&build(Some(vec![("Noto Sans", "loaded")]), inter)), None);
+        assert_eq!(font_finding(&build(Some(vec![("Inter", "error")]), inter)), None);
+        // Should-flag twins.
+        assert_eq!(font_finding(&build(None, inter)), reported);
+        assert_eq!(font_finding(&build(Some(vec![("Inter", "loaded")]), inter)), reported);
+        assert_eq!(font_finding(&build(Some(vec![("\"Inter\"", "loaded")]), inter)), reported);
+        assert_eq!(font_finding(&build(Some(vec![("Inter", "error"), ("Inter", "loaded")]), inter)), reported);
+        assert_eq!(font_finding(&build(Some(vec![("Inter", "loading")]), inter)), reported);
+        assert_eq!(font_finding(&build(Some(vec![("Inter", "unloaded")]), inter)), reported);
+        assert_eq!(
+            font_finding(&build(Some(vec![]), "Arial, sans-serif")),
+            Some("Primary font: arial (100% of text)".to_string())
+        );
+        // One face under another spelling (`GeistSans` from the package).
+        assert_eq!(
+            font_finding(&build(Some(vec![("GeistSans", "loaded")]), "\"Geist Sans\", sans-serif")),
+            Some("Primary font: geist sans (100% of text)".to_string())
+        );
     }
 
     /// walla.co.il: Arial is "40% of text" by element and sets 2% of the
