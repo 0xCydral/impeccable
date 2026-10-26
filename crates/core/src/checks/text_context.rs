@@ -753,8 +753,9 @@ fn landmark_holds_the_page<N: ContextNode>(c: &N) -> bool {
 }
 
 /// A phone frame's width range, in px, and its height over its width:
-/// aproov.es draws its app on a 300 by 600px device.
-const PHONE_MIN_WIDTH_PX: f64 = 160.0;
+/// aproov.es draws its app on a 300 by 600px device, mypip.dev its games on
+/// 150 by 329px screens.
+const PHONE_MIN_WIDTH_PX: f64 = 120.0;
 const PHONE_MAX_WIDTH_PX: f64 = 500.0;
 const PHONE_MIN_ASPECT: f64 = 1.6;
 const PHONE_MAX_ASPECT: f64 = 2.4;
@@ -769,8 +770,8 @@ const PHONE_MAX_PAGE_SHARE: f64 = 0.9;
 static CLOCK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(?:[01]?\d|2[0-3]):[0-5]\d$").unwrap());
 
 /// A drawn phone (decision r14-t1, "a phone shape with an h:mm clock in its
-/// top 50px"): a measured portrait box drawn as a frame, its corners
-/// rounded, with a status-bar clock near its top edge. A phone-sized app
+/// top 50px"): a measured portrait box drawn as a frame or painted as a
+/// screen, its corners rounded, with a status-bar clock near its top edge. A phone-sized app
 /// shell that is the page is not one: it is as wide as the page, or it
 /// holds the page's `h1` or half its text ([`landmark_holds_the_page`]).
 /// Every fact is measured, so an engine without layout never reads one.
@@ -780,8 +781,7 @@ fn is_phone_frame<N: ContextNode>(c: &N) -> bool {
     if !(PHONE_MIN_WIDTH_PX..=PHONE_MAX_WIDTH_PX).contains(&w)
         || !(PHONE_MIN_ASPECT..=PHONE_MAX_ASPECT).contains(&(h / w))
         || radius_px(&c.style("borderRadius"), w) < PHONE_MIN_RADIUS_PX
-        || !(has_shadow(c) || has_border(c))
-        || c.transform_running()
+        || !(has_shadow(c) || has_border(c) || paints_a_face(c))
     {
         return false;
     }
@@ -798,6 +798,14 @@ fn is_phone_frame<N: ContextNode>(c: &N) -> bool {
         return false;
     }
     !landmark_holds_the_page(c)
+}
+
+/// The box paints a face of its own: a fill at half opacity or more, or a
+/// background image. mypip.dev's phone screen is a rounded 190 by 412px
+/// fill inside a bezel drawn by sibling layers.
+fn paints_a_face(c: &impl ContextNode) -> bool {
+    let image = c.style("backgroundImage");
+    colour_alpha(&c.style("backgroundColor")) >= 0.5 || (!image.is_empty() && image != "none")
 }
 
 /// A text box in the frame that holds an `h:mm` time and nothing else, its
@@ -2424,6 +2432,11 @@ mod tests {
         let (device, _label) = phone(&body.add("div"), 300.0, 600.0, "9:41", 16.0);
         let bare = device.style("boxShadow", "none");
         assert!(!is_phone_frame(&bare));
+        // A screen painted with a fill counts (mypip.dev), a faint one not.
+        let screen = bare.clone().style("backgroundColor", "rgb(9, 9, 11)");
+        assert!(is_phone_frame(&screen));
+        let faint = screen.style("backgroundColor", "rgba(9, 9, 11, 0.2)");
+        assert!(!is_phone_frame(&faint));
     }
 
     #[test]
