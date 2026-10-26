@@ -204,6 +204,19 @@ describe('release.mjs guards', () => {
     assert.doesNotMatch(stdout, /release assets are published/);
   });
 
+  it('skill: counts files the engine compiles in from outside crates/', () => {
+    tagEngine();
+    fs.appendFileSync(path.join(workDir, 'scripts/bundle-signing-keys.json'), '\n');
+    write('skill/scripts/live-browser-dom.js', '// page js\n');
+    git(workDir, 'add', '-A');
+    git(workDir, 'commit', '-m', 'embedded inputs change after engine-v0.1.0');
+    git(workDir, 'push', 'origin', 'main');
+    const { code, stderr } = runReleaseWith(SOURCE_GUARD_ON, workDir, 'skill');
+    assert.equal(code, 1);
+    assert.match(stderr, /· scripts\/bundle-signing-keys\.json/);
+    assert.match(stderr, /· skill\/scripts\/live-browser-dom\.js/);
+  });
+
   it('cli: counts an uncommitted engine source edit', () => {
     tagEngine();
     write('Cargo.toml', '[workspace]\n');
@@ -406,5 +419,39 @@ describe('release.mjs guards', () => {
     const { code, stderr } = runRelease(workDir, 'skill');
     assert.equal(code, 1);
     assert.match(stderr, /Missing artifact: dist\/universal\.zip/);
+  });
+});
+
+describe('release.mjs engine source paths', () => {
+  it('cover every file the crates compile in from outside the workspace', () => {
+    const source = fs.readFileSync(RELEASE_SCRIPT, 'utf8');
+    const listed = source.match(/const ENGINE_SOURCE_PATHS = (\[[\s\S]*?\]);/);
+    assert.ok(listed, 'ENGINE_SOURCE_PATHS not found in release.mjs');
+    const pathspecs = new Function(`return ${listed[1]}`)();
+    const covered = new Set(git(REPO_ROOT, 'ls-files', '--', ...pathspecs).split('\n'));
+    const tracked = git(REPO_ROOT, 'ls-files').split('\n');
+
+    const embedded = new Set();
+    const crates = path.join(REPO_ROOT, 'crates');
+    for (const rel of fs.readdirSync(crates, { recursive: true })) {
+      if (!/^[^/\\]+[/\\]src[/\\].*\.rs$/.test(rel)) continue;
+      const file = path.join(crates, rel);
+      // Test modules close their files and embed fixtures the binary never
+      // carries, so read only what precedes the first one.
+      const shipped = fs.readFileSync(file, 'utf8').split('#[cfg(test)]')[0];
+      // concat!("dir/", $name) embeds a whole directory's worth of names.
+      for (const [, literal] of shipped.matchAll(/include_(?:str|bytes)!\(\s*(?:concat!\(\s*)?"([^"]+)"/g)) {
+        const target = path.relative(REPO_ROOT, path.resolve(path.dirname(file), literal)).split(path.sep).join('/');
+        if (target.startsWith('crates/')) continue;
+        if (literal.endsWith('/')) {
+          for (const f of tracked) if (f.startsWith(`${target}/`)) embedded.add(f);
+        } else {
+          embedded.add(target);
+        }
+      }
+    }
+
+    assert.ok(embedded.has('scripts/bundle-signing-keys.json'), 'the scan found none of the known embeds');
+    assert.deepEqual([...embedded].filter((f) => !covered.has(f)), []);
   });
 });

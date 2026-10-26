@@ -140,8 +140,17 @@ if (cfg.sibling) {
 // CI built from, or the diff would compare against the wrong tree. Diffing
 // against the working tree (not HEAD) counts tracked uncommitted edits too. Set
 // IMPECCABLE_SKIP_ENGINE_SOURCE_CHECK=1 only when the changes cannot reach the
-// shipped binary, such as test-only edits under crates/.
-const ENGINE_SOURCE_PATHS = ['crates', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml'];
+// shipped binary, such as test-only edits under crates/. The paths outside the
+// workspace are the files the crates compile in with include_str! or
+// include_bytes!; tests/release.test.mjs fails when one is missing here.
+const ENGINE_SOURCE_PATHS = [
+  'crates', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml',
+  'browser-bundle',
+  'scripts/bundle-signing-keys.json',
+  'skill/scripts/live-browser*.js', 'skill/scripts/modern-screenshot.umd.js',
+  'ui/component-review/theme.css', 'ui/component-review/fonts',
+  'ui/component-review/vendor/*.css', 'ui/component-review/vendor/instrument-strip.js',
+];
 if (cfg.engineGated && process.env.IMPECCABLE_SKIP_ENGINE_SOURCE_CHECK !== '1') {
   const engineTag = `engine-v${readEngineVersion(repoRoot)}`;
   step(`Verifying engine source is unchanged since ${engineTag}`);
@@ -157,7 +166,7 @@ if (cfg.engineGated && process.env.IMPECCABLE_SKIP_ENGINE_SOURCE_CHECK !== '1') 
       `so the engine source cannot be compared to it. Run \`git fetch --force origin tag ${engineTag}\`, then retry.`
     );
   }
-  const changed = run(`git diff --name-only refs/tags/${engineTag} -- ${ENGINE_SOURCE_PATHS.join(' ')}`);
+  const changed = run(`git diff --name-only refs/tags/${engineTag} -- ${ENGINE_SOURCE_PATHS.map((p) => `"${p}"`).join(' ')}`);
   if (changed) {
     fail(
       `Refusing to release ${cfg.label} ${version}: the engine source changed since ${engineTag}:\n` +
