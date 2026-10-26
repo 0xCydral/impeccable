@@ -253,6 +253,21 @@ pub fn paints_no_tile(size: &str) -> bool {
     size_components(&size).iter().any(|token| zero_size(token))
 }
 
+/// A CSS `opacity` as the fraction it multiplies by: a number, or a
+/// percentage divided by 100 (`20%` is `0.2`), clamped to 0..=1. `None`
+/// where nothing reads.
+pub fn opacity_value(raw: &str) -> Option<f64> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let value = match raw.strip_suffix('%') {
+        Some(number) => parse_float(number) / 100.0,
+        None => parse_float(raw),
+    };
+    value.is_finite().then(|| value.clamp(0.0, 1.0))
+}
+
 /// Whether a layer's `background-attachment` entry places it against the
 /// viewport rather than its box (`fixed`), so that where its paint meets
 /// the box depends on layout a file scan does not have: its coverage is not
@@ -571,6 +586,18 @@ mod tests {
             ink_unread: true,
             ..ink.clone()
         }));
+    }
+
+    #[test]
+    fn an_opacity_reads_as_a_fraction_whichever_way_it_is_written() {
+        assert_eq!(opacity_value("0.2"), Some(0.2));
+        assert_eq!(opacity_value("20%"), Some(0.2));
+        assert_eq!(opacity_value(" 100% "), Some(1.0));
+        assert_eq!(opacity_value("0%"), Some(0.0));
+        assert_eq!(opacity_value("1.5"), Some(1.0));
+        assert_eq!(opacity_value("-1"), Some(0.0));
+        assert_eq!(opacity_value(""), None);
+        assert_eq!(opacity_value("var(--o)"), None);
     }
 
     #[test]

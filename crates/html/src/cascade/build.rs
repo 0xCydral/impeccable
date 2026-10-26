@@ -463,21 +463,19 @@ fn put_pseudo_decl(
 /// the same way. Winners already expanded this way merge key by key
 /// (`put_pseudo_decl`), never through here again: a replay would hand a
 /// longhand's slot back to a shorthand of the same priority that it had
-/// already beaten. The shorthand is resolved against the root's custom
-/// properties before it is split, so `var(--scrim)` holding a gradient
-/// lands in the image slot alone.
+/// already beaten. Values are stored as written: a shorthand holding a
+/// `var()` goes whole into both slots, and the computed pass resolves every
+/// value against the element's own custom properties before it reads them
+/// (`mark_pseudo_paint`), splitting the shorthand again then.
 fn merge_pseudo_decl(
     map: &mut IndexMap<String, (String, DeclMeta)>,
     key: &str,
     value: &str,
     meta: &DeclMeta,
-    root_custom_props: &impeccable_core::checks::css_scan::CustomProps,
 ) {
     put_pseudo_decl(map, key, value, meta);
     if key == "background" {
-        // Resolved first, so a `var()` holding a gradient or a color reads
-        // as that and not as one unreadable value in both slots.
-        let (color, image) = background_paint_parts(&resolve_root(value, root_custom_props));
+        let (color, image) = background_paint_parts(value);
         put_pseudo_decl(map, "background-color", &color, meta);
         put_pseudo_decl(map, "background-image", &image, meta);
     } else if key == "inset" {
@@ -512,8 +510,7 @@ fn pseudo_paints_a_box(decls: &IndexMap<String, String>) -> bool {
     }
     match get("opacity") {
         Some(opacity) => {
-            let value = js::parse_float(&opacity);
-            value.is_nan() || value > 0.02
+            impeccable_core::checks::sampled_contrast::opacity_value(&opacity).map_or(true, |v| v > 0.02)
         }
         None => true,
     }
@@ -554,17 +551,31 @@ fn names_pseudo_paint_or_geometry(decls: &IndexMap<String, (String, DeclMeta)>) 
 /// The sampled path's marks (#560) on a pseudo stretched over its element
 /// that generates a box which paints (`pseudo_paints_a_box`): a raster
 /// image makes it a picture under the element's content, and any paint at
-/// all makes it an overlay the walk gives up on. Read from the
-/// winning declarations of every rule on the same pseudo of the element
+/// all makes it an overlay the walk gives up on. Read from the winning
+/// declarations of every rule on the same pseudo of the element
 /// (`build_static_style_map`), not rule by rule: the geometry and the paint
 /// may come from different rules, on one selector or two, and a later rule
-/// may take the paint away.
+/// may take the paint away. Every value is resolved against the element's
+/// own custom properties first (`custom_props`, the computed pass's map
+/// for the element, inherited and inline values included), and a shorthand
+/// that held a `var()` is split into its color and image parts once
+/// resolved.
 fn mark_pseudo_paint(
     doc: &mut StaticDocument,
     decls: &IndexMap<String, String>,
     ids: &[NodeId],
-    root_custom_props: &impeccable_core::checks::css_scan::CustomProps,
+    custom_props: &CustomProps,
 ) {
+    let decls: IndexMap<String, String> = decls
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.clone(),
+                super::checks_shim::resolve_var_refs(v, custom_props),
+            )
+        })
+        .collect();
+    let decls = &decls;
     if !pseudo_covers_box(decls) || !pseudo_paints_a_box(decls) {
         return;
     }
@@ -579,15 +590,9 @@ fn mark_pseudo_paint(
     // picture under that element's content: the hero photo written as
     // `.hero::before { position: absolute; inset: 0; background: url() }`.
     // The contrast pass stands down over it, as it does over an `<img>`.
-    let image_raw = resolve_root(
-        &first_of("background-image", "background"),
-        root_custom_props,
-    );
+    let (_, image_raw) = background_paint_parts(&first_of("background-image", "background"));
     let picture = js::to_lower_case(&image_raw).contains("url(");
-    let color_raw = resolve_root(
-        &first_of("background-color", "background"),
-        root_custom_props,
-    );
+    let (color_raw, _) = background_paint_parts(&first_of("background-color", "background"));
     let token = COLOR_TOKEN_RE
         .find(&color_raw)
         .map(|m| m.as_str().to_string());
@@ -655,7 +660,7 @@ pub fn build_static_style_map(
         || css.rules(),
     );
 
-    profile::step(
+    let pseudo_paint = profile::step(
         profile,
         Meta::new("selector-match", "css-selectors", file_path),
         || {
@@ -684,13 +689,7 @@ pub fn build_static_style_map(
                                 order: rule.order,
                                 inline: false,
                             };
-                            merge_pseudo_decl(
-                                merged,
-                                &js::to_lower_case(&d.prop),
-                                &d.value,
-                                &meta,
-                                &root_custom_props,
-                            );
+                            merge_pseudo_decl(merged, &js::to_lower_case(&d.prop), &d.value, &meta);
                         }
                         continue;
                     }
@@ -802,12 +801,15 @@ pub fn build_static_style_map(
                     }
                 }
             }
+            // The merged declarations, by element, for the computed pass
+            // to read against each element's own custom properties.
+            let mut pseudo_paint: HashMap<NodeId, Vec<IndexMap<String, String>>> = HashMap::new();
             for ((id, _), decls) in &pseudo_by_node {
                 let merged: IndexMap<String, String> = decls
                     .iter()
                     .map(|(k, (v, _))| (k.clone(), v.clone()))
                     .collect();
-                mark_pseudo_paint(doc, &merged, &[*id], &root_custom_props);
+                pseudo_paint.entry(*id).or_default().push(merged);
             }
 
             let mut inline_order: i64 = rules.len() as i64 + 1;
@@ -832,6 +834,7 @@ pub fn build_static_style_map(
                 }
                 inline_order += 1000;
             }
+            pseudo_paint
         },
     );
 
@@ -839,7 +842,13 @@ pub fn build_static_style_map(
         profile,
         Meta::new("cascade", "compute-styles", file_path),
         || {
-            compute_styles(doc, &specified, &hover_specified, &placeholder_specified);
+            compute_styles(
+                doc,
+                &specified,
+                &hover_specified,
+                &placeholder_specified,
+                &pseudo_paint,
+            );
         },
     );
     mark_side_accent_radius_blind_spots(doc, &css.text, &specified, &refused_radius_selectors);
@@ -984,6 +993,7 @@ fn compute_styles(
     specified: &SpecifiedStore<NodeId>,
     hover_specified: &SpecifiedStore<NodeId>,
     placeholder_specified: &SpecifiedStore<NodeId>,
+    pseudo_paint: &HashMap<NodeId, Vec<IndexMap<String, String>>>,
 ) {
     let mut computed: HashMap<NodeId, Rc<StyleValues>> = HashMap::new();
     let mut customs: HashMap<NodeId, Rc<CustomProps>> = HashMap::new();
@@ -1013,6 +1023,15 @@ fn compute_styles(
             if prop.starts_with("--") {
                 let resolved = super::checks_shim::resolve_var_refs(&decl.value, &custom_props);
                 custom_props.insert(prop.clone(), resolved);
+            }
+        }
+        // The sampled path's pseudo marks (#560), read here against this
+        // element's own custom properties, which the rule pre-pass did not
+        // have: a `--scrim` set on the element, inherited, or inline wins
+        // over the sheet's first declaration.
+        if let Some(pseudos) = pseudo_paint.get(&node) {
+            for decls in pseudos {
+                mark_pseudo_paint(doc, decls, &[node], &custom_props);
             }
         }
 

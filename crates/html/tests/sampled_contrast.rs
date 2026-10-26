@@ -1124,6 +1124,27 @@ fn faded_text_is_measured_as_seen() {
             "<div class=hero><p>Copy</p></div>",
             false,
         ),
+        // A percentage is the same fraction, on the text or on a box.
+        (
+            "p { color: #fdfdfd; opacity: 20%; }",
+            "<div class=hero><p>Copy</p></div>",
+            true,
+        ),
+        (
+            "p { color: #fdfdfd; } .faded { opacity: 20%; }",
+            "<div class=hero><div class=faded><p>Copy</p></div></div>",
+            true,
+        ),
+        (
+            "p { color: #fdfdfd; opacity: 5%; }",
+            "<div class=hero><p>Copy</p></div>",
+            false,
+        ),
+        (
+            "p { color: #fdfdfd; opacity: 100%; }",
+            "<div class=hero><p>Copy</p></div>",
+            false,
+        ),
     ] {
         let found = site.contrast(&format!("{hero} {fade}"), body);
         if sampled {
@@ -1362,6 +1383,12 @@ fn an_image_backed_placeholder_is_measured() {
     assert!(placeholder_sampled_on("dark.png", &found), "{found:?}");
     let css = ".search { background: url(dark.png); border: 0; opacity: 0.3; } .search::placeholder { color: #fdfdfd; }";
     assert!(site.contrast(css, field).is_empty(), "host opacity");
+    // A percentage fades the placeholder's ink the same way.
+    let css = ".search { background: url(light.png); border: 0; } .search::placeholder { color: #fdfdfd; opacity: 0%; }";
+    assert!(site.contrast(css, field).is_empty(), "placeholder opacity 0%");
+    let css = ".search { background: url(dark.png); border: 0; } .search::placeholder { color: #fdfdfd; opacity: 30%; }";
+    let found = site.contrast(css, field);
+    assert!(placeholder_sampled_on("dark.png", &found), "placeholder opacity 30%: {found:?}");
     // And the analytic check reads the same faded ink: gray ink at zero
     // opacity on a white field is not flagged against the white.
     let css = ".search { background: #fdfdfd; border: 0; } .search::placeholder { color: #999; opacity: 0; }";
@@ -1565,6 +1592,7 @@ fn a_pseudo_that_generates_no_box_paints_nothing() {
         "content: ''; display: none",
         "content: ''; visibility: hidden",
         "content: ''; opacity: 0",
+        "content: ''; opacity: 0%",
     ] {
         let css = format!(".hero {{ background: url(light.png); position: relative; }} .hero::before {{ {decl}; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.6); }} p {{ position: relative; color: #fdfdfd; }}");
         let found = site.contrast(&css, body);
@@ -1574,9 +1602,11 @@ fn a_pseudo_that_generates_no_box_paints_nothing() {
     let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.6); } .hero::before { content: none; } p { position: relative; color: #fdfdfd; }";
     let found = site.contrast(css, body);
     assert!(sampled_on("light.png", &found), "{found:?}");
-    let css = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.6); opacity: 0.5; } p { position: relative; color: #fdfdfd; }";
-    let found = site.contrast(css, body);
-    assert!(found.is_empty(), "{found:?}");
+    for opacity in ["0.5", "50%"] {
+        let css = format!(".hero {{ background: url(light.png); position: relative; }} .hero::before {{ content: ''; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.6); opacity: {opacity}; }} p {{ position: relative; color: #fdfdfd; }}");
+        let found = site.contrast(&css, body);
+        assert!(found.is_empty(), "{opacity}: {found:?}");
+    }
 }
 
 #[test]
@@ -1662,4 +1692,27 @@ fn a_sized_pseudo_is_a_decoration_not_an_overlay() {
         let found = site.contrast(&css, body);
         assert!(found.is_empty(), "{size}: {found:?}");
     }
+}
+
+#[test]
+fn a_pseudo_var_reads_the_elements_own_custom_properties() {
+    let site = Site::new("pseudo-var-scope");
+    let pseudo = ".hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: 0; background: var(--scrim); } p { position: relative; color: #fdfdfd; }";
+    // The element's own value, not the sheet's first declaration, is the
+    // pseudo's: a dark scrim set on `.hero` under a transparent root is an
+    // overlay.
+    let css = format!(":root {{ --scrim: transparent; }} .hero {{ --scrim: rgba(0, 0, 0, 0.7); }} {pseudo}");
+    let found = site.contrast(&css, "<div class=hero><p>White copy</p></div>");
+    assert!(found.is_empty(), "{found:?}");
+    // And a transparent scrim set on the element under a dark root is not.
+    let css = format!(":root {{ --scrim: rgba(0, 0, 0, 0.7); }} .plain {{ --scrim: transparent; }} {pseudo}");
+    let found = site.contrast(&css, "<div class=\"hero plain\"><p>White copy</p></div>");
+    assert!(sampled_on("light.png", &found), "{found:?}");
+    // The value inherits from an ancestor, and an inline style sets it too.
+    let css = format!(":root {{ --scrim: transparent; }} .page {{ --scrim: rgba(0, 0, 0, 0.7); }} {pseudo}");
+    let found = site.contrast(&css, "<div class=page><div class=hero><p>White copy</p></div></div>");
+    assert!(found.is_empty(), "{found:?}");
+    let css = format!(":root {{ --scrim: transparent; }} {pseudo}");
+    let found = site.contrast(&css, "<div class=hero style=\"--scrim: rgba(0, 0, 0, 0.7)\"><p>White copy</p></div>");
+    assert!(found.is_empty(), "{found:?}");
 }

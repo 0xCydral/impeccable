@@ -740,15 +740,10 @@ fn icon_hosts(el: &StaticElement<'_>) -> Vec<ego_tree::NodeId> {
     hosts
 }
 
-/// The element's own declared `opacity`, `1` where it does not read.
+/// The element's own declared `opacity`, a number or a percentage, `1`
+/// where it does not read.
 fn opacity_of(style: &StyleValues) -> f64 {
-    let raw = sv(style, "opacity");
-    let v = parse_float(raw);
-    if js::trim(raw).is_empty() || !v.is_finite() {
-        1.0
-    } else {
-        v.clamp(0.0, 1.0)
-    }
+    sampled_contrast::opacity_value(sv(style, "opacity")).unwrap_or(1.0)
 }
 
 /// The ink a reader sees once the opacity of the boxes between the text and
@@ -985,9 +980,7 @@ fn effective_opacity(el: &StaticElement<'_>) -> f64 {
         if !(eff_opacity > 0.02) {
             break;
         }
-        let op = sv(c.style(), "opacity");
-        let op = if op.is_empty() { "1" } else { op };
-        eff_opacity *= parse_float(op);
+        eff_opacity *= sampled_contrast::opacity_value(sv(c.style(), "opacity")).unwrap_or(1.0);
         cur = c.parent_element();
     }
     eff_opacity
