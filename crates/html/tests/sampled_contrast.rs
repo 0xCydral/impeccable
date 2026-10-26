@@ -1716,3 +1716,20 @@ fn a_pseudo_var_reads_the_elements_own_custom_properties() {
     let found = site.contrast(&css, "<div class=hero style=\"--scrim: rgba(0, 0, 0, 0.7)\"><p>White copy</p></div>");
     assert!(found.is_empty(), "{found:?}");
 }
+
+#[test]
+fn a_boxless_wrapper_at_a_hidden_opacity_does_not_hide_the_text() {
+    let site = Site::new("boxless-hidden");
+    // A `display: contents` wrapper has no box for its opacity to apply to,
+    // so its `opacity: 1%` neither fades the text nor hides it from the
+    // measurement: white on the light image still fails.
+    for opacity in ["1%", "0.01", "0"] {
+        let css = format!(".hero {{ background: url(light.png); }} .wrap {{ display: contents; opacity: {opacity}; }} p {{ color: #fdfdfd; }}");
+        let found = site.contrast(&css, "<div class=hero><div class=wrap><p>White copy</p></div></div>");
+        assert!(sampled_on("light.png", &found), "{opacity}: {found:?}");
+    }
+    // A wrapper with a box at that opacity hides the text on purpose.
+    let css = ".hero { background: url(light.png); } .wrap { opacity: 1%; } p { color: #fdfdfd; }";
+    let found = site.contrast(css, "<div class=hero><div class=wrap><p>White copy</p></div></div>");
+    assert!(found.is_empty(), "{found:?}");
+}

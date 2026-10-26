@@ -980,7 +980,11 @@ fn effective_opacity(el: &StaticElement<'_>) -> f64 {
         if !(eff_opacity > 0.02) {
             break;
         }
-        eff_opacity *= sampled_contrast::opacity_value(sv(c.style(), "opacity")).unwrap_or(1.0);
+        // A `display: contents` element has no box for its opacity to
+        // apply to: read past, as `fade_layers` reads past its fills.
+        if !paints_no_box(c.style()) {
+            eff_opacity *= sampled_contrast::opacity_value(sv(c.style(), "opacity")).unwrap_or(1.0);
+        }
         cur = c.parent_element();
     }
     eff_opacity
