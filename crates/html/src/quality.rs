@@ -344,10 +344,26 @@ const FOCUSABLE_CONTROL_MAX_CHARS: usize = 80;
 /// one of the [`INTERACTIVE`] elements and roles, or a box with a `tabindex`
 /// that is not negative and that holds at most
 /// [`FOCUSABLE_CONTROL_MAX_CHARS`] of text. A focusable region (a card, an
-/// accordion item, a skip-link target) is not a control.
-fn is_in_control(el: &StaticElement<'_>) -> bool {
-    if el.closest(INTERACTIVE).is_some() {
-        return true;
+/// accordion item, a skip-link target) is not a control, and neither is a
+/// card built as a button around a drawn frame when `past_cards` asks
+/// ([`impeccable_core::checks::text_context::is_card_button`], which needs
+/// a box's size, so only declared px sizes count here).
+fn is_in_control(el: &StaticElement<'_>, past_cards: bool) -> bool {
+    let mut from = Some(*el);
+    let mut steps = 0;
+    while let Some(f) = from {
+        let Some(control) = f.closest(INTERACTIVE) else { break };
+        steps += 1;
+        if !past_cards
+            || steps > 8
+            || !impeccable_core::checks::text_context::is_card_button(
+                &crate::text_context::StaticNode(control),
+                &crate::text_context::StaticNode(*el),
+            )
+        {
+            return true;
+        }
+        from = control.parent_element();
     }
     let mut cur = Some(*el);
     while let Some(c) = cur {
@@ -1048,7 +1064,7 @@ pub fn check_quality(q: &QualityInput<'_, '_>) -> Vec<RuleHit> {
             // reports here.
             let is_exempt_context = el.closest(EXEMPT_CONTEXT).is_some();
             if !is_exempt_context && !is_visually_hidden(el, style) {
-                let is_interactive = is_in_control(el);
+                let is_interactive = is_in_control(el, false);
                 let is_furniture = el.closest(FURNITURE_ELEMENTS).is_some()
                     || has_furniture_class(*el);
                 let is_smallprint = el.closest(SMALLPRINT).is_some();
@@ -1066,8 +1082,10 @@ pub fn check_quality(q: &QualityInput<'_, '_>) -> Vec<RuleHit> {
                     // A label with no reading job (taste call r5-p3) and
                     // text in a mockup (r5-p26) report as advisory. A
                     // control's text is neither: a framed demo's controls
-                    // keep failing too, since a visitor can use them.
-                    let advisory = !is_interactive
+                    // keep failing too, since a visitor can use them. A
+                    // card built as a button around a drawn frame is not
+                    // the control of the text in that frame.
+                    let advisory = (!is_interactive || !is_in_control(el, true))
                         && (crate::text_context::is_micro_label(el)
                             || crate::text_context::in_mock_context(el));
                     findings.push(advisory_if(

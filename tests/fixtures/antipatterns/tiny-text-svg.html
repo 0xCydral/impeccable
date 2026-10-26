@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>tiny-text reads SVG text at the size it is drawn</title>
+<!--
+  SVG text is drawn at its computed size times the scale its svg takes from
+  the viewBox: the rendered width over the viewBox width, the smaller axis
+  under the default preserveAspectRatio. tiny-text tests that drawn size
+  (observations-1010 row 16, quoin.ai) and names it in the snippet when it
+  differs from the computed size. An svg without a viewBox keeps the
+  computed size.
+-->
+<style>
+  body { font-family: system-ui, sans-serif; font-size: 16px; color: #1a1a1a; background: #fff; margin: 24px; }
+  .col { display: inline-block; width: 440px; vertical-align: top; }
+  h2 { font-size: 20px; margin: 0 0 16px; }
+  svg { display: block; margin: 0 0 24px; }
+  text { fill: #1a1a1a; font-family: system-ui, sans-serif; }
+</style>
+</head>
+<body>
+
+<div class="col" id="fails">
+  <h2>Fails</h2>
+
+  <!-- 14px in a 400-unit viewBox drawn 200px wide: drawn at 7px -->
+  <svg class="fail-shrunk" width="200" height="100" viewBox="0 0 400 200">
+    <text x="10" y="40" font-size="14">Three agents at forty dollars a seat</text>
+  </svg>
+
+  <!-- quoin.ai: 10.5px in a 360-unit viewBox drawn 411px wide is 11.99px -->
+  <svg class="fail-near" width="411" height="217" viewBox="0 0 360 190">
+    <text x="10" y="40" font-size="10.5">3 agents at PAYG, as low as $3.75 an agent</text>
+  </svg>
+
+  <!-- no viewBox: the computed size stands -->
+  <svg class="fail-no-viewbox" width="400" height="100">
+    <text x="10" y="40" font-size="10">Cited report with sources for every claim</text>
+  </svg>
+</div>
+
+<div class="col" id="passes">
+  <h2>Passes</h2>
+
+  <!-- 10px in a 200-unit viewBox drawn 400px wide: drawn at 20px -->
+  <svg class="pass-enlarged" width="400" height="200" viewBox="0 0 200 100">
+    <text x="10" y="30" font-size="10">Cited report with sources</text>
+  </svg>
+
+  <!-- 11px in a 300-unit viewBox drawn 420px wide: drawn at 15.4px -->
+  <svg class="pass-scaled" width="420" height="140" viewBox="0 0 300 100">
+    <text x="10" y="30" font-size="11">Two reviewers, one owner, no gaps</text>
+  </svg>
+</div>
+
+</body>
+</html>

@@ -378,6 +378,10 @@ const SAMPLE_CAPTION_MAX_WORDS: usize = 16;
 /// heading, a table cell, a list item or code.
 const SAMPLE_CAPTION_TAGS: &[&str] =
     &["p", "span", "div", "small", "em", "i", "strong", "b", "figcaption"];
+/// Words that say the panel is made up whatever follows them: the caption
+/// cue of decision r14-t1 ("a caption calling it illustrative or
+/// fictional").
+const ILLUSTRATIVE_WORDS: &[&str] = &["illustrative", "fictional"];
 /// How far above a frame a caption beside it is looked for. ascenix.co's
 /// "Sample data" note closes a tab set three wrappers above each panel.
 const SAMPLE_CAPTION_BESIDE_LEVELS: usize = 4;
@@ -385,7 +389,7 @@ const SAMPLE_CAPTION_BESIDE_LEVELS: usize = 4;
 /// A caption that says the panel it sits on or beside shows sample content:
 /// its label, the text up to the first sentence end or separator, is at
 /// most three words and is one of two closed English phrases. Either one of
-/// the words is `illustrative` ("Illustrative" and "Illustrative example" on
+/// the words is `illustrative` or `fictional` ("Illustrative" and "Illustrative example" on
 /// getpaidlens.com, "Illustrative example" on veeza.ai, "Illustrative
 /// markdown" on context.dev, "Illustrative report only" on decent.com), or
 /// the label is a sample word and a data noun, with `only` after them or not
@@ -400,7 +404,9 @@ pub fn is_sample_caption(text: &str) -> bool {
     }
     // The label ends at the first word that closes a sentence or carries a
     // separator. A mark inside a word ("example.com/pricing") closes nothing.
-    const ENDS: &[char] = &['.', '!', '?', ':', ';', '。', '：'];
+    // A comma closes it too: usedefinite.com's "Illustrative values, shown
+    // only to explain each workflow." is labelled by its first two words.
+    const ENDS: &[char] = &['.', '!', '?', ':', ';', ',', '。', '：', '，'];
     const SEPARATORS: &[&str] = &["·", "•", "|", "—", "–", "-"];
     let mut words: Vec<String> = Vec::new();
     for raw in all {
@@ -418,7 +424,7 @@ pub fn is_sample_caption(text: &str) -> bool {
     if !(1..=3).contains(&words.len()) {
         return false;
     }
-    if words.iter().any(|w| w == "illustrative") {
+    if words.iter().any(|w| ILLUSTRATIVE_WORDS.contains(&w.as_str())) {
         return true;
     }
     words.len() >= 2
@@ -627,17 +633,39 @@ fn bar_has_preview_caption<N: ContextNode>(bar: &N) -> bool {
     false
 }
 
+/// A child laid over the box rather than in its flow, holding no text: an
+/// `aria-hidden` or absolutely placed glow, sheen or backdrop.
+/// cursorhelper.vercel.app's `.hero-window` opens with an `aria-hidden`
+/// absolute glow, and its 45px dotted bar comes second.
+fn is_textless_layer(n: &impl ContextNode) -> bool {
+    let laid_over = n.attr("aria-hidden").is_some_and(|v| v.trim().eq_ignore_ascii_case("true"))
+        || matches!(n.style("position").trim(), "absolute" | "fixed");
+    laid_over && n.text().trim().is_empty()
+}
+
+/// How far below the box's top edge a title bar may start, in px: within
+/// [`TITLE_BAR_TOP_PX`] of the edge, or at the box's own padding edge
+/// (mymanagment.net's bar sits 25px down, under a 1px border and 24px of
+/// padding) up to [`TITLE_BAR_TOP_MAX_PX`].
+const TITLE_BAR_TOP_PX: f64 = 24.0;
+const TITLE_BAR_TOP_MAX_PX: f64 = 40.0;
+
 /// The box's first child when it reads as a title bar: it spans the box at
-/// its top, and the box is at least twice its height.
+/// its top, and the box is at least twice its height. Text-less layers laid
+/// over the box ([`is_textless_layer`]) are passed over to find it.
 fn title_bar<N: ContextNode>(c: &N) -> Option<N> {
-    let kids = c.children();
+    let all = c.children();
+    let lead = all.iter().take_while(|k| is_textless_layer(*k)).count();
+    let kids = &all[lead..];
     let bar = kids.first()?.clone();
     if kids.len() < 2 {
         return None;
     }
     if let (Some(b), Some(w)) = (bar.rect(), c.rect()) {
         let spans = b.2 >= w.2 * 0.6;
-        let at_top = (b.1 - w.1).abs() <= 24.0;
+        let inset = px(&c.style("borderTopWidth")).unwrap_or(0.0) + px(&c.style("paddingTop")).unwrap_or(0.0);
+        let reach = TITLE_BAR_TOP_PX.max(inset + 2.0).min(TITLE_BAR_TOP_MAX_PX);
+        let at_top = (b.1 - w.1).abs() <= reach;
         // A bar that carries traffic lights needs only to hold them: a phone
         // layout shrinks smartbi.ca's 21px bar to 11px around 8px dots. A
         // bar read by its caption needs room for a line of text.
@@ -722,6 +750,85 @@ fn landmark_holds_the_page<N: ContextNode>(c: &N) -> bool {
     let own = rendered_text_chars(c, usize::MAX);
     let page = rendered_text_chars(&root, own.saturating_mul(2).saturating_add(1));
     page > 0 && own * 2 >= page
+}
+
+/// A phone frame's width range, in px, and its height over its width:
+/// aproov.es draws its app on a 300 by 600px device.
+const PHONE_MIN_WIDTH_PX: f64 = 160.0;
+const PHONE_MAX_WIDTH_PX: f64 = 500.0;
+const PHONE_MIN_ASPECT: f64 = 1.6;
+const PHONE_MAX_ASPECT: f64 = 2.4;
+/// A phone's corners are rounded at least this much, in px.
+const PHONE_MIN_RADIUS_PX: f64 = 16.0;
+/// How far below the frame's top edge its status-bar clock sits, at most.
+const PHONE_CLOCK_TOP_PX: f64 = 50.0;
+/// A frame as wide as this share of the page is the page's own column.
+const PHONE_MAX_PAGE_SHARE: f64 = 0.9;
+
+/// An `h:mm` time and nothing else: a status bar's "9:41".
+static CLOCK_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^(?:[01]?\d|2[0-3]):[0-5]\d$").unwrap());
+
+/// A drawn phone (decision r14-t1, "a phone shape with an h:mm clock in its
+/// top 50px"): a measured portrait box drawn as a frame, its corners
+/// rounded, with a status-bar clock near its top edge. A phone-sized app
+/// shell that is the page is not one: it is as wide as the page, or it
+/// holds the page's `h1` or half its text ([`landmark_holds_the_page`]).
+/// Every fact is measured, so an engine without layout never reads one.
+fn is_phone_frame<N: ContextNode>(c: &N) -> bool {
+    let Some(r) = c.rect() else { return false };
+    let (w, h) = (r.2, r.3);
+    if !(PHONE_MIN_WIDTH_PX..=PHONE_MAX_WIDTH_PX).contains(&w)
+        || !(PHONE_MIN_ASPECT..=PHONE_MAX_ASPECT).contains(&(h / w))
+        || radius_px(&c.style("borderRadius"), w) < PHONE_MIN_RADIUS_PX
+        || !(has_shadow(c) || has_border(c))
+        || c.transform_running()
+    {
+        return false;
+    }
+    if !holds_status_clock(c, r) {
+        return false;
+    }
+    let mut root = c.clone();
+    for _ in 0..256 {
+        let Some(p) = root.parent() else { break };
+        root = p;
+    }
+    let page_width = root.rect().map_or(0.0, |p| p.2);
+    if !(page_width > 0.0 && w < page_width * PHONE_MAX_PAGE_SHARE) {
+        return false;
+    }
+    !landmark_holds_the_page(c)
+}
+
+/// A text box in the frame that holds an `h:mm` time and nothing else, its
+/// top within [`PHONE_CLOCK_TOP_PX`] of the frame's and inside it across.
+fn holds_status_clock<N: ContextNode>(c: &N, frame: (f64, f64, f64, f64)) -> bool {
+    let mut level = c.children();
+    let mut visited = 0usize;
+    for _ in 0..6 {
+        let mut next = Vec::new();
+        for n in &level {
+            visited += 1;
+            if visited > 80 {
+                return false;
+            }
+            let Some(b) = n.rect() else { continue };
+            // A box that starts below the band holds nothing in it.
+            if b.1 > frame.1 + PHONE_CLOCK_TOP_PX {
+                continue;
+            }
+            let kids = n.children();
+            if kids.is_empty() {
+                let in_band = b.1 >= frame.1 - 1.0 && b.0 >= frame.0 - 1.0 && b.0 + b.2 <= frame.0 + frame.2 + 1.0;
+                if in_band && CLOCK_RE.is_match(n.direct_text().trim()) {
+                    return true;
+                }
+            }
+            next.extend(kids);
+        }
+        level = next;
+    }
+    false
 }
 
 /// Elements whose text is source, not words on the page.
@@ -859,10 +966,13 @@ fn framed_walk<N: ContextNode>(el: &N, mut passed_frame: bool) -> Option<Frame> 
             return None;
         }
         // A control inside the frame is still a control: adant.ai's tab
-        // buttons in its terminal card are clicked.
-        if (tag == "a" && c.attr("href").is_some())
+        // buttons in its terminal card are clicked. A card built as a
+        // button around a drawn frame is not the control the text belongs
+        // to ([`is_card_button`]), so the walk goes on through it.
+        if ((tag == "a" && c.attr("href").is_some())
             || DEMO_CONTROL_TAGS.contains(&tag.as_str())
-            || c.attr("role").is_some_and(|r| DEMO_CONTROL_ROLES.contains(&r.trim().to_lowercase().as_str()))
+            || c.attr("role").is_some_and(|r| DEMO_CONTROL_ROLES.contains(&r.trim().to_lowercase().as_str())))
+            && !is_card_button(&c, el)
         {
             return None;
         }
@@ -871,7 +981,10 @@ fn framed_walk<N: ContextNode>(el: &N, mut passed_frame: bool) -> Option<Frame> 
         }
         if depth > 0
             && !FRAME_SKIP_TAGS.contains(&tag.as_str())
-            && (is_transformed_frame(&c) || is_demo_window(&c) || (passed_frame && is_scaled_wrapper(&c)))
+            && (is_transformed_frame(&c)
+                || is_demo_window(&c)
+                || (passed_frame && is_scaled_wrapper(&c))
+                || is_phone_frame(&c))
         {
             return Some(Frame::Chrome);
         }
@@ -905,6 +1018,43 @@ fn framed_walk<N: ContextNode>(el: &N, mut passed_frame: bool) -> Option<Frame> 
     None
 }
 
+/// The text a button holds past which, with a drawn frame inside it, it is
+/// a card rather than one control: the browser engine's
+/// `FOCUSABLE_CONTROL_MAX_CHARS`.
+pub const CARD_BUTTON_MIN_CHARS: usize = 80;
+
+/// Whether `control`, a `button` or `role="button"` that `el` sits in, is a
+/// card built as a button: it holds more than [`CARD_BUTTON_MIN_CHARS`] of
+/// text, and a frame-sized frame box sits between it and `el`.
+/// engineforge.ai's 409 by 490px `<button>` cards each hold a bordered code
+/// panel, and mypip.dev's `role="button"` feature cards a bordered prompt
+/// box. The text in that frame is the frame's, not the label of the card's
+/// click. A toggle ("Cockpit", "Classic") holds a few words and no frame,
+/// and a plan card built as a button with three words on it stays a
+/// control. A box with no known size is no frame, so an engine without
+/// layout keeps every button a control.
+pub fn is_card_button<N: ContextNode>(control: &N, el: &N) -> bool {
+    let is_button = control.tag() == "button"
+        || control.attr("role").is_some_and(|r| r.trim().eq_ignore_ascii_case("button"));
+    if !is_button || control.key() == el.key() {
+        return false;
+    }
+    if collapse(&control.text()).encode_utf16().count() <= CARD_BUTTON_MIN_CHARS {
+        return false;
+    }
+    let mut framed = false;
+    let mut cur = el.parent();
+    for _ in 0..32 {
+        let Some(c) = cur else { return false };
+        if c.key() == control.key() {
+            return framed;
+        }
+        framed = framed || is_sized_frame_box(&c);
+        cur = c.parent();
+    }
+    false
+}
+
 /// Whether the box itself is a framed HTML demo by the structure
 /// [`in_framed_demo`] reads off an ancestor: a window with three title-bar
 /// dots, a framed box under a preview caption, or a device frame scaled or
@@ -920,6 +1070,7 @@ pub fn is_demo_frame<N: ContextNode>(el: &N) -> bool {
     !has_part(&el.class_list(), SLIDE_PARTS)
         && (is_transformed_frame(el)
             || is_demo_window(el)
+            || is_phone_frame(el)
             // maritime.sh's window is the frame box; the scale sits on a
             // wrapper above it.
             || (is_sized_frame_box(el) && (has_sample_caption_on(el) || framed_walk(el, true).is_some())))
@@ -1936,6 +2087,9 @@ mod tests {
             "Demo data",
             "Sample data: updated hourly",
             "Sample data · 3 homes",
+            "Illustrative values, shown only to explain each workflow.",
+            "Fictional",
+            "Fictional company data",
         ] {
             assert!(is_sample_caption(yes), "{yes}");
         }
@@ -2083,6 +2237,193 @@ mod tests {
         let (_frame, _head, label) = panel(&body);
         body.add("p").text("Sample data");
         assert!(!in_framed_demo(&label));
+    }
+
+    /// observations-1010 row 1, gap 1: cursorhelper.vercel.app's window
+    /// opens with an `aria-hidden` absolute glow, and mymanagment.net's bar
+    /// sits under 24px of padding and a 1px border.
+    #[test]
+    fn a_title_bar_behind_a_glow_or_padding() {
+        let build = |glow: Option<(&str, &str)>, pad: f64| {
+            let (_t, body) = Tree::new();
+            let win = body.add("div").rect(0.0, 0.0, 520.0, 370.0).style("paddingTop", &format!("{pad}px")).style("borderTopWidth", "1px");
+            if let Some((k, v)) = glow {
+                let layer = win.add("div").rect(0.0, 0.0, 520.0, 370.0);
+                if k == "aria-hidden" {
+                    layer.attr(k, v);
+                } else {
+                    layer.style(k, v);
+                }
+            }
+            let top = 1.0 + pad;
+            let bar = win.add("div").rect(0.0, top, 520.0, 45.0);
+            let lights = bar.add("div").rect(14.0, top + 17.0, 42.0, 10.0);
+            for i in 0..3 {
+                lights.add("span").rect(14.0 + 16.0 * i as f64, top + 17.0, 10.0, 10.0).style("borderRadius", "50%").style("backgroundColor", "rgba(248, 113, 113, 0.5)");
+            }
+            let pane = win.add("div").rect(0.0, top + 45.0, 520.0, 300.0);
+            pane.add("span").text("Context Router").font(10.0)
+        };
+        assert!(in_framed_demo(&build(None, 0.0)));
+        assert!(in_framed_demo(&build(Some(("aria-hidden", "true")), 0.0)), "an aria-hidden glow first");
+        assert!(in_framed_demo(&build(Some(("position", "absolute")), 0.0)), "an absolute layer first");
+        assert!(!in_framed_demo(&build(Some(("position", "relative")), 0.0)), "a box in flow first is the first child");
+        assert!(in_framed_demo(&build(None, 24.0)), "a bar at the padding edge");
+        assert!(!in_framed_demo(&build(None, 60.0)), "a bar part way down the box");
+
+        // A layer that holds text is content, not a glow.
+        let (_t, body) = Tree::new();
+        let (win, _bar, label) = window(&body);
+        let first = win.add("div").attr("aria-hidden", "true").text("Beta");
+        let kids = win.children();
+        (win.0).0.borrow_mut()[win.1].children = std::iter::once(first.1).chain(kids.iter().map(|k| k.1).filter(|k| *k != first.1)).collect();
+        assert!(!in_framed_demo(&label));
+    }
+
+    /// observations-1010 row 1, gap 3: usedefinite.com's caption is labelled
+    /// by its first words up to a comma.
+    #[test]
+    fn a_caption_label_ends_at_a_comma() {
+        assert!(is_sample_caption("Illustrative values, shown only to explain each workflow."));
+        assert!(is_sample_caption("Fictional company, invented figures."));
+        assert!(is_sample_caption("Sample data, refreshed nightly"));
+        assert!(!is_sample_caption("Illustrations, photos and video by our studio team in Berlin."));
+        assert!(!is_sample_caption("Our sample, data and reports in one place"));
+        // usedefinite.com 10136830: the caption itself keeps reporting.
+        let (_t, body) = Tree::new();
+        let wrap = body.add("div");
+        let grid = wrap.add("div");
+        let (_frame, _head, label) = panel(&grid.add("div"));
+        let note = wrap.add("p").text("Illustrative values, shown only to explain each workflow.");
+        assert!(in_framed_demo(&label));
+        assert!(!in_framed_demo(&note));
+    }
+
+    /// observations-1010 row 1, gap 2: a card built as a button around a
+    /// drawn frame does not stop the walk; a toggle and a short plan card
+    /// stay controls.
+    #[test]
+    fn a_card_built_as_a_button() {
+        let long = "Inspect the relevant implementation and where it lives in the project, then trace the call.";
+        let build = |tag: &str, role: Option<&str>, copy: &str, frame: bool| {
+            let (_t, body) = Tree::new();
+            let win = body.add("div").rect(0.0, 0.0, 1230.0, 600.0);
+            let bar = win.add("div").rect(0.0, 0.0, 1230.0, 36.0);
+            let lights = bar.add("div").rect(12.0, 12.0, 42.0, 10.0);
+            for i in 0..3 {
+                dot(&lights, 12.0 + 16.0 * i as f64);
+            }
+            let grid = win.add("div").rect(0.0, 36.0, 1230.0, 490.0);
+            let mut card = grid.add(tag).rect(0.0, 36.0, 409.0, 490.0);
+            if let Some(r) = role {
+                card = card.attr("role", r);
+            }
+            card.add("span").text(copy);
+            let holder = if frame {
+                framed(card.add("span").rect(20.0, 180.0, 365.0, 319.0))
+            } else {
+                card.add("span").rect(20.0, 180.0, 365.0, 319.0)
+            };
+            let label = holder.add("span").text("48").font(10.5);
+            (card, label)
+        };
+        let (card, label) = build("button", None, long, true);
+        assert!(is_card_button(&card, &label));
+        assert!(in_framed_demo(&label));
+        let (card, label) = build("div", Some("button"), long, true);
+        assert!(is_card_button(&card, &label));
+        assert!(in_framed_demo(&label));
+        // Twins: a plan card built as a button with three words on it, a
+        // long button with no frame inside, and a link card.
+        let (card, label) = build("button", None, "Pro plan", true);
+        assert!(!is_card_button(&card, &label));
+        assert!(!in_framed_demo(&label));
+        let (card, label) = build("button", None, long, false);
+        assert!(!is_card_button(&card, &label));
+        assert!(!in_framed_demo(&label));
+        let (card, label) = build("div", Some("tab"), long, true);
+        assert!(!is_card_button(&card, &label));
+        assert!(!in_framed_demo(&label));
+        // engineforge.ai's "Cockpit" toggle: the button is the text.
+        let (_t, body) = Tree::new();
+        let (_win, _bar, results) = window(&body);
+        let toggle = results.parent().unwrap().add("button").text("Cockpit").font(10.0);
+        assert!(!is_card_button(&toggle, &toggle));
+        assert!(!in_framed_demo(&toggle));
+        // No size, no frame: an engine without layout keeps the control.
+        let (_t, body) = Tree::new();
+        let card = body.add("button");
+        card.add("span").text(long);
+        let label = framed(card.add("span")).add("span").text("48");
+        assert!(!is_card_button(&card, &label));
+    }
+
+    /// A phone: 300 by 600, rounded and shadowed, a status bar with a 9:41
+    /// clock at its top, on a 1280px page (aproov.es).
+    fn phone(page: &N, w: f64, h: f64, clock: &str, clock_y: f64) -> (N, N) {
+        let device = page
+            .add("div")
+            .rect(490.0, 1346.0, w, h)
+            .style("borderRadius", "40px")
+            .style("boxShadow", "rgba(42, 30, 16, 0.25) 0px 30px 60px 0px");
+        let screen = device.add("div").rect(500.0, 1356.0, w - 20.0, h - 20.0).style("borderRadius", "30px");
+        let status = screen.add("div").rect(500.0, 1356.0, w - 20.0, 26.0);
+        status.add("span").rect(518.0, 1346.0 + clock_y, 18.0, 15.0).text(clock).font(10.0);
+        status.add("span").rect(700.0, 1362.0, 40.0, 15.0).text("●●● ▲").font(10.0);
+        let label = screen.add("div").rect(510.0, 1500.0, 200.0, 14.0).text("distribution network").font(10.0);
+        (device, label)
+    }
+
+    #[test]
+    fn a_phone_with_a_status_clock() {
+        let page = |w: f64| {
+            let (t, body) = Tree::new();
+            let body = body.rect(0.0, 0.0, w, 3000.0);
+            body.add("main").add("h1").text("Run every channel from one inbox");
+            body.add("p").text(&"Copy that belongs to the page itself. ".repeat(20));
+            (t, body)
+        };
+        let (_t, body) = page(1280.0);
+        let (device, label) = phone(&body.add("section").add("div"), 300.0, 600.0, "9:41", 16.0);
+        assert!(is_phone_frame(&device));
+        assert!(in_framed_demo(&label));
+        assert!(is_demo_frame(&device));
+
+        // The clock has to be a time near the top of the frame.
+        for (clock, y) in [("9:41", 70.0), ("9:41 AM ready", 16.0), ("25:10", 16.0), ("Inbox", 16.0)] {
+            let (_t, body) = page(1280.0);
+            let (device, label) = phone(&body.add("div"), 300.0, 600.0, clock, y);
+            assert!(!is_phone_frame(&device), "{clock} at {y}");
+            assert!(!in_framed_demo(&label));
+        }
+        // Not phone-shaped: a landscape card, a tall narrow strip.
+        for (w, h) in [(600.0, 400.0), (120.0, 600.0), (300.0, 300.0)] {
+            let (_t, body) = page(1280.0);
+            let (device, _label) = phone(&body.add("div"), w, h, "9:41", 16.0);
+            assert!(!is_phone_frame(&device), "{w}x{h}");
+        }
+        // The should-flag twin: a phone-shaped app shell that is the page.
+        // It holds the page's h1, or it spans a phone-width page.
+        let (_t, body) = Tree::new();
+        let body = body.rect(0.0, 0.0, 1280.0, 900.0);
+        let (shell, label) = phone(&body.add("div"), 420.0, 860.0, "9:41", 16.0);
+        shell.add("h1").text("Departures");
+        assert!(!is_phone_frame(&shell));
+        assert!(!in_framed_demo(&label));
+        let (_t, body) = Tree::new();
+        let body = body.rect(0.0, 0.0, 390.0, 844.0);
+        body.add("p").text("x");
+        let (shell, _label) = phone(&body.add("div"), 390.0, 844.0, "9:41", 16.0);
+        assert!(!is_phone_frame(&shell));
+        // An unmeasured page (the static engine) reads no phone.
+        let (_t, body) = Tree::new();
+        let (device, _label) = phone(&body.add("div"), 300.0, 600.0, "9:41", 16.0);
+        assert!(!is_phone_frame(&device));
+        // Only a frame drawn as a device counts.
+        let (_t, body) = page(1280.0);
+        let (device, _label) = phone(&body.add("div"), 300.0, 600.0, "9:41", 16.0);
+        let bare = device.style("boxShadow", "none");
+        assert!(!is_phone_frame(&bare));
     }
 
     #[test]
