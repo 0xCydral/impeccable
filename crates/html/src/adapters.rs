@@ -770,6 +770,12 @@ fn fold_surface_opacity(
             reached = true;
             break;
         }
+        // A `display: contents` element has no box for its opacity to
+        // apply to (the surface walk read past its fill the same way).
+        if paints_no_box(c.style()) {
+            cur = c.parent_element();
+            continue;
+        }
         let fill = surface.overlays.iter().find(|(n, _)| *n == c.id()).map(|(_, f)| *f);
         layers.push((fill, opacity_of(c.style())));
         cur = c.parent_element();

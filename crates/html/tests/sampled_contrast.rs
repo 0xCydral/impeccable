@@ -1732,4 +1732,12 @@ fn a_boxless_wrapper_at_a_hidden_opacity_does_not_hide_the_text() {
     let css = ".hero { background: url(light.png); } .wrap { opacity: 1%; } p { color: #fdfdfd; }";
     let found = site.contrast(css, "<div class=hero><div class=wrap><p>White copy</p></div></div>");
     assert!(found.is_empty(), "{found:?}");
+    // The analytic fold reads past the boxless wrapper the same way: white
+    // in a half-black card over a dark section is readable, whatever
+    // opacity the wrapper declares.
+    for opacity in ["0", "0.5", "1%"] {
+        let css = format!(".section {{ background: #17150f; }} .wrap {{ display: contents; opacity: {opacity}; }} .card {{ background: rgba(0, 0, 0, 0.5); }} p {{ color: #fdfdfd; }}");
+        let found = site.contrast(&css, "<div class=section><div class=wrap><div class=card><p>White copy</p></div></div></div>");
+        assert!(found.is_empty(), "{opacity}: {found:?}");
+    }
 }
