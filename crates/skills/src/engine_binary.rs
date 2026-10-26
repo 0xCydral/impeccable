@@ -168,10 +168,8 @@ pub fn install_engine_binaries(sys: &Sys, io: &mut Io, skill_dirs: &[String]) {
             }
             Err(e) => {
                 if !e.is_empty() {
-                    // The launcher reads the same manifest, so it cannot fetch what this refused.
-                    let retry = if e.starts_with("no checksum") { "" } else { " The launcher fetches it on first run." };
                     io.err(&format!(
-                        "Could not download the impeccable engine v{version} for {os}-{arch} ({url}): {e}.{retry}\n"
+                        "Could not download the impeccable engine v{version} for {os}-{arch} ({url}): {e}. The launcher fetches it on first run.\n"
                     ));
                     // Report once per version, then stay quiet for its siblings.
                     cache.insert(version.to_string(), Err(String::new()));
