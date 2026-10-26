@@ -253,6 +253,9 @@ fn compact_op(op: &Value) -> Value {
     if op.get("deleted") == Some(&Value::Bool(true)) {
         m.insert("deleted".into(), json!(true));
     }
+    if op.get("removeElement") == Some(&Value::Bool(true)) {
+        m.insert("removeElement".into(), json!(true));
+    }
     m.insert(
         "sourceHint".into(),
         match op.get("sourceHint") {

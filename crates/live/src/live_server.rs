@@ -2201,6 +2201,45 @@ fn handle_manual_edit_route(
                 return;
             }
             let page_url = req.query_get("pageUrl").map(String::from);
+            let op_ref = req
+                .query_get("ref")
+                .map(String::from)
+                .filter(|r| !r.is_empty());
+            // `ref` scopes the discard to one staged op on the page (the
+            // browser's Undo for a removal). It touches no apply transaction:
+            // the browser refuses Undo while an apply is in flight.
+            if let (Some(pu), Some(r)) = (page_url.as_deref(), op_ref.as_deref()) {
+                let (entries, discarded) =
+                    match manual_buffer::remove_ops_by_ref(&cwd, &env, pu, r) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            respond(
+                                stream,
+                                cors,
+                                json_res(500, json!({ "error": "discard_failed", "message": e })),
+                            );
+                            return;
+                        }
+                    };
+                let (total, per_page) = manual_buffer::count_by_page(&cwd, &env);
+                let mut details = Map::new();
+                details.insert("pageUrl".into(), json!(pu));
+                details.insert("ref".into(), json!(r));
+                details.insert("discarded".into(), json!(discarded));
+                details.insert("totalCount".into(), json!(total));
+                let mut st = lock(shared);
+                st.record_manual_edit_activity("manual_edit_discarded", details);
+                drop(st);
+                respond(
+                    stream,
+                    cors,
+                    json_res(
+                        200,
+                        json!({ "discarded": discarded, "entries": entries, "canceledApplyEvents": [], "totalCount": total, "perPage": per_page }),
+                    ),
+                );
+                return;
+            }
             let mut st = lock(shared);
             let buffer = manual_buffer::read_buffer(&cwd, &env);
             let transaction_rollback = manual_apply::rollback_transaction(

@@ -209,6 +209,9 @@ fn validate_manual_edit_event(msg: &Map<String, Value>, label: &str) -> Option<S
             return Some(format!("{}: op.originalText required", label));
         }
         let deleted = op.get("deleted") == Some(&Value::Bool(true));
+        if op.get("removeElement") == Some(&Value::Bool(true)) && !deleted {
+            return Some(format!("{}: removeElement requires deleted", label));
+        }
         let new_text = op.get("newText").and_then(|v| v.as_str());
         if !deleted && new_text.is_none() {
             return Some(format!("{}: text op requires newText", label));
