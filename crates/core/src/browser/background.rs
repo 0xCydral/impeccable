@@ -319,6 +319,11 @@ const OWN_GRADIENT_MIN_CHANNEL_DELTA: f64 = 12.0;
 /// every point under the text.
 fn own_gradient_over_fill(dom: &dyn Dom, node: ElId, bg_image: &str, fill: &Rgba, q: &Query<'_>) -> Option<Vec<Rgba>> {
     q.text?;
+    // A dot grid or hairline pattern over the fill is texture: the reader
+    // sees the fill, and the worst dot is not the ground.
+    if super::text_layers::gradient_layers_are_dot_texture(dom, node, bg_image) {
+        return None;
+    }
     let UnderText::Paint(samples) = gradient_under_text(dom, node, bg_image, q)? else {
         return None;
     };
@@ -828,6 +833,44 @@ mod tests {
         paint(&mut d, "rgb(196, 181, 253)", "conic-gradient(rgb(91, 33, 182), rgb(109, 40, 217))");
         let s = resolve_text_surface(&d, button, &|_| false, text, 14.0);
         assert_eq!(s.info.color, Some(Rgba::new(196.0, 181.0, 253.0, 1.0)));
+    }
+
+    /// observations-1010 row 8, spacesheep.dev 10137895: the body draws a
+    /// 1px dot every 24px over its fill, and the grey label was scored on
+    /// the dot, 3.8:1. The reader sees the fill.
+    #[test]
+    fn a_dot_grid_over_the_boxs_fill_is_texture() {
+        let mut d = FakeDom::new();
+        let (html, body) = d.with_page();
+        clear(&mut d, html);
+        let paint = |d: &mut FakeDom, image: &str, size: &str| {
+            d.set_styles(
+                body,
+                &[
+                    ("backgroundColor", "rgb(248, 247, 244)"),
+                    ("backgroundImage", image),
+                    ("backgroundSize", size),
+                    ("backgroundPosition", "0% 0%"),
+                    ("background", &format!("rgb(248, 247, 244) {image} repeat scroll 0% 0% / {size} padding-box border-box")),
+                ],
+            );
+        };
+        d.set_rect(body, 0.0, 0.0, 1280.0, 2000.0);
+        let label = d.add(Some(body), "span");
+        d.set_style(label, "backgroundColor", "rgba(0, 0, 0, 0)");
+        d.set_style(label, "backgroundImage", "none");
+        let text = Box2::new(0.0, 0.0, 200.0, 20.0);
+        let fill = Some(Rgba::new(248.0, 247.0, 244.0, 1.0));
+        paint(&mut d, "radial-gradient(circle, rgba(26, 26, 31, 0.13) 1px, rgba(0, 0, 0, 0) 1.4px)", "24px 24px");
+        let s = resolve_text_surface(&d, label, &|_| false, text, 14.0);
+        assert_eq!((s.info.color, s.samples.is_none()), (fill, true), "{:?}", s.samples);
+        // Twin: opaque stripes in the same cells are a surface, sampled.
+        paint(&mut d, "linear-gradient(90deg, rgb(227, 226, 224) 50%, rgb(248, 247, 244) 50%)", "24px 24px");
+        let s = resolve_text_surface(&d, label, &|_| false, text, 14.0);
+        assert!(s.samples.is_some_and(|v| v.contains(&Rgba::new(227.0, 226.0, 224.0, 1.0))), "{:?}", s.info);
+        // Dots in cells larger than a pattern are read as before.
+        paint(&mut d, "radial-gradient(circle, rgba(26, 26, 31, 0.6) 1px, rgba(0, 0, 0, 0) 1.4px)", "120px 120px");
+        assert!(!super::super::text_layers::gradient_layers_are_dot_texture(&d, body, &d.style(body, "backgroundImage")));
     }
 
     /// wotsthat.com: a translucent highlight over an opaque pastel wheel, on
