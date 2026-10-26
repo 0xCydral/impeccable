@@ -43,16 +43,23 @@ function git(cwd, ...args) {
   return execFileSync('git', args, { cwd, encoding: 'utf-8' }).trim();
 }
 
+// The D4 engine release-order guard would otherwise probe the network for
+// published engine assets, and the engine source guard needs an engine tag the
+// fixture does not have. Most scenarios exercise neither, so both start off;
+// the scenarios for each guard switch it back on through `env`.
+const ENGINE_GUARDS_OFF = { IMPECCABLE_SKIP_ENGINE_CHECK: '1', IMPECCABLE_SKIP_ENGINE_SOURCE_CHECK: '1' };
+
 function runRelease(cwd, ...args) {
+  return runReleaseWith({}, cwd, ...args);
+}
+
+function runReleaseWith(env, cwd, ...args) {
   try {
     const stdout = execFileSync(process.execPath, ['scripts/release.mjs', ...args, '--dry-run'], {
       cwd,
       encoding: 'utf-8',
       timeout: 60000,
-      // The D4 engine release-order guard would otherwise probe the network for
-      // published engine assets; these guards predate it and only exercise the
-      // version/changelog/artifact checks, so take its documented escape hatch.
-      env: { ...process.env, IMPECCABLE_SKIP_ENGINE_CHECK: '1' },
+      env: { ...process.env, ...ENGINE_GUARDS_OFF, ...env },
     });
     return { code: 0, stdout, stderr: '' };
   } catch (err) {
@@ -164,6 +171,90 @@ describe('release.mjs guards', () => {
     assert.match(stderr, /engine-v0\.1\.0 already exists on origin/);
   });
 
+  // The engine source guard runs; the asset probe stays off unless a scenario
+  // clears it too.
+  const SOURCE_GUARD_ON = { IMPECCABLE_SKIP_ENGINE_SOURCE_CHECK: '' };
+  // Annotated and pushed, as `release.mjs engine` makes it.
+  const tagEngine = () => {
+    git(workDir, 'tag', '-a', 'engine-v0.1.0', '-m', 'Engine 0.1.0');
+    git(workDir, 'push', 'origin', 'engine-v0.1.0');
+  };
+  const moveEngineSourcePastTag = () => {
+    tagEngine();
+    write('crates/cli/src/main.rs', 'fn main() {}\n');
+    git(workDir, 'add', 'crates');
+    git(workDir, 'commit', '-m', 'engine change after engine-v0.1.0');
+    git(workDir, 'push', 'origin', 'main');
+  };
+
+  it('skill: passes the engine source guard when nothing changed since the engine tag', () => {
+    tagEngine();
+    const { code, stdout } = runReleaseWith(SOURCE_GUARD_ON, workDir, 'skill');
+    assert.equal(code, 0, stdout);
+    assert.match(stdout, /engine source unchanged since engine-v0\.1\.0/);
+  });
+
+  it('skill: refuses before the asset probe when crates/ changed since the engine tag', () => {
+    moveEngineSourcePastTag();
+    const { code, stdout, stderr } = runReleaseWith({ ...SOURCE_GUARD_ON, IMPECCABLE_SKIP_ENGINE_CHECK: '' }, workDir, 'skill');
+    assert.equal(code, 1);
+    assert.match(stderr, /Refusing to release Skill 1\.2\.3: the engine source changed since engine-v0\.1\.0/);
+    assert.match(stderr, /· crates\/cli\/src\/main\.rs/);
+    assert.match(stderr, /Bump ENGINE_VERSION and release the engine first/);
+    assert.doesNotMatch(stdout, /release assets are published/);
+  });
+
+  it('cli: counts an uncommitted engine source edit', () => {
+    tagEngine();
+    write('Cargo.toml', '[workspace]\n');
+    git(workDir, 'add', 'Cargo.toml');
+    const { code, stderr } = runReleaseWith(SOURCE_GUARD_ON, workDir, 'cli');
+    assert.equal(code, 1);
+    assert.match(stderr, /Refusing to release CLI 9\.9\.9/);
+    assert.match(stderr, /· Cargo\.toml/);
+  });
+
+  it('skill: the source override lets a test-only engine change through', () => {
+    moveEngineSourcePastTag();
+    const { code, stdout } = runRelease(workDir, 'skill');
+    assert.equal(code, 0, stdout);
+    assert.match(stdout, /Skipping engine source guard \(IMPECCABLE_SKIP_ENGINE_SOURCE_CHECK=1\)/);
+  });
+
+  it('skill: refuses when origin has no engine tag', () => {
+    git(workDir, 'tag', '-a', 'engine-v0.1.0', '-m', 'Engine 0.1.0');
+    const { code, stderr } = runReleaseWith(SOURCE_GUARD_ON, workDir, 'skill');
+    assert.equal(code, 1);
+    assert.match(stderr, /origin has no engine-v0\.1\.0 tag/);
+  });
+
+  it('skill: refuses when the engine tag is not available locally', () => {
+    tagEngine();
+    git(workDir, 'tag', '-d', 'engine-v0.1.0');
+    const { code, stderr } = runReleaseWith(SOURCE_GUARD_ON, workDir, 'skill');
+    assert.equal(code, 1);
+    assert.match(stderr, /Tag engine-v0\.1\.0 is not available locally/);
+    assert.match(stderr, /git fetch --force origin tag engine-v0\.1\.0/);
+  });
+
+  it('skill: refuses when the local engine tag moved away from origin\'s', () => {
+    // Retagged locally at the newer tree, the diff alone would pass.
+    moveEngineSourcePastTag();
+    git(workDir, 'tag', '-f', '-a', 'engine-v0.1.0', '-m', 'Engine 0.1.0 retagged');
+    const { code, stderr } = runReleaseWith(SOURCE_GUARD_ON, workDir, 'skill');
+    assert.equal(code, 1);
+    assert.match(stderr, /Local tag engine-v0\.1\.0 differs from origin's/);
+  });
+
+  it('extension: never runs the engine source guard', () => {
+    moveEngineSourcePastTag();
+    // The fixture has no extension changelog entry, so reaching that refusal
+    // proves the run went past where the source guard would have stopped it.
+    const { stdout, stderr } = runReleaseWith({ ...SOURCE_GUARD_ON, IMPECCABLE_SKIP_ENGINE_CHECK: '' }, workDir, 'extension');
+    assert.match(stderr, /No changelog entry found for "Extension v2\.0\.0"/);
+    assert.doesNotMatch(stdout, /engine source/);
+  });
+
   it('dry-runs a clean skill release end to end', () => {
     const { code, stdout } = runRelease(workDir, 'skill');
     assert.equal(code, 0, stdout);
@@ -185,7 +276,7 @@ describe('release.mjs guards', () => {
     git(workDir, 'push', 'origin', 'main');
     assert.throws(() => execFileSync(process.execPath, ['scripts/release.mjs', 'skill'], {
       cwd: workDir, encoding: 'utf8', stdio: 'pipe',
-      env: { ...process.env, IMPECCABLE_SKIP_ENGINE_CHECK: '1', IMPECCABLE_SIGNING_KEY_REF: '' },
+      env: { ...process.env, ...ENGINE_GUARDS_OFF, IMPECCABLE_SIGNING_KEY_REF: '' },
     }), error => {
       assert.match(error.stderr, /Set IMPECCABLE_SIGNING_KEY_REF/);
       assert.doesNotMatch(error.stdout, /Creating annotated tag|Creating GitHub release/);
@@ -214,7 +305,7 @@ describe('release.mjs guards', () => {
     git(workDir, 'push', 'origin', 'main');
     assert.throws(() => execFileSync(process.execPath, ['scripts/release.mjs', 'skill'], {
       cwd: workDir, encoding: 'utf8', stdio: 'pipe',
-      env: { ...process.env, IMPECCABLE_SKIP_ENGINE_CHECK: '1' },
+      env: { ...process.env, ...ENGINE_GUARDS_OFF },
     }), error => {
       assert.match(error.stderr, /Missing artifact: dist\/universal\.zip\.sig\.json/);
       assert.doesNotMatch(error.stderr, /UNEXPECTED_TAG_STEP/);
