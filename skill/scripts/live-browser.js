@@ -3871,13 +3871,16 @@
     (document.head || document.documentElement).appendChild(style);
   }
 
-  // The text the applier and the verifier look for in source: the first text
-  // leaf, else the attribute that names the element, else its id.
+  // The text the applier and the verifier look for in source: a text leaf
+  // (preferring one free of characters source tends to entity-encode, so the
+  // literal search finds it), else the attribute that names the element, else
+  // its id.
   function removalOriginalText(el) {
-    for (const row of collectEditableTextRows(el, { isOwn: own })) {
-      const text = normalizeManualContextText(row.text);
-      if (text) return text.slice(0, 200);
-    }
+    const leaves = collectEditableTextRows(el, { isOwn: own })
+      .map((row) => normalizeManualContextText(row.text))
+      .filter(Boolean);
+    const plain = leaves.find((text) => !/[&<>"]/.test(text));
+    if (plain || leaves.length) return (plain || leaves[0]).slice(0, 200);
     for (const attr of ['alt', 'aria-label', 'title']) {
       const value = normalizeManualContextText(el.getAttribute?.(attr));
       if (value) return value.slice(0, 200);
