@@ -230,28 +230,25 @@ static BG_IMAGE_CALL_RE: Lazy<Regex> = Lazy::new(|| {
     )
     .expect("BG_IMAGE_CALL_RE")
 });
-// A function call at the head of a token, and the colour functions among
-// them.
-static VALUE_FUNCTION_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)^-?[a-z][a-z0-9-]*\(").expect("VALUE_FUNCTION_RE"));
-static COLOR_FUNCTION_RE: Lazy<Regex> = Lazy::new(|| {
+// The math, environment and anchor functions a position or size may hold
+// (CSS Values 4 and 5), beyond the few the position and size grammars name.
+static MATH_FUNCTION_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r"(?i)^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix|color-contrast|light-dark|device-cmyk)\(",
+        r"(?i)^(?:calc|calc-size|min|max|clamp|round|mod|rem|abs|sign|sin|cos|tan|asin|acos|atan|atan2|pow|sqrt|hypot|log|exp|env|attr|anchor|anchor-size|random|sibling-index|sibling-count|progress|media-progress|container-progress)\(",
     )
-    .expect("COLOR_FUNCTION_RE")
+    .expect("MATH_FUNCTION_RE")
 });
 
-/// A function call in a layer that is neither an image, a `var()`, nor a
-/// colour: a math or environment function the position and size grammars
-/// do not name (`round()`, `clamp()`, `mod()`, `anchor()`). It is kept in
-/// the slot it stands in, where the readers take it for a value they do
-/// not know (#560), rather than dropped for the slot's default, which
-/// would read a shifted image as covering.
+/// A math, environment or anchor function in a layer (`round()`, `clamp()`,
+/// `mod()`, `anchor()`): a position or size the grammars above do not read,
+/// kept in the slot it stands in, where the readers take a function for a
+/// value they do not know (#560), rather than dropped for the slot's
+/// default, which would read a shifted image as covering. Only a function
+/// from that list is geometry: one the engine does not know at all
+/// (`-webkit-gradient()`, `-webkit-canvas()`) stays paint it cannot read,
+/// which the readers count as paint.
 fn is_unread_value_function(token: &str) -> bool {
-    VALUE_FUNCTION_RE.is_match(token)
-        && !BG_IMAGE_CALL_RE.is_match(token)
-        && !VAR_HEAD_TOKEN_RE.is_match(token)
-        && !COLOR_FUNCTION_RE.is_match(token)
+    MATH_FUNCTION_RE.is_match(token)
 }
 
 static CSS_WIDE_KEYWORD_RE: Lazy<Regex> = Lazy::new(|| {
@@ -303,10 +300,12 @@ static BG_ATTACHMENT_RE: Lazy<Regex> =
 /// position `center, 0% 0%`). An image call at the head of a token is
 /// dropped and the rest of the token kept; any other function but a colour
 /// is a value and stays whole, so `/ calc(100% / 3)` is stored for the
-/// compute loop to resolve instead of collapsing to `auto`, and one the
-/// grammar does not name (`0 round(nearest, 200px, 1px)`) is kept where it
-/// stands for the readers to find unknown (`is_unread_value_function`)
-/// rather than dropped for the slot's default. A layer holding a `var()`
+/// compute loop to resolve instead of collapsing to `auto`, and a math
+/// function the grammar does not name (`0 round(nearest, 200px, 1px)`) is
+/// kept where it stands for the readers to find unknown
+/// (`is_unread_value_function`) rather than dropped for the slot's
+/// default; a function the engine does not know at all is paint, not
+/// geometry, and is left to the colour read. A layer holding a `var()`
 /// anywhere outside its image call is stored whole in every slot, as the
 /// shorthand's own `from-shorthand(<the layer's tokens>)`: the parser
 /// cannot see what the `var()` holds (a position, a size behind its slash,
@@ -719,8 +718,8 @@ pub fn expand_shorthand_slot(prop: &str, value: &str) -> (String, bool) {
 
 /// A shorthand token the background grammar reads as geometry rather than
 /// paint: a repeat, position, size, box, or attachment keyword, a length or
-/// percentage, a size slash, `none`, or a math function that is no colour
-/// (`is_unread_value_function`).
+/// percentage, a size slash, `none`, or a math, environment or anchor
+/// function (`is_unread_value_function`); any other function is paint.
 fn is_background_geometry_token(token: &str) -> bool {
     token.eq_ignore_ascii_case("none")
         || split_size_slash(token).is_some()

@@ -1902,3 +1902,22 @@ fn a_position_function_the_parser_cannot_read_leaves_the_image_unknown() {
     let found = site.contrast(css, body);
     assert!(sampled_on("light.png", &found), "{found:?}");
 }
+
+#[test]
+fn a_paint_function_the_engine_does_not_know_still_counts_as_paint() {
+    let site = Site::new("unknown-paint-function");
+    let body = "<div class=hero><p>White copy</p></div>";
+    let p = " p { position: relative; color: #fdfdfd; }";
+    // A function that is neither an image call the grammar names, a colour,
+    // nor a math function is paint the engine cannot read, not geometry: a
+    // legacy gradient on the stretched pseudo keeps its overlay.
+    for paint in [
+        "-webkit-gradient(linear, left top, left bottom, from(rgba(0, 0, 0, 0.7)), to(rgba(0, 0, 0, 0.7)))",
+        "-webkit-linear-gradient(top, rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.7))",
+        "-webkit-canvas(scrim)",
+    ] {
+        let css = format!(".hero {{ background: url(light.png); position: relative; }} .hero::before {{ content: ''; position: absolute; inset: 0; background: {paint}; }}{p}");
+        let found = site.contrast(&css, body);
+        assert!(found.is_empty(), "{paint}: {found:?}");
+    }
+}
