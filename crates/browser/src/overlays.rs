@@ -43,12 +43,15 @@
 //!   An intro can also go unnamed: a layer that passes the same tests,
 //!   carries `aria-hidden="true"` itself, and is playing a finite animation
 //!   (a CSS animation or transition with an end; an infinite one does not
-//!   count) is one too. The wait counts it while that animation runs and
-//!   for [`INTRO_GRACE_MS`] after, even where too little of a page shows
-//!   outside it for it to be hidden, and
+//!   count) and has no way through of its own (`cursor: pointer`, an
+//!   `onclick`) is one too. It must stand in front of a page as a named
+//!   intro does, except that while its animation runs and for
+//!   [`INTRO_GRACE_MS`] after, the wait drops the outside-text minimum (a
+//!   sparse page under it still counts; a fixed hero the page scrolls over
+//!   does not), and
 //!   once seen it stays one after its animations end, so a page script
 //!   that removes it a moment later is still waited for. Hidden, once the
-//!   wait runs out, only in front of a page, as a named intro is. Corpus run
+//!   wait runs out, only in front of a page with the full test. Corpus run
 //!   1010: articulation-hub.vercel.app's `div.spl` brand intro (fixed,
 //!   `inset-0`, an opaque gradient, "MOTOR SPEECH LAB", a 5.6s animation and
 //!   a 500ms fade) covered every capture.
@@ -227,11 +230,13 @@ pub fn preloader_js() -> String {
   // under it at one of the probe points (text of its own, a replaced
   // element, or a box smaller than the screen). A hero the content scrolls
   // over from 100vh, or a one-screen site, has nothing under it.
-  const frontsPage = (el, points) => {{
+  // `relaxText`: skip only the outside-text minimum (an unnamed intro still
+  // animating over a sparse page); the h1 and hit tests still apply.
+  const frontsPage = (el, points, relaxText) => {{
     const vw = window.innerWidth || 0, vh = window.innerHeight || 0;
     if (el.querySelector('h1')) return false;
     const chars = n => (n.innerText || '').replace(/\s+/g, ' ').trim().length;
-    if (!document.body || chars(document.body) - chars(el) < {min_outside}) return false;
+    if (!document.body || (!relaxText && chars(document.body) - chars(el) < {min_outside})) return false;
     const big = r => {{
       const w = Math.max(0, Math.min(r.right, vw) - Math.max(r.left, 0));
       const h = Math.max(0, Math.min(r.bottom, vh) - Math.max(r.top, 0));
@@ -296,6 +301,9 @@ pub fn preloader_js() -> String {
       if (!named && !covers(el.getBoundingClientRect())) continue;
       let cs;
       try {{ cs = getComputedStyle(el); }} catch (e) {{ continue; }}
+      // An unnamed layer with a way through of its own (`cursor: pointer`,
+      // an `onclick`) is a gate, whatever its text says.
+      if (!named && (cs.cursor === 'pointer' || el.hasAttribute('onclick'))) continue;
       if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility !== 'visible' || parseFloat(cs.opacity) <= 0.05) continue;
       try {{ if (el.checkVisibility && !el.checkVisibility({{ opacityProperty: true, visibilityProperty: true }})) continue; }} catch (e) {{}}
       if (!covers(el.getBoundingClientRect())) continue;
@@ -343,11 +351,12 @@ pub fn preloader_js() -> String {
         const running = playsFinite(el);
         if (running) introsSeen.set(el, performance.now());
         else if (!seen) continue;
-        // While it animates, and for {grace}ms after (the page's script
-        // starting its fade), the wait counts it; past that, and for the
-        // hide step, it must stand in front of a page, as a named intro.
+        // It must stand in front of a page, as a named intro. While it
+        // animates, and for {grace}ms after (the page's script starting its
+        // fade), the wait drops only the outside-text minimum: a sparse page
+        // still under it counts, a fixed hero the page scrolls over does not.
         const lately = performance.now() - introsSeen.get(el) < {grace};
-        if (!(waiting && lately) && !frontsPage(el, points)) continue;
+        if (!frontsPage(el, points, waiting && lately)) continue;
       }} else if (!loader && !frontsPage(el, points)) continue;
       // The outermost match stands for the ones inside it.
       if (found.some(f => f.el.contains(el))) continue;

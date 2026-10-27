@@ -19,7 +19,8 @@
 //!   waited for, and hidden once its budget runs out.
 //! - An unnamed intro (aria-hidden, playing a finite animation) is waited
 //!   for the same way; an aria-hidden layer with only an infinite animation,
-//!   a wall with controls, and a fixed hero the page scrolls over stay.
+//!   a wall with controls, a tap-to-start layer, and a fixed hero the page
+//!   scrolls over (even one animating for 20s, which is not waited for) stay.
 
 use std::collections::HashMap;
 use std::io::{Read, Write};
@@ -471,21 +472,26 @@ fn an_unnamed_intro_that_never_ends_is_hidden_after_its_budget() {
 }
 
 /// Twins of the unnamed intro that stay: an aria-hidden layer whose only
-/// animation is infinite (not waited for, so it cannot stall the scan), and
-/// a wall with a field and a button under a running finite animation (an
-/// answer, not an intro). Neither is waited for nor hidden, and the copy
+/// animation is infinite (not waited for, so it cannot stall the scan), a
+/// wall with a field and a button under a running finite animation (an
+/// answer, not an intro), and a layer with its own `onclick` and
+/// `cursor: pointer` that says "Tap anywhere to start" (a gate). Neither is waited for nor hidden, and the copy
 /// under them is not scored.
 #[test]
 fn unnamed_layers_that_are_not_intros_stay() {
     let Some(engine) = engine() else { return };
     let port = serve();
     let mut browser = engine.launch().expect("launch");
-    for page in ["stay-unnamed-infinite.html", "stay-unnamed-modal.html"] {
+    for page in ["stay-unnamed-infinite.html", "stay-unnamed-modal.html", "stay-unnamed-tap.html"] {
         let url = format!("http://127.0.0.1:{port}/{page}");
         let (findings, evidence) =
             detect_url_evidence(&mut browser, &url, &ScanOptions::default(), "load", 100, &EvidenceRequest::default())
                 .expect("scan");
-        assert!(!has(&flagged(&findings), "low-contrast", "#covered-copy"), "{page}: {:#?}", flagged(&findings));
+        // The tap layer fades in from 0.6 opacity, so the copy under it may
+        // score either way; what it pins is the wait and the hide.
+        if page != "stay-unnamed-tap.html" {
+            assert!(!has(&flagged(&findings), "low-contrast", "#covered-copy"), "{page}: {:#?}", flagged(&findings));
+        }
         let report = evidence.overlays.as_ref().expect("overlay report");
         assert!(report.hidden.is_empty(), "{page}: {report:?}");
         assert_eq!(report.waited_ms, 0, "{page}");
@@ -509,4 +515,23 @@ fn an_unnamed_fixed_hero_that_animates_stays() {
     let report = evidence.overlays.as_ref().expect("overlay report");
     assert!(report.hidden.is_empty(), "{report:?}");
     assert!(report.waited_ms < impeccable_browser::overlays::INTRO_WAIT_MS, "{}", report.waited_ms);
+}
+
+/// Review probe `hero-kenburns` (round 14): a fixed aria-hidden hero playing
+/// a 20s finite zoom with the page scrolling over it from 100vh. While it
+/// animates the wait drops only the outside-text minimum, not the hit test,
+/// so nothing of a page under it means it is not waited for.
+#[test]
+fn an_unnamed_fixed_hero_with_a_long_animation_is_not_waited_for() {
+    let Some(engine) = engine() else { return };
+    let port = serve();
+    let url = format!("http://127.0.0.1:{port}/stay-unnamed-hero-long.html");
+    let mut browser = engine.launch().expect("launch");
+    let (_, evidence) =
+        detect_url_evidence(&mut browser, &url, &ScanOptions::default(), "load", 100, &EvidenceRequest::default())
+            .expect("scan");
+    browser.close();
+    let report = evidence.overlays.as_ref().expect("overlay report");
+    assert!(report.hidden.is_empty(), "{report:?}");
+    assert!(report.waited_ms < 1000, "{}", report.waited_ms);
 }

@@ -1936,8 +1936,9 @@ pub const SHOT_MOTION_MIN_PX: f64 = 16.0;
 /// while the screenshot was taken (a carousel that advanced one slide, a
 /// layout that shifted), so the crop at its rect may show what replaced it.
 /// It is recorded in [`Evidence::element_drift`] with `afterShot`, its rect
-/// after the screenshot, beside `scan` (the scan's capture, or the measured
-/// rect when the scan's element is unknown) and `measured`;
+/// after the screenshot, beside `scan` and `measured` (an entry already
+/// there keeps its own; a fresh one has both at the measured rect, since it
+/// did not drift for good);
 /// [`Evidence::element_rects`] keeps the rect the screenshot was cut by.
 /// Best-effort: a failed measure records nothing.
 fn note_motion_during_shot(
@@ -1985,15 +1986,13 @@ fn note_motion_during_shot(
         if !moved_during_shot(&before, &now_rect) {
             continue;
         }
-        let entry = ev.element_drift.entry(selector.clone()).or_insert_with(|| {
-            let scan = nodes
-                .get(&selector)
-                .and_then(Value::as_array)
-                .filter(|n| n.len() >= 5)
-                .map(|n| Value::Array(n[1..5].to_vec()))
-                .unwrap_or_else(|| json!(before));
-            json!({ "scan": scan, "measured": before })
-        });
+        // A fresh entry did not drift for good: `scan` is the measured rect,
+        // so a reader sees motion during the shot only, not a small move
+        // before it (a carousel mid-transition at the scan).
+        let entry = ev
+            .element_drift
+            .entry(selector.clone())
+            .or_insert_with(|| json!({ "scan": before, "measured": before }));
         if let Value::Object(m) = entry {
             m.insert("afterShot".to_string(), now);
         }
