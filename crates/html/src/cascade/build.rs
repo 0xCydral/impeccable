@@ -278,6 +278,9 @@ static COLOR_TOKEN_RE: Lazy<Regex> = Lazy::new(|| {
         .expect("COLOR_TOKEN_RE")
 });
 static ZERO_LEN_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^0(?:px)?$").expect("ZERO_LEN_RE"));
+// The custom property each `var()` in a value names.
+static VAR_NAME_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)var\(\s*(--[^\s,)]+)").expect("VAR_NAME_RE"));
 static WS_SPLIT_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(&format!("{}+", js::WS)).expect("WS_SPLIT_RE"));
 static GRADIENT_RE: Lazy<Regex> = Lazy::new(|| Regex::new("(?i)gradient").expect("GRADIENT_RE"));
@@ -564,6 +567,28 @@ fn pseudo_paints_a_box(decls: &IndexMap<String, String>) -> bool {
     }
 }
 
+/// What a CSS-wide keyword means as a custom property's value on the
+/// pseudo's own layer (#560): `inherit`, and `unset`, `revert`, and
+/// `revert-layer`, which come to the same for a property that inherits and
+/// has nothing earlier to revert to, take the element's value; `initial` is
+/// the guaranteed-invalid value, which no `var()` resolves without a
+/// fallback, so a declaration left naming it is invalid at computed-value
+/// time and its property takes its initial value. Any other value is the
+/// property's own.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CustomKeyword {
+    Inherits,
+    Invalid,
+}
+
+fn custom_property_keyword(value: &str) -> Option<CustomKeyword> {
+    match js::to_lower_case(js::trim(value)).as_str() {
+        "inherit" | "unset" | "revert" | "revert-layer" => Some(CustomKeyword::Inherits),
+        "initial" => Some(CustomKeyword::Invalid),
+        _ => None,
+    }
+}
+
 /// Whether a `::before` / `::after` rule that names no geometry or paint
 /// can still change what the merged read sees: it names `content` (the box
 /// turned on or off) or a custom property (a `--scrim` the paint reads).
@@ -618,8 +643,9 @@ fn names_pseudo_paint_or_geometry(decls: &IndexMap<String, (String, DeclMeta)>) 
 /// for the element, inherited and inline values included), under those the
 /// pseudo's own rules declare (a `--scrim` on `.hero::before`, or on
 /// `.dark::before` for the elements that match it, wins over the element's,
-/// the pseudo-element inheriting the rest, and one that references another
-/// reads the pseudo's own value whatever the order), and a shorthand
+/// the pseudo-element inheriting the rest, one that references another
+/// reads the pseudo's own value whatever the order, and one set to a
+/// CSS-wide keyword inherits or, at `initial`, goes away), and a shorthand
 /// that held a `var()` is split once resolved: a `background` into its
 /// color and image parts, an `inset` into the sides it sets
 /// (`split_resolved_inset`).
@@ -635,13 +661,36 @@ fn mark_pseudo_paint(
     // pseudo-element's own computed values whatever the declaration order
     // (`--scrim: var(--tone); --tone: ...` reads the pseudo's `--tone`, not
     // the element's). The resolver follows chained references, so the order
-    // the keys resolve in does not matter either.
+    // the keys resolve in does not matter either. A CSS-wide keyword is
+    // applied first (`custom_property_keyword`): one that inherits leaves
+    // the element's value in place, and `initial` takes the property away,
+    // so a `var()` on it takes its fallback, and a declaration left naming
+    // it is dropped below, as its property takes its initial value.
+    let invalid: Vec<&String> = decls
+        .iter()
+        .filter(|(k, v)| {
+            k.starts_with("--") && custom_property_keyword(v) == Some(CustomKeyword::Invalid)
+        })
+        .map(|(k, _)| k)
+        .collect();
     let own_props: Option<CustomProps> = decls.keys().any(|k| k.starts_with("--")).then(|| {
         let mut layered = custom_props.clone();
-        for (name, value) in decls.iter().filter(|(k, _)| k.starts_with("--")) {
-            layered.insert(name.clone(), value.clone());
+        let own = || decls.iter().filter(|(k, _)| k.starts_with("--"));
+        for (name, value) in own() {
+            match custom_property_keyword(value) {
+                Some(CustomKeyword::Inherits) => {}
+                Some(CustomKeyword::Invalid) => {
+                    layered.shift_remove(name);
+                }
+                None => {
+                    layered.insert(name.clone(), value.clone());
+                }
+            }
         }
-        for (name, value) in decls.iter().filter(|(k, _)| k.starts_with("--")) {
+        for (name, value) in own() {
+            if custom_property_keyword(value).is_some() {
+                continue;
+            }
             let resolved = super::checks_shim::resolve_var_refs(value, &layered);
             layered.insert(name.clone(), resolved);
         }
@@ -657,6 +706,16 @@ fn mark_pseudo_paint(
             )
         })
         .collect();
+    // A declaration whose `var()` still names a property the pseudo set to
+    // `initial` is invalid at computed-value time, and its property takes
+    // its initial value: no paint, no box, no offset, as if never declared.
+    if !invalid.is_empty() {
+        decls.retain(|_, v| {
+            !VAR_NAME_RE
+                .captures_iter(v)
+                .any(|c| invalid.iter().any(|name| &c[1] == name.as_str()))
+        });
+    }
     split_resolved_inset(&mut decls);
     let decls = &decls;
     if !pseudo_covers_box(decls) || !pseudo_paints_a_box(decls) {
@@ -682,13 +741,15 @@ fn mark_pseudo_paint(
     let color = parse_any_color(Some(token.as_deref().unwrap_or(&color_raw)));
     // Anything the pseudo paints over the box, however faint, sits between
     // the box's own image and its text (#560). Of the color, only nothing,
-    // `none`, `transparent` (which no color parser reads), and a color too
+    // `none`, `transparent` (which no color parser reads), `initial` and
+    // `unset` (the longhand's initial value is transparent), and a color too
     // faint to see are known not to paint, and a value the engine cannot
     // read counts as paint; the image part paints on its own terms, whatever
     // a later longhand did to the color.
     let color_no_paint = color_raw.is_empty()
-        || color_raw.eq_ignore_ascii_case("none")
-        || color_raw.eq_ignore_ascii_case("transparent")
+        || ["none", "transparent", "initial", "unset"]
+            .iter()
+            .any(|keyword| color_raw.eq_ignore_ascii_case(keyword))
         || color.is_some_and(|c| c.alpha_or_one() <= 0.02);
     let paints = !color_no_paint || IMAGE_PAINT_RE.is_match(&image_raw);
     for id in ids {

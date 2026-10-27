@@ -1829,3 +1829,35 @@ fn the_pseudos_custom_properties_resolve_against_each_other_whatever_the_order()
         assert!(found.is_empty(), "{own}: {found:?}");
     }
 }
+
+#[test]
+fn a_reset_on_the_pseudo_takes_the_elements_value_or_paints_nothing() {
+    let site = Site::new("pseudo-var-reset");
+    let body = "<div class=\"hero plain\"><p>White copy</p></div>";
+    let p = " p { position: relative; color: #fdfdfd; }";
+    // A custom property the pseudo sets to a CSS-wide keyword other than
+    // `initial` takes the element's value (custom properties inherit), over
+    // the pseudo's own earlier value: the element's transparent scrim
+    // paints nothing.
+    for reset in ["unset", "inherit", "revert", "revert-layer", "UNSET"] {
+        let css = format!(".hero {{ --scrim: transparent; background: url(light.png); position: relative; }} .hero::before {{ content: ''; position: absolute; inset: 0; --scrim: rgba(0, 0, 0, 0.7); background: var(--scrim); }} .plain::before {{ --scrim: {reset}; }}{p}");
+        let found = site.contrast(&css, body);
+        assert!(sampled_on("light.png", &found), "{reset}: {found:?}");
+    }
+    // `initial` is the guaranteed-invalid value: a `var()` with a fallback
+    // takes the fallback.
+    let css = format!(".hero {{ --scrim: rgba(0, 0, 0, 0.7); background: url(light.png); position: relative; }} .hero::before {{ content: ''; position: absolute; inset: 0; background: var(--scrim, transparent); }} .plain::before {{ --scrim: initial; }}{p}");
+    let found = site.contrast(&css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
+    // One without a fallback leaves its declaration invalid, and the
+    // property takes its initial value: the paint it carried is gone.
+    let css = format!(".hero {{ --scrim: rgba(0, 0, 0, 0.7); background: url(light.png); position: relative; }} .hero::before {{ content: ''; position: absolute; inset: 0; background: var(--scrim); }} .plain::before {{ --scrim: initial; }}{p}");
+    let found = site.contrast(&css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
+    // A reset of the paint itself paints nothing.
+    for reset in ["unset", "initial"] {
+        let css = format!(".hero {{ background: url(light.png); position: relative; }} .hero::before {{ content: ''; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.7); }} .plain::before {{ background: {reset}; }}{p}");
+        let found = site.contrast(&css, body);
+        assert!(sampled_on("light.png", &found), "{reset}: {found:?}");
+    }
+}
