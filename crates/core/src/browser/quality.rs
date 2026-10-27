@@ -156,12 +156,29 @@ fn svg_text_scale(dom: &dyn Dom, el: ElId) -> Option<f64> {
         .collect();
     let [_, _, vw, vh] = parts[..] else { return None };
     // The viewBox fills the content box: padding and borders draw nothing.
+    // They are layout px, and the rect is drawn px, so they come off only
+    // where the rect matches the layout box (content-box or border-box
+    // sizing, untransformed); a transformed box with an inset keeps the
+    // computed size.
     let r = dom.rect(svg);
     let inset = |a: &str, b: &str, c: &str, d: &str| {
         style_px(dom, svg, a) + style_px(dom, svg, b) + style_px(dom, svg, c) + style_px(dom, svg, d)
     };
-    let width = r.width - inset("paddingLeft", "paddingRight", "borderLeftWidth", "borderRightWidth");
-    let height = r.height - inset("paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth");
+    let content = |drawn: f64, declared: &str, inset: f64| -> Option<f64> {
+        if inset <= 0.0 {
+            return Some(drawn);
+        }
+        let css = style_px(dom, svg, declared);
+        if (css + inset - drawn).abs() <= 1.0 {
+            Some(css)
+        } else if (css - drawn).abs() <= 1.0 {
+            Some(css - inset)
+        } else {
+            None
+        }
+    };
+    let width = content(r.width, "width", inset("paddingLeft", "paddingRight", "borderLeftWidth", "borderRightWidth"))?;
+    let height = content(r.height, "height", inset("paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth"))?;
     if !(vw.is_finite() && vh.is_finite() && vw > 0.0 && vh > 0.0 && width > 0.0 && height > 0.0) {
         return None;
     }
