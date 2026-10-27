@@ -576,7 +576,11 @@ pub struct SafeTagTextSeen {
     /// replaced: `(handle, snippet)`.
     superseded: Vec<(u64, String)>,
     /// The element that holds each claimed key, where the caller named one.
-    owners: Vec<((String, String), u64)>,
+    /// with that element's verdict (snippet and severity): a copy counts
+    /// for it only where the copy's own verdict is the same, so a copy that
+    /// shares a gradient box at another bar or severity is never counted
+    /// under it.
+    owners: Vec<((String, String), u64, String, Option<String>)>,
     /// Copies of a claimed pair this dedupe dropped, as `(owner, copy)`:
     /// the element whose report speaks for the copy, and the copy. A
     /// provisional owner a later element replaced hands its copies, and
@@ -650,7 +654,7 @@ impl SafeTagTextSeen {
             // claimant only where the engine would have let it report.
             if let Some(k) = keys.iter().find(|k| self.reported.contains(k)) {
                 if claim.is_some() && keep(h) {
-                    self.record_copy(k, claim);
+                    self.record_copy(k, claim, h);
                 }
                 return false;
             }
@@ -659,7 +663,7 @@ impl SafeTagTextSeen {
                 .find(|k| self.provisional.iter().any(|(p, _, _)| p == *k));
             if let (Some(k), false) = (held, on_screen) {
                 if claim.is_some() && keep(h) {
-                    self.record_copy(k, claim);
+                    self.record_copy(k, claim, h);
                 }
                 return false;
             }
@@ -695,8 +699,8 @@ impl SafeTagTextSeen {
             }
             if let Some(c) = claim {
                 for key in &keys {
-                    self.owners.retain(|(k, _)| k != key);
-                    self.owners.push((key.clone(), c.owner));
+                    self.owners.retain(|(k, _, _, _)| k != key);
+                    self.owners.push((key.clone(), c.owner, h.snippet.clone(), h.severity.clone()));
                 }
             }
             match claim {
@@ -719,10 +723,13 @@ impl SafeTagTextSeen {
 
     /// Record a hit dropped because `key` is already claimed: the copy is
     /// counted for the key's owner, where both are named.
-    fn record_copy(&mut self, key: &(String, String), claim: Option<PairClaim>) {
+    fn record_copy(&mut self, key: &(String, String), claim: Option<PairClaim>, hit: &RuleHit) {
         let Some(c) = claim else { return };
-        if let Some((_, owner)) = self.owners.iter().find(|(k, _)| k == key) {
-            if *owner != c.owner {
+        if let Some((_, owner, snippet, severity)) = self.owners.iter().find(|(k, _, _, _)| k == key) {
+            // Same bar and same severity: a copy on one gradient box at
+            // another text size (another bar) or across the advisory line
+            // is not the owner's verdict.
+            if *owner != c.owner && *severity == hit.severity && contrast_bar(snippet) == contrast_bar(&hit.snippet) {
                 self.copies.push((*owner, c.owner));
             }
         }
@@ -777,6 +784,15 @@ pub fn split_more_count(snippet: &str) -> (String, usize) {
         }
         None => (snippet.to_string(), 0),
     }
+}
+
+/// The bar a contrast snippet names (`need 4.5:1`), or the whole snippet
+/// where it names none.
+fn contrast_bar(snippet: &str) -> &str {
+    snippet
+        .find("(need ")
+        .and_then(|i| snippet[i..].find(')').map(|j| &snippet[i..i + j]))
+        .unwrap_or(snippet)
 }
 
 static MORE_COUNT_RE: Lazy<Regex> =
@@ -2981,6 +2997,23 @@ mod tests {
             split_more_count(&format!("{s} (and 3 more) (third-party: Taboola)")),
             (format!("{s} (third-party: Taboola)"), 3)
         );
+    }
+
+    #[test]
+    fn a_copy_at_another_bar_or_severity_is_not_counted() {
+        let keys = |_: &RuleHit| vec!["text #ffffff over gradient [div.hero]".to_string()];
+        let claim = |owner: u64| Some(PairClaim { owner, on_screen: true });
+        let mut seen = SafeTagTextSeen::default();
+        let mut small = vec![RuleHit::new("low-contrast", "2.9:1 (need 4.5:1) — text #ffffff on #8aa0ff (gradient on div.hero)".to_string())];
+        seen.keep_first_keyed_claiming(&mut small, &keys, claim(1), &mut |_| true);
+        let mut large = RuleHit::new("low-contrast", "2.9:1 (need 3:1) — text #ffffff on #8ba0ff (gradient on div.hero)".to_string());
+        large.severity = Some(ADVISORY_SEVERITY.to_string());
+        let mut large = vec![large];
+        seen.keep_first_keyed_claiming(&mut large, &keys, claim(2), &mut |_| true);
+        assert!(large.is_empty(), "dropped as before");
+        let mut same = vec![RuleHit::new("low-contrast", "2.8:1 (need 4.5:1) — text #ffffff on #8ca0ff (gradient on div.hero)".to_string())];
+        seen.keep_first_keyed_claiming(&mut same, &keys, claim(3), &mut |_| true);
+        assert_eq!(seen.take_copies(), vec![(1, 3)]);
     }
 
     #[test]
