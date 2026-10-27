@@ -294,33 +294,42 @@ pub(crate) fn gradient_layers_are_dot_texture(dom: &dyn Dom, node: ElId, image: 
     let sizes = split_top_level_commas(&js::to_lower_case(&dom.style(node, "backgroundSize")));
     let shorthand = split_top_level_commas(&js::to_lower_case(&dom.style(node, "background")));
     let layers = split_top_level_commas(image);
-    !layers.is_empty()
-        && !sizes.is_empty()
-        && layers.iter().enumerate().all(|(i, layer)| {
-            let lower = js::to_lower_case(layer);
-            let repeats = !shorthand.get(i).map_or(false, |s| s.contains("no-repeat"));
-            let Some((w, h)) = explicit_cell(sizes[i % sizes.len()].as_str()) else {
-                return false;
-            };
-            let Some((radius, alpha)) = radial_dot(js::trim(&lower)) else {
-                return false;
-            };
-            // The default shape is an ellipse in the cell's own proportions:
-            // a circle only in a square cell.
-            let circular = lower.contains("circle") || (w - h).abs() < 0.5;
-            repeats
-                && circular
-                && w > 0.0
-                && h > 0.0
-                && w <= TEXTURE_MAX_CELL_PX
-                && h <= TEXTURE_MAX_CELL_PX
-                && gradient_is_decoration(&lower)
-                && std::f64::consts::PI * radius * radius / (w * h) * alpha <= DOT_TEXTURE_MAX_INK
-        })
+    if layers.is_empty() || sizes.is_empty() {
+        return false;
+    }
+    // The ink of every layer together: several sparse layers offset across
+    // one cell can make a dense pattern (#1201 review).
+    let mut ink = 0.0;
+    for (i, layer) in layers.iter().enumerate() {
+        let lower = js::to_lower_case(layer);
+        let repeats = !shorthand.get(i).map_or(false, |s| s.contains("no-repeat"));
+        let Some((w, h)) = explicit_cell(sizes[i % sizes.len()].as_str()) else {
+            return false;
+        };
+        let Some((radius, alpha)) = radial_dot(js::trim(&lower)) else {
+            return false;
+        };
+        // The default shape is an ellipse in the cell's own proportions:
+        // a circle only in a square cell.
+        let circular = lower.contains("circle") || (w - h).abs() < 0.5;
+        if !(repeats
+            && circular
+            && w > 0.0
+            && h > 0.0
+            && w <= TEXTURE_MAX_CELL_PX
+            && h <= TEXTURE_MAX_CELL_PX
+            && gradient_is_decoration(&lower))
+        {
+            return false;
+        }
+        ink += std::f64::consts::PI * radius * radius / (w * h) * alpha;
+    }
+    ink <= DOT_TEXTURE_MAX_INK
 }
 
 /// The most ink a dot pattern may lay over its cell, as a share of the
-/// cell's area times the dot's alpha, and still be texture over the fill.
+/// cell's area times the dot's alpha, summed over its layers, and still be
+/// texture over the fill.
 const DOT_TEXTURE_MAX_INK: f64 = 0.15;
 
 /// A gradient argument split into its leading colour (a token, or a whole

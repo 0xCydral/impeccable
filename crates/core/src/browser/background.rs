@@ -890,6 +890,11 @@ mod tests {
         // (#1201 review): a 12px dot in 24px cells is dense.
         paint(&mut d, "radial-gradient(circle, rgb(17, 17, 17) 12px, rgb(34, 34, 34) 1px, rgba(0, 0, 0, 0) 1.4px)", "24px 24px");
         assert!(!dots(&d));
+        // Four sparse layers offset across one cell are one dense pattern
+        // (#1201 review): about 44% together.
+        let dot = "radial-gradient(circle, rgb(34, 34, 34) 3px, rgba(0, 0, 0, 0) 3px)";
+        paint(&mut d, &[dot; 4].join(", "), "16px 16px");
+        assert!(!dots(&d));
         // An ellipse is not read as a circle's area (#1201 review).
         paint(&mut d, "radial-gradient(4px 32px, rgb(17, 17, 17) 3px, rgba(0, 0, 0, 0) 3px)", "8px 64px");
         assert!(!dots(&d));
