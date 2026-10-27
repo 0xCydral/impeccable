@@ -382,7 +382,9 @@ fn radial_dot(layer: &str) -> Option<(f64, f64)> {
         }
     }
     let first_clear = (*clear.first()?)?;
-    let last_coloured = coloured.last()?.1?;
+    // A stop placed before an earlier one is drawn at the earlier one's
+    // position, so the dot reaches the furthest coloured stop.
+    let last_coloured = coloured.iter().map(|(_, p)| *p).collect::<Option<Vec<f64>>>()?.into_iter().fold(0.0, f64::max);
     let alpha = coloured.iter().map(|(a, _)| *a).fold(0.0, f64::max);
     Some((first_clear.max(last_coloured), alpha))
 }
