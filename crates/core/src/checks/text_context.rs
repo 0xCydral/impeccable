@@ -711,7 +711,15 @@ fn bar_leads_with_traffic_lights<N: ContextNode>(bar: &N) -> Option<bool> {
 fn is_demo_window<N: ContextNode>(c: &N) -> bool {
     let Some(bar) = title_bar(c) else { return false };
     if let Some(leads) = bar_leads_with_traffic_lights(&bar) {
-        return leads && !holds_code_sample(c);
+        if leads && !holds_code_sample(c) {
+            return true;
+        }
+        // Dots on a code window are no cue (r14-t7); a preview caption in
+        // the bar still is.
+        if leads {
+            return is_frame_box(c) && bar_has_preview_caption(&bar);
+        }
+        return false;
     }
     is_frame_box(c) && bar_has_preview_caption(&bar)
 }
@@ -740,8 +748,8 @@ fn is_traffic_light_window<N: ContextNode>(c: &N) -> bool {
 const CODE_TAGS: &[&str] = &["pre", "code", "kbd", "samp"];
 
 /// Whether the window's text is mostly a code sample (decision r14-t7,
-/// 2026-10-26: "Bad design is bad design."): more than half its rendered
-/// characters sit in a `pre`, `code`, `kbd` or `samp`, or in a box whose
+/// 2026-10-26: "Bad design is bad design."): more than half its shown
+/// characters sit in a `pre`, `code`, `kbd` or `samp`, or in a box whose own
 /// computed face is monospace. A terminal or a config file drawn with
 /// traffic lights is reading content, so its dots are no mock cue; a
 /// dashboard or an app screen in the same chrome stays one.
@@ -756,15 +764,20 @@ fn holds_code_sample<N: ContextNode>(c: &N) -> bool {
             break;
         }
         let tag = n.tag();
-        if SOURCE_TEXT_TAGS.contains(&tag.as_str()) {
+        // Text nobody sees takes no share: source, `display: none`, and
+        // `visibility: hidden` or `collapse` (a hidden child can show again
+        // under it, so only its own text is left out).
+        if SOURCE_TEXT_TAGS.contains(&tag.as_str()) || n.style("display").trim() == "none" {
             continue;
         }
-        let in_code = in_code
-            || CODE_TAGS.contains(&tag.as_str())
-            || crate::checks::text_rules::is_monospace_family(&n.style("fontFamily"));
-        let chars = n.direct_text().chars().filter(|ch| !ch.is_whitespace()).count();
+        let shown = !matches!(n.style("visibility").trim(), "hidden" | "collapse");
+        // A code tag holds code all the way down; a face is read on each
+        // box, which inherits it unless it sets its own.
+        let in_code = in_code || CODE_TAGS.contains(&tag.as_str());
+        let code_here = in_code || crate::checks::text_rules::is_monospace_family(&n.style("fontFamily"));
+        let chars = if shown { n.direct_text().chars().filter(|ch| !ch.is_whitespace()).count() } else { 0 };
         all += chars;
-        if in_code {
+        if code_here {
             code += chars;
         }
         stack.extend(n.children().into_iter().map(|k| (k, in_code)));
@@ -2004,6 +2017,26 @@ mod tests {
         pane.add("code").text("v2");
         assert!(in_framed_demo(&label));
         assert!(is_demo_frame(&win));
+        // Review on #1197: monospace chrome over a sans pane is a dashboard,
+        // hidden code takes no share, and a preview caption still counts.
+        let (_t, body) = Tree::new();
+        let (win, _bar, label) = window(&body);
+        let win = win.style("fontFamily", "ui-monospace, monospace");
+        let pane = win.children()[1].clone().style("fontFamily", "Inter, sans-serif");
+        pane.add("span").text("Revenue this quarter by plan and region").style("fontFamily", "Inter, sans-serif");
+        let _ = label.clone().style("fontFamily", "Inter, sans-serif");
+        assert!(in_framed_demo(&label), "sans pane in mono chrome");
+        let (_t, body) = Tree::new();
+        let (win, _bar, label) = window(&body);
+        let hidden = win.children()[1].add("pre").style("display", "none");
+        hidden.add("span").text("const client = createClient({ retries: 2, timeoutMs: 3000 })");
+        assert!(in_framed_demo(&label), "hidden code");
+        let (_t, body) = Tree::new();
+        let (win, bar, _label) = window(&body);
+        let win = framed(win);
+        bar.add("span").text("Live preview");
+        let line = win.children()[1].add("pre").add("span").text("retries = 2  # attempts after the first");
+        assert!(in_framed_demo(&line), "a preview caption on a code window");
     }
 
     #[test]
