@@ -1397,7 +1397,13 @@ fn without_script_text(html: &str) -> String {
         let Some(open_end) = lower[after..].find('>').map(|p| after + p + 1) else {
             break;
         };
-        let Some(close) = lower[open_end..].find("</script").map(|p| open_end + p) else {
+        let closing = lower[open_end..].match_indices("</script").map(|(p, _)| open_end + p).find(|&p| {
+            lower
+                .as_bytes()
+                .get(p + "</script".len())
+                .is_none_or(|b| b.is_ascii_whitespace() || *b == b'>' || *b == b'/')
+        });
+        let Some(close) = closing else {
             break;
         };
         out.push_str(&html[from..open_end]);
@@ -2142,11 +2148,15 @@ fn marquee_page_form_stands(
     // it (zcad.ai's `.home-announcement::before`, mypip.dev's
     // `.feature-asset-stack::after`) carries nothing, whatever the host
     // holds. A selector list that also names a host reads the hosts.
+    // Each part of a list asks its own pseudo-element of its own hosts.
     let pseudos = item.selector.as_deref().map(selector_list_pseudos).unwrap_or_default();
     let carries = if !pseudos.is_empty() && pseudos.iter().all(Option::is_some) {
-        elements
-            .iter()
-            .any(|&el| pseudos.iter().flatten().any(|which| pseudo_carries_content(dom, el, which)))
+        match item.selector.as_deref().and_then(|s| pseudo_parts_carry_content(dom, s, elements)) {
+            Some(carries) => carries,
+            None => elements
+                .iter()
+                .any(|&el| pseudos.iter().flatten().any(|which| pseudo_carries_content(dom, el, which))),
+        }
     } else {
         elements.iter().any(|&el| marquee_carries_content(dom, el))
     };
@@ -2217,6 +2227,25 @@ fn marquee_carries_content(dom: &dyn Dom, el: ElId) -> bool {
         return true;
     }
     ["::before", "::after"].iter().any(|which| pseudo_carries_content(dom, el, which))
+}
+
+/// For a selector list whose every part names a `::before` or `::after`,
+/// whether any part's own pseudo-element carries content on that part's own
+/// hosts (among `elements`). `None` where a part cannot be split off or
+/// resolved, and the caller reads every pseudo-element on every host.
+fn pseudo_parts_carry_content(dom: &dyn Dom, selector: &str, elements: &[ElId]) -> Option<bool> {
+    let parts = crate::color::split_top_level_commas(selector);
+    let mut any = false;
+    for part in &parts {
+        let which = (*selector_list_pseudos(part).first()?)?;
+        let host = pseudo_element_host_selector(part)?;
+        let hosts = selector_nodes_for_live_dom(dom, &host)?;
+        any |= hosts
+            .iter()
+            .filter(|h| elements.contains(h))
+            .any(|&h| pseudo_carries_content(dom, h, which));
+    }
+    Some(any)
 }
 
 /// Whether `el`'s `::before` or `::after` (`which`) generates something to
@@ -5175,6 +5204,10 @@ mod page_level_form_tests {
         assert_eq!(without_script_text("<!-- <script --> <i style=a>"), "<!-- <script --> <i style=a>");
         assert_eq!(without_script_text("<!-- unclosed <script>x</script>"), "<!-- unclosed <script>x</script>");
         assert_eq!(
+            without_script_text("<script>var t = '</script-loader><div style=\"a\">';</script><b>"),
+            "<script></script><b>"
+        );
+        assert_eq!(
             without_script_text("<style>.a::after{content:\"<script>\"}</style><b style=\"c\"><script>x</script>"),
             "<style>.a::after{content:\"<script>\"}</style><b style=\"c\"><script></script>"
         );
@@ -5532,6 +5565,26 @@ mod page_level_form_tests {
         let d = build("\"\"");
         assert!(details(&scan(&d), "marquee").is_empty());
         let d = build("\"SALE • NEW • \"");
+        assert!(!details(&scan(&d), "marquee").is_empty());
+
+        // A list asks each part's own pseudo-element: two empty sheens on
+        // `::before` and `::after` of different hosts carry nothing, though
+        // the second host's still `::before` holds words.
+        let style = ".a::before, .b::after{content:\"\";animation:flow 6s linear infinite}\
+@keyframes flow{0%{transform:translateX(-48%)}100%{transform:translateX(48%)}}";
+        let (mut d, body) = page(style);
+        let a = d.add(Some(body), "div");
+        d.add_selector(a, ".a");
+        d.set_pseudo_style(a, "::before", "content", "\"\"");
+        d.set_pseudo_style(a, "::before", "animationName", "flow");
+        let b = d.add(Some(body), "div");
+        d.add_selector(b, ".b");
+        d.set_pseudo_style(b, "::after", "content", "\"\"");
+        d.set_pseudo_style(b, "::after", "animationName", "flow");
+        d.set_pseudo_style(b, "::before", "content", "\"New\"");
+        assert!(details(&scan(&d), "marquee").is_empty());
+        // The twin: the moving `::after` itself generates words.
+        d.set_pseudo_style(b, "::after", "content", "\"Ticker words\"");
         assert!(!details(&scan(&d), "marquee").is_empty());
     }
 

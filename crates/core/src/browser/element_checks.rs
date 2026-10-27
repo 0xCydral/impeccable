@@ -161,7 +161,9 @@ pub fn check_element_borders_dom(dom: &dyn Dom, el: ElId) -> Vec<RuleHit> {
             status_context: is_status_context_element(dom, el),
             tab_context: is_tab_context_element(dom, el),
             corners,
-            box_size: Some([rect.width, rect.height]),
+            // `parse_radius_corners` keeps the horizontal radii only, so an
+            // elliptical corner (`50% / 4px`) leaves the circle test unread.
+            box_size: (!radius_value.contains('/')).then_some([rect.width, rect.height]),
         },
     );
     // A side-tab is a card of text with a coloured edge; a card a visitor
@@ -9124,6 +9126,10 @@ mod tests {
             ],
         );
         assert!(check_element_borders_dom(&d, ring).is_empty());
+        // Corners flattened to 4px vertically are not a circle.
+        d.set_style(ring, "borderRadius", "50% / 4px");
+        assert_eq!(check_element_borders_dom(&d, ring).len(), 1);
+        d.set_style(ring, "borderRadius", "9999px");
         // The same border on a wide rounded card is a side tab.
         d.set_rect(ring, 100.0, 100.0, 320.0, 64.0);
         d.set_style(ring, "borderRadius", "12px");

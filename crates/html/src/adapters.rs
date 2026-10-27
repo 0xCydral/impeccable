@@ -615,7 +615,9 @@ pub fn check_element_borders(
             status_context: is_status_context_element(el),
             badge_like: own_bg.is_some_and(|c| c.alpha_or_one() > 0.1),
             corners,
-            box_size: declared_px_size(style),
+            // An elliptical corner (`50% / 4px`) is read by its horizontal
+            // radius only, so it leaves the circle test unread.
+            box_size: declared_px_size(style).filter(|_| !sv(style, "borderRadius").contains('/')),
         },
     )
 }
