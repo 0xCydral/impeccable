@@ -2640,7 +2640,9 @@ impl ServerState {
                 let wire_html = if media_html.is_empty() { wire(o) } else { String::new() };
                 let media_or_wire = if !media_html.is_empty() { media_html.clone() } else { wire_html.clone() };
                 let id_esc = esc(o.get("id").unwrap_or(&Value::Null));
-                let kicker = if has(o, "kicker") {
+                let kicker = if shelf {
+                    "<span class=\"kicker\">SAVED</span>".to_string()
+                } else if has(o, "kicker") {
                     format!("<span class=\"kicker\">{}</span>", esc(o.get("kicker").unwrap()))
                 } else if demoted(o) {
                     "<span class=\"kicker declined-k\">Declined</span>".to_string()
@@ -2687,7 +2689,7 @@ impl ServerState {
                 };
                 format!(
                     "\n    <article class=\"card{}{}\" style=\"--fan:{};--deal:{}ms\" data-id=\"{}\"{}>\n      <div class=\"card-inner\">\n        <div class=\"face front{}{}\">\n          {}\n          {}\n          <div class=\"body\">\n            {}\n            <h2>{}</h2>\n            {}\n            {}\n            <div class=\"actions\"><button class=\"choose\" data-id=\"{}\">{}</button>{}</div>\n          </div>\n        </div>\n        {}\n      </div>\n    </article>",
-                    if truthy(o, "isCanon") { " canon" } else { "" },
+                    if shelf { " saved" } else if truthy(o, "isCanon") { " canon" } else { "" },
                     if demoted(o) { " declined" } else { "" },
                     if index == 0 { "0deg" } else if index % 2 == 1 { "1.4deg" } else { "-1.2deg" },
                     index * 90,
@@ -2707,16 +2709,15 @@ impl ServerState {
                     back
                 )
         };
-        let cards_html = options.iter().enumerate().map(|(index, o)| render_card(index, o, false)).collect::<Vec<_>>().join("\n");
-        // The Saved row: every saved card, on every hand of the round.
-        let shelf_html = if self.shelf.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "<div class=\"deck-shell shelf\">\n      <h2 class=\"tier shelf-title\">Saved</h2>\n      <div class=\"grid\">{}</div>\n    </div>",
-                self.shelf.iter().enumerate().map(|(index, o)| render_card(index, o, true)).collect::<Vec<_>>().join("\n")
-            )
-        };
+        // Saved cards lead the deck, ahead of the dealt hand, on every hand of the round.
+        let cards_html = self
+            .shelf
+            .iter()
+            .enumerate()
+            .map(|(index, o)| render_card(index, o, true))
+            .chain(options.iter().enumerate().map(|(index, o)| render_card(index, o, false)))
+            .collect::<Vec<_>>()
+            .join("\n");
         let payload = &self.payload;
         let title_default = |d: &str| -> String {
             match get(payload, "title").filter(|v| crate::staleness::js_truthy(v)) {
@@ -2764,7 +2765,7 @@ impl ServerState {
         let await_next = if waiting { format!("awaitNextRound(false, {});", crate::util::js_number_to_string(wait_budget_ms)) } else { String::new() };
         // JS: const KEY = ${JSON.stringify(detachedKey || '')};
         let key_json = serde_json::to_string(self.detached_key.as_deref().unwrap_or("")).unwrap_or_else(|_| "\"\"".into());
-        let subs: [(&str, String); 16] = [
+        let subs: [(&str, String); 15] = [
             ("@@1@@", title_default("impeccable · decision")),
             ("@@2@@", expand_chip.to_string()),
             ("@@3@@", bp_confirm),
@@ -2780,7 +2781,6 @@ impl ServerState {
             ("@@13@@", crate::util::js_number_to_string(self.idle_grace_ms)),
             ("@@14@@", await_next),
             ("@@15@@", key_json),
-            ("@@16@@", shelf_html),
         ];
         let mut html = PAGE.to_string();
         // Replace higher numbers first so @@1@@ does not clobber @@10@@..@@15@@.
@@ -4547,7 +4547,7 @@ mod tests {
             "title": "Choose the visual world",
             "reroll": true,
             "options": [
-                { "id": "a", "label": "Card A", "thesis": "First.", "palette": ["#111111", "#eeeeee"], "comp": ".impeccable/mocks/decision/a.png", "html": ".impeccable/mocks/decision/a.html" },
+                { "id": "a", "label": "Card A", "kicker": "THE ROLL", "lineage": "Lineage of A", "thesis": "First.", "palette": ["#111111", "#eeeeee"], "comp": ".impeccable/mocks/decision/a.png", "html": ".impeccable/mocks/decision/a.html" },
                 { "id": "b", "label": "Card B", "thesis": "Second.", "palette": ["#222222"] },
                 { "id": "c", "label": "Card C", "thesis": "Third." }
             ]
@@ -4580,10 +4580,15 @@ mod tests {
         assert!(shelf["cards"][1]["card"].get("notes").is_none(), "empty notes are omitted");
         assert!(shelf["cards"][1]["card"].get("comp").is_none());
         assert_eq!(std::fs::read(qdir.join("pk.shelf/saved-1.png")).unwrap(), b"comp bytes of a");
-        // The page shows a Saved row with Build this and Remove, and the
-        // source cards read Saved.
+        // Saved cards lead the deck as cards of their own, kicker SAVED, with
+        // Build this and Remove; the source cards read Saved.
         let page = page_at(port);
-        assert!(page.contains("<h2 class=\"tier shelf-title\">Saved</h2>"), "{page}");
+        assert_eq!(page.matches("<article class=\"card saved\"").count(), 2, "{page}");
+        assert_eq!(page.matches("<span class=\"kicker\">SAVED</span>").count(), 2);
+        assert_eq!(page.matches("<span class=\"kicker\">THE ROLL</span>").count(), 1, "a saved card does not repeat the dealt kicker");
+        assert_eq!(page.matches("<p class=\"tier\">Lineage of A</p>").count(), 2, "a saved card keeps its lineage");
+        let at = |needle: &str| page.find(needle).unwrap_or_else(|| panic!("{needle} missing"));
+        assert!(at("data-id=\"saved-2\"") < at("<article class=\"card\" style=\"--fan:0deg;--deal:0ms\" data-id=\"a\""), "saved cards come before the dealt hand");
         assert!(page.contains("class=\"quiet remove\" data-id=\"saved-1\"") && page.contains("class=\"quiet remove\" data-id=\"saved-2\""));
         assert!(page.contains("<button class=\"choose\" data-id=\"saved-1\">Build this</button>"));
         assert!(page.contains("data-id=\"a\" disabled>Saved</button>") && page.contains("data-id=\"b\" disabled>Saved</button>"));
@@ -4607,7 +4612,7 @@ mod tests {
         assert!(json_file(qdir.join("pk.shelf.json"))["cards"].as_array().unwrap().is_empty());
         assert!(!qdir.join("pk.shelf/saved-1.png").exists() && !qdir.join("pk.shelf/saved-1.html").exists());
         let page = page_at(port);
-        assert!(!page.contains("class=\"tier shelf-title\"") && !page.contains("saved-1"), "an empty shelf draws nothing");
+        assert!(!page.contains("<article class=\"card saved\"") && !page.contains("saved-1"), "an empty shelf draws nothing");
         // Ids are not reused within the round.
         post_json(port, "/save", &json!({ "optionId": "a" })).unwrap();
         assert_eq!(json_file(qdir.join("pk.shelf.json"))["cards"][0]["card"]["id"], "saved-2");
