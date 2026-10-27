@@ -112,7 +112,8 @@ fn is_in_control(dom: &dyn Dom, el: ElId) -> bool {
 const SVG_TEXT_TAGS: &[&str] = &["text", "tspan", "textpath"];
 
 /// The scale the nearest `svg` around `el` draws its user units at: its
-/// rendered size over its `viewBox` size, the smaller of the two axes as
+/// rendered content box (padding and borders left out) over its `viewBox`
+/// size, the smaller of the two axes as
 /// the default `preserveAspectRatio` (`meet`) fits it, the larger under
 /// `slice`, and the vertical axis, which sets glyph height, under `none`.
 /// A `transform` on the text or on a box between it and the `svg` (the
@@ -154,11 +155,17 @@ fn svg_text_scale(dom: &dyn Dom, el: ElId) -> Option<f64> {
         .map(|p| p.parse::<f64>().unwrap_or(f64::NAN))
         .collect();
     let [_, _, vw, vh] = parts[..] else { return None };
+    // The viewBox fills the content box: padding and borders draw nothing.
     let r = dom.rect(svg);
-    if !(vw.is_finite() && vh.is_finite() && vw > 0.0 && vh > 0.0 && r.width > 0.0 && r.height > 0.0) {
+    let inset = |a: &str, b: &str, c: &str, d: &str| {
+        style_px(dom, svg, a) + style_px(dom, svg, b) + style_px(dom, svg, c) + style_px(dom, svg, d)
+    };
+    let width = r.width - inset("paddingLeft", "paddingRight", "borderLeftWidth", "borderRightWidth");
+    let height = r.height - inset("paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth");
+    if !(vw.is_finite() && vh.is_finite() && vw > 0.0 && vh > 0.0 && width > 0.0 && height > 0.0) {
         return None;
     }
-    let (sx, sy) = (r.width / vw, r.height / vh);
+    let (sx, sy) = (width / vw, height / vh);
     let fit = dom.attr(svg, "preserveAspectRatio").unwrap_or_default().to_ascii_lowercase();
     let scale = if fit.trim_start().starts_with("none") {
         sy

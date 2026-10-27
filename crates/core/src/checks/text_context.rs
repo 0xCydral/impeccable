@@ -647,11 +647,12 @@ fn bar_has_preview_caption<N: ContextNode>(bar: &N) -> bool {
 /// A child laid over the box rather than in its flow, holding no text: an
 /// `aria-hidden` or absolutely placed glow, sheen or backdrop.
 /// cursorhelper.vercel.app's `.hero-window` opens with an `aria-hidden`
-/// absolute glow, and its 45px dotted bar comes second.
-fn is_textless_layer(n: &impl ContextNode) -> bool {
+/// absolute glow, and its 45px dotted bar comes second. A child that carries
+/// the traffic lights is the bar itself, `aria-hidden` or not.
+fn is_textless_layer<N: ContextNode>(n: &N) -> bool {
     let laid_over = n.attr("aria-hidden").is_some_and(|v| v.trim().eq_ignore_ascii_case("true"))
         || matches!(n.style("position").trim(), "absolute" | "fixed");
-    laid_over && n.text().trim().is_empty()
+    laid_over && n.text().trim().is_empty() && find_dot_trio(n).is_none()
 }
 
 /// How far below the box's top edge a title bar may start, in px: within
@@ -2274,6 +2275,14 @@ mod tests {
         assert!(!in_framed_demo(&build(Some(("position", "relative")), 0.0)), "a box in flow first is the first child");
         assert!(in_framed_demo(&build(None, 24.0)), "a bar at the padding edge");
         assert!(!in_framed_demo(&build(None, 60.0)), "a bar part way down the box");
+
+        // An aria-hidden bar that carries the dots is the bar, not a glow
+        // (review on #1197).
+        let (_t, body) = Tree::new();
+        let (win, bar, label) = window(&body);
+        let _ = bar.attr("aria-hidden", "true");
+        assert!(in_framed_demo(&label), "an aria-hidden dotted bar");
+        let _ = win;
 
         // A layer that holds text is content, not a glow.
         let (_t, body) = Tree::new();

@@ -330,4 +330,5 @@ fn svg_text_is_read_at_its_drawn_size() {
     assert_eq!(snippets("fail-text-scaled"), ["14px body text"], "{f:#?}");
     assert!(snippets("pass-text-scaled").is_empty(), "{f:#?}");
     assert_eq!(snippets("fail-skewed"), ["10px body text"], "{f:#?}");
+    assert_eq!(snippets("fail-padded"), ["10px body text"], "{f:#?}");
 }

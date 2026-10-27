@@ -44,6 +44,12 @@
     <g transform="skewX(10)"><text x="5" y="30" font-size="10">Cited report with sources for every claim</text></g>
   </svg>
 
+  <!-- 10px in a 200-unit viewBox whose content box is 200px wide; 50px of
+       padding and a 2px border make the outer box wider but draw nothing -->
+  <svg class="fail-padded" width="200" height="100" viewBox="0 0 200 100" style="padding: 50px; border: 2px solid #ddd; box-sizing: content-box">
+    <text x="5" y="40" font-size="10">Cited report with sources for every claim</text>
+  </svg>
+
   <!-- no viewBox: the computed size stands -->
   <svg class="fail-no-viewbox" width="400" height="100">
     <text x="10" y="40" font-size="10">Cited report with sources for every claim</text>
