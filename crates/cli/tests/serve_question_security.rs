@@ -105,6 +105,7 @@ fn detached_posts_require_key_and_loopback_host_origin() {
         assert!(page.contains("/answer' + keyQ"));
         assert!(page.contains("/heartbeat' + keyQ"));
         assert!(page.contains("/build-path' + keyQ"));
+        assert!(page.contains("'/save' + keyQ") && page.contains("'/unsave' + keyQ"));
 
         // The picker is self-contained: system fonts and an outlined SVG
         // wordmark, with no bundled font routes or external stylesheet.
@@ -127,6 +128,34 @@ fn detached_posts_require_key_and_loopback_host_origin() {
         let (st, _) = raw_request(port, "POST", &format!("/build-path?key={}", key), &[json], Some(flip));
         assert_eq!(st, 200, "keyed flip");
         assert!(flip_path.exists(), "flip file written");
+
+        // The shelf takes the same gate: save and unsave write nothing without the key.
+        let shelf_path = dir.join(".impeccable/questions").join(format!("{}.shelf.json", key));
+        let shelf_len = || -> usize {
+            std::fs::read_to_string(&shelf_path)
+                .ok()
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                .and_then(|v| v.get("cards").and_then(|c| c.as_array().map(|a| a.len())))
+                .unwrap_or(0)
+        };
+        let (save, unsave) = (r#"{"optionId":"assigned"}"#, r#"{"savedId":"saved-1"}"#);
+        let evil = (json, ("Origin", "https://evil.example"));
+        let (st, _) = raw_request(port, "POST", "/save", &[json], Some(save));
+        assert_eq!(st, 401, "no-key save");
+        let (st, _) = raw_request(port, "POST", &format!("/save?key={}", key), &[evil.0, evil.1], Some(save));
+        assert_eq!(st, 403, "evil-origin save");
+        assert!(!shelf_path.exists(), "nothing shelved yet");
+        let (st, _) = raw_request(port, "POST", &format!("/save?key={}", key), &[json], Some(save));
+        assert_eq!(st, 200, "keyed save");
+        assert_eq!(shelf_len(), 1);
+        let (st, _) = raw_request(port, "POST", "/unsave", &[json], Some(unsave));
+        assert_eq!(st, 401, "no-key unsave");
+        let (st, _) = raw_request(port, "POST", &format!("/unsave?key={}", key), &[evil.0, evil.1], Some(unsave));
+        assert_eq!(st, 403, "evil-origin unsave");
+        assert_eq!(shelf_len(), 1, "the card is still shelved");
+        let (st, _) = raw_request(port, "POST", &format!("/unsave?key={}", key), &[json], Some(unsave));
+        assert_eq!(st, 200, "keyed unsave");
+        assert_eq!(shelf_len(), 0);
 
         // With the key (and a loopback Origin) the answer lands.
         let (st, _) = raw_request(

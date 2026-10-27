@@ -62,6 +62,27 @@ fn render_check_file(qdir: &str, key: &str) -> String {
     jsp::join(&[qdir, &format!("{}.render-check", key)])
 }
 
+/// `<key>.shelf.json`: `{"next": n, "cards": [{"src": <digest of the card as
+/// served>, "card": {...}}]}`, the cards the user saved this round without
+/// building them. Their images are copies in `<key>.shelf/`, because the next
+/// hand reuses card ids and overwrites the slots under `.impeccable/mocks/`.
+fn shelf_file(qdir: &str, key: &str) -> String {
+    jsp::join(&[qdir, &format!("{}.shelf.json", key)])
+}
+fn shelf_dir(qdir: &str, key: &str) -> String {
+    jsp::join(&[qdir, &format!("{}.shelf", key)])
+}
+
+/// Everything a round leaves besides its answer; a closed round removes it.
+fn remove_round_files(qdir: &str, key: &str) {
+    let _ = std::fs::remove_file(state_file(qdir, key));
+    let _ = std::fs::remove_file(hand_file(qdir, key));
+    let _ = std::fs::remove_file(render_check_file(qdir, key));
+    let _ = std::fs::remove_dir_all(generated_dir(qdir, key));
+    let _ = std::fs::remove_file(shelf_file(qdir, key));
+    let _ = std::fs::remove_dir_all(shelf_dir(qdir, key));
+}
+
 /// `process.kill(pid, 0)`: Ok(()) alive, Err(true) EPERM (alive but unsignalable), Err(false) dead.
 fn pid_probe(pid: i64) -> Result<(), bool> {
     match impeccable_common::proc::kill0(pid) {
@@ -163,6 +184,16 @@ fn print_answer(io: &mut Io, raw: &str, served: &[String]) {
     if option_id == Some("reroll") && truthy("register") {
         let r = a.get("register").map(js_str).unwrap_or_default();
         io.out(&format!("REGISTER: the user steered the next hand to the {} register. Re-run concept-seed with the same key, the next --reroll round, and --register {}, then follow what it prints; the register is the user's steering, never yours to pre-select.\n", r, r));
+    }
+    if option_id == Some("palette") {
+        let target = a.get("target").map(js_str).unwrap_or_default();
+        io.out(&format!("PALETTE: the user asked for a new palette on the card \"{}\" only. Deal that card a new palette (honoring the steer and the round's world), regenerate only its comp or sketch, then --update the same hand with every other card unchanged; the page is waiting.\n", target));
+    }
+    if option_id.is_some_and(|id| id.starts_with("saved-")) {
+        io.out("SAVED CARD: the user built a card they saved earlier, now in \"saved\". Build it exactly as a lock of that card; its comp and html paths are durable.\n");
+    }
+    if truthy("notes") {
+        io.out("NOTES: the user's notes on this card bind the build; carry them into the direction contract verbatim.\n");
     }
     if truthy("followup") && option_id != Some("reroll") {
         io.out("FOLLOWUP OPEN: the table stays open and the page is showing a loading hand. Deliver the next round now with --update --key <key> --payload <file>, then collect it with --wait; never leave the page waiting on a round you have not sent.\n");
@@ -869,6 +900,120 @@ fn same_path(a: &str, b: &str) -> bool {
     norm(a) == norm(b)
 }
 
+/// Option ids the page answers with itself: `palette` re-rolls one card's
+/// palette, `saved-<n>` is a card on the shelf. An agent's card never uses one.
+fn reserved_option_ids(payload: &Value) -> Vec<String> {
+    let options = payload.get("options").and_then(Value::as_array).map(Vec::as_slice).unwrap_or(&[]);
+    options.iter().filter_map(|o| o.get("id").and_then(Value::as_str)).filter(|id| *id == "palette" || id.starts_with("saved-")).map(str::to_string).collect()
+}
+
+fn reserved_ids_message(ids: &[String], rerun: &str, outcome: &str) -> String {
+    let quoted: Vec<String> = ids.iter().map(|id| format!("reserved option id \"{}\"", id)).collect();
+    format!(
+        "serve-question: {}: the page answers with \"reroll\", \"canon\", \"palette\" and \"saved-<n>\" itself, so no card may carry one. Rename the option, then {}; {}.\n",
+        quoted.join(", "),
+        rerun,
+        outcome
+    )
+}
+
+/// A card as the agent sent it: the decoration `load_round` adds is dropped.
+fn raw_card(o: &Value) -> Value {
+    let mut m = o.as_object().cloned().unwrap_or_default();
+    for k in ["htmlSrc", "heroSrc", "boardSrc", "compSrc", "isCanon", "savedSrc"] {
+        m.remove(k);
+    }
+    Value::Object(m)
+}
+
+/// The shelf's next id and entries; a missing or unreadable file is an empty shelf.
+fn read_shelf(qdir: &str, key: &str) -> (u64, Vec<Value>) {
+    let v = safe_read(&shelf_file(qdir, key)).and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    let next = v.as_ref().and_then(|v| v.get("next")).and_then(Value::as_u64).unwrap_or(1);
+    (next, v.and_then(|v| v.get("cards").and_then(Value::as_array).cloned()).unwrap_or_default())
+}
+
+fn write_shelf(qdir: &str, key: &str, next: u64, cards: &[Value]) -> Result<(), String> {
+    let _ = std::fs::create_dir_all(qdir);
+    ignore_questions_dir(qdir);
+    write_atomic(&shelf_file(qdir, key), &json_compact(&json!({ "next": next, "cards": cards }))).map_err(|e| e.to_string())
+}
+
+/// Puts a copy of `card` on the shelf under the next `saved-<n>` id, with its
+/// comp and sketch copied beside it, and returns the id. An image that is not
+/// this hand's yet (still rendering, or an earlier hand's) is left off: the
+/// slot may later hold another card's picture.
+fn save_card(cwd: &str, qdir: &str, key: &str, option: &Value, notes: Option<&str>) -> Result<String, String> {
+    let hand = read_hand(qdir, key);
+    let (next, mut cards) = read_shelf(qdir, key);
+    let id = format!("saved-{}", next);
+    let src = hand_digest(&raw_card(option));
+    let mut card = raw_card(option).as_object().cloned().unwrap_or_default();
+    let dir = shelf_dir(qdir, key);
+    let shelve = |value: Option<&Value>, current: &dyn Fn(&str) -> bool| -> Option<Value> {
+        let rel = value.filter(|v| crate::staleness::js_truthy(v)).map(js_str)?;
+        if rel.starts_with("http://") || rel.starts_with("https://") {
+            return Some(Value::String(rel));
+        }
+        if !current(&rel) {
+            return None;
+        }
+        let ext: String = std::path::Path::new(&rel).extension().and_then(|e| e.to_str()).unwrap_or("bin").chars().filter(char::is_ascii_alphanumeric).collect();
+        let name = format!("{}.{}", id, ext);
+        std::fs::create_dir_all(&dir).ok()?;
+        std::fs::copy(jsp::resolve(cwd, &[&rel]), jsp::join(&[&dir, &name])).ok()?;
+        Some(Value::String(format!(".impeccable/questions/{}.shelf/{}", key, name)))
+    };
+    let comp = shelve(card.get("comp").filter(|v| !v.is_null()).or_else(|| card.get("sketch").filter(|v| !v.is_null())), &|p: &str| comp_is_this_hands(cwd, p, hand.as_ref()));
+    let html = shelve(card.get("html"), &|p: &str| sketch_is_this_hands(cwd, p, hand.as_ref()));
+    for (field, copied) in [("comp", comp), ("html", html)] {
+        match copied {
+            Some(v) => card.insert(field.into(), v),
+            None => card.remove(field),
+        };
+    }
+    card.remove("sketch");
+    card.insert("id".into(), Value::String(id.clone()));
+    if let Some(n) = notes.map(crate::util::js_trim).filter(|n| !n.is_empty()) {
+        card.insert("notes".into(), Value::String(n.to_string()));
+    }
+    cards.push(json!({ "src": src, "card": Value::Object(card) }));
+    write_shelf(qdir, key, next + 1, &cards)?;
+    Ok(id)
+}
+
+/// Takes `saved_id` off the shelf with its copies; false when it is not there.
+fn unsave_card(qdir: &str, key: &str, saved_id: &str) -> Result<bool, String> {
+    let (next, mut cards) = read_shelf(qdir, key);
+    let before = cards.len();
+    cards.retain(|e| e.pointer("/card/id").and_then(Value::as_str) != Some(saved_id));
+    if cards.len() == before {
+        return Ok(false);
+    }
+    if let Ok(files) = std::fs::read_dir(shelf_dir(qdir, key)) {
+        for f in files.flatten() {
+            if f.path().file_stem().and_then(|s| s.to_str()) == Some(saved_id) {
+                let _ = std::fs::remove_file(f.path());
+            }
+        }
+    }
+    write_shelf(qdir, key, next, &cards)?;
+    Ok(true)
+}
+
+/// Copies a shelf image to `.impeccable/mocks/decision/<saved id>.<ext>`, where
+/// a build can keep pointing at it once the shelf is deleted with the round.
+fn keep_shelf_image(cwd: &str, rel: &str, saved_id: &str) -> Option<String> {
+    if rel.starts_with("http://") || rel.starts_with("https://") {
+        return Some(rel.to_string());
+    }
+    let ext = std::path::Path::new(rel).extension().and_then(|e| e.to_str())?;
+    let kept = format!(".impeccable/mocks/decision/{}.{}", saved_id, ext);
+    std::fs::create_dir_all(jsp::resolve(cwd, &[".impeccable/mocks/decision"])).ok()?;
+    std::fs::copy(jsp::resolve(cwd, &[rel]), jsp::resolve(cwd, &[&kept])).ok()?;
+    Some(kept)
+}
+
 /// Called by `impeccable generate-image` after it writes `out`: when `out` is
 /// a declared slot of a recorded hand in this project, mark it generated
 /// during that hand. A deterministic generator returns the same bytes for
@@ -1200,7 +1345,7 @@ fn schema_json() -> Value {
     })
 }
 
-const SCHEMA_NOTE: &str = "\nOption ids return verbatim in ANSWER; \"reroll\" and \"canon\" are reserved. On a direction or surface round (a payload carrying buildPath) every option declares kind, and --start and --update refuse the payload until it does: \"assigned\" on the assigned direction or a surface round\u{2019}s dealt lead, \"pick\" on the IMPECCABLE\u{2019}S PICK card, \"challenger\" on each dealt challenger, \"grounded\" on any other direction of your own (a safer round\u{2019}s lineup, any number), \"dealt\" on a surface round\u{2019}s other dealt structures; every challenger also carries catalogId, the SOURCE ID concept-seed printed for that world (never the card\u{2019}s own id), checked against the worlds the roll dealt; canonCard may carry kind \"canon\". The page sends the choice ping from these fields. hero/board/comp accept URLs or local paths; comp slots may point at files that do not exist yet (serve first, generate after; the page polls until they land, so never block serving on generation). hero on a challenger is the inspiration it draws from and renders picture-in-picture beside the comp, never as the promise of the build. verdict routes rendering: \"wins\" and \"competitive\" challengers keep full cards, \"declined\" ones render demoted after them (narrow, quiet, art as a labeled thumb, \"Adopt anyway\"), with their kept line on the front; the page reorders declined cards to the end on its own. raised on the assigned card renders each donation as a named raise line. Salience parity: when the assigned card declares no comp (no image generation this round), catalog art on every card demotes to a labeled thumb, so what looks important is the verdict’s call, never rendering luck. canonCard renders the standing exit as a subordinate card with the same anatomy; without it, canon stays a quiet footer action. Include canon only for visual-direction rounds; never present it as your own recommendation. The pick card is a kicker convention, not a field: kicker \"IMPECCABLE’S PICK\" on your top-ranked grounded candidate, one at most, never in the lead slot. Every card gets the full anatomy, challengers, canon, and declined included: thesis, palette, materials, viewport, risk; the seed already hands you each challenger’s system rules, so a card with no palette chips is an authoring gap, not a data gap. Keep thesis and each fact to one short sentence: the card front shows thesis, identity, and a two-line risk, while first viewport and the case read on the card back behind the Details chip, so long facts cost the reader a flip, not the page its scanability. A card with no imagery at all has no back; its full read renders on the front, so a text-only round loses nothing. A card may declare \"html\", a local path to one self-contained HTML file of the first viewport (1440 x 900 by default; \"htmlFrame\": \"390x844\" names a phone or native surface's first screen): the page draws it in the media slot as a skeleton (text under 22px becomes bars, so composition, palette and display type read and the copy does not) once the file lands, polling until it does, counts only a file written after the round was served, and opens the file as written from the expand chip; code-led and image-less rounds use it, a comp face wins over it, and ANSWER carries the picked card's html. A card with neither may declare \"wireframe\" ({\"cols\":12,\"rows\":10,\"regions\":[{\"label\":\"nav rail\",\"x\":0,\"y\":0,\"w\":3,\"h\":10,\"accent\":true}]}): the page draws it as a layout schematic in the media slot; surface-scope rounds use it on code-led builds, it never counts toward salience, and the card keeps its full read on the front. The comp slot carries the card’s full-fidelity direction comp (the legacy key \"sketch\" is accepted as an alias). Comp aspect follows the surface: portrait at device viewport for native or mobile-first surfaces, landscape otherwise; the page adapts its cards to either. reroll accepts true or { \"registers\": [\"safer\", \"bolder\"] }: the register buttons steer the next hand along the familiar-to-bold axis, the answer carries \"register\", and you re-run concept-seed with --register <value> for the next round; offer the registers on direction rounds, and never pre-select one. buildPath rides the payload as { \"value\": \"comp\"|\"code\", \"toggle\": true }: the value is the recorded default (.impeccable/config.json buildPath, or .impeccable/config.local.json where one machine differs) and the toggle renders a footer switch whose flip binds that session only; the ANSWER then carries buildPath plus buildPathFlipped. On a code-led round each card still declares its comp path as a flip reserve: wireframes render, and a flip to comp makes --wait return once with BUILD PATH FLIPPED so you generate the comps into the declared slots while the round stays open; a flip back to code is free, and a comp that already landed stays as the critique reference. The toggle may only be offered when image generation exists: a harness with no image tool and no API key never sets toggle: true, so the choice never renders where comps cannot be made, and code-led simply rides as the untoggleable value. followup: true keeps the table open after a pick for a second round via --update; send the next payload immediately, the page is waiting on it.";
+const SCHEMA_NOTE: &str = "\nOption ids return verbatim in ANSWER; \"reroll\", \"canon\" and \"palette\" are reserved, as is every \"saved-<n>\". On a direction or surface round (a payload carrying buildPath) every option declares kind, and --start and --update refuse the payload until it does: \"assigned\" on the assigned direction or a surface round\u{2019}s dealt lead, \"pick\" on the IMPECCABLE\u{2019}S PICK card, \"challenger\" on each dealt challenger, \"grounded\" on any other direction of your own (a safer round\u{2019}s lineup, any number), \"dealt\" on a surface round\u{2019}s other dealt structures; every challenger also carries catalogId, the SOURCE ID concept-seed printed for that world (never the card\u{2019}s own id), checked against the worlds the roll dealt; canonCard may carry kind \"canon\". The page sends the choice ping from these fields. hero/board/comp accept URLs or local paths; comp slots may point at files that do not exist yet (serve first, generate after; the page polls until they land, so never block serving on generation). hero on a challenger is the inspiration it draws from and renders picture-in-picture beside the comp, never as the promise of the build. verdict routes rendering: \"wins\" and \"competitive\" challengers keep full cards, \"declined\" ones render demoted after them (narrow, quiet, art as a labeled thumb, \"Adopt anyway\"), with their kept line on the front; the page reorders declined cards to the end on its own. raised on the assigned card renders each donation as a named raise line. Salience parity: when the assigned card declares no comp (no image generation this round), catalog art on every card demotes to a labeled thumb, so what looks important is the verdict’s call, never rendering luck. canonCard renders the standing exit as a subordinate card with the same anatomy; without it, canon stays a quiet footer action. Include canon only for visual-direction rounds; never present it as your own recommendation. The pick card is a kicker convention, not a field: kicker \"IMPECCABLE’S PICK\" on your top-ranked grounded candidate, one at most, never in the lead slot. Every card gets the full anatomy, challengers, canon, and declined included: thesis, palette, materials, viewport, risk; the seed already hands you each challenger’s system rules, so a card with no palette chips is an authoring gap, not a data gap. Keep thesis and each fact to one short sentence: the card front shows thesis, identity, and a two-line risk, while first viewport and the case read on the card back behind the Details chip, so long facts cost the reader a flip, not the page its scanability. A card with no imagery at all has no back; its full read renders on the front, so a text-only round loses nothing. A card may declare \"html\", a local path to one self-contained HTML file of the first viewport (1440 x 900 by default; \"htmlFrame\": \"390x844\" names a phone or native surface's first screen): the page draws it in the media slot as a skeleton (text under 22px becomes bars, so composition, palette and display type read and the copy does not) once the file lands, polling until it does, counts only a file written after the round was served, and opens the file as written from the expand chip; code-led and image-less rounds use it, a comp face wins over it, and ANSWER carries the picked card's html. A card with neither may declare \"wireframe\" ({\"cols\":12,\"rows\":10,\"regions\":[{\"label\":\"nav rail\",\"x\":0,\"y\":0,\"w\":3,\"h\":10,\"accent\":true}]}): the page draws it as a layout schematic in the media slot; surface-scope rounds use it on code-led builds, it never counts toward salience, and the card keeps its full read on the front. The comp slot carries the card’s full-fidelity direction comp (the legacy key \"sketch\" is accepted as an alias). Comp aspect follows the surface: portrait at device viewport for native or mobile-first surfaces, landscape otherwise; the page adapts its cards to either. reroll accepts true or { \"registers\": [\"safer\", \"bolder\"] }: the register buttons steer the next hand along the familiar-to-bold axis, the answer carries \"register\", and you re-run concept-seed with --register <value> for the next round; offer the registers on direction rounds, and never pre-select one. buildPath rides the payload as { \"value\": \"comp\"|\"code\", \"toggle\": true }: the value is the recorded default (.impeccable/config.json buildPath, or .impeccable/config.local.json where one machine differs) and the toggle renders a footer switch whose flip binds that session only; the ANSWER then carries buildPath plus buildPathFlipped. On a code-led round each card still declares its comp path as a flip reserve: wireframes render, and a flip to comp makes --wait return once with BUILD PATH FLIPPED so you generate the comps into the declared slots while the round stays open; a flip back to code is free, and a comp that already landed stays as the critique reference. The toggle may only be offered when image generation exists: a harness with no image tool and no API key never sets toggle: true, so the choice never renders where comps cannot be made, and code-led simply rides as the untoggleable value. followup: true keeps the table open after a pick for a second round via --update; send the next payload immediately, the page is waiting on it. Every card also offers Save and Notes on a detached page. Save copies the card to a Saved row that stays on every hand of the round (ids saved-<n>, never yours to declare); building one answers { \"optionId\": \"saved-<n>\", \"saved\": <the card as served> } with its comp and html under .impeccable/mocks/decision/. Notes ride any build answer as \"notes\" and bind the build. A card with a palette offers Re-roll palette, which answers { \"optionId\": \"palette\", \"target\": <card id>, \"steer\" } and keeps the table open like reroll: deal only that card a new palette, regenerate only its comp or sketch, and send the same hand back through --update.";
 
 /// JS: Number(arg('timeout','900')) etc.
 fn js_number_arg(a: &Args, name: &str, fallback: &str) -> f64 {
@@ -1335,14 +1480,11 @@ pub fn run(argv: &[String], io: &mut Io) -> i32 {
         }
         let mut keeps_open = false;
         if let Ok(p) = serde_json::from_str::<Value>(&collected) {
-            keeps_open = p.get("optionId").and_then(|v| v.as_str()) == Some("reroll") || p.get("followup") == Some(&Value::Bool(true));
+            keeps_open = matches!(p.get("optionId").and_then(|v| v.as_str()), Some("reroll" | "palette")) || p.get("followup") == Some(&Value::Bool(true));
         }
         let _ = std::fs::remove_file(answer_file(&qdir, &key));
         if !keeps_open {
-            let _ = std::fs::remove_file(state_file(&qdir, &key));
-            let _ = std::fs::remove_file(hand_file(&qdir, &key));
-            let _ = std::fs::remove_file(render_check_file(&qdir, &key));
-            let _ = std::fs::remove_dir_all(generated_dir(&qdir, &key));
+            remove_round_files(&qdir, &key);
         }
         return 0;
     }
@@ -1358,10 +1500,7 @@ pub fn run(argv: &[String], io: &mut Io) -> i32 {
             }
         }
         let _ = std::fs::remove_file(answer_file(&qdir, &key));
-        let _ = std::fs::remove_file(state_file(&qdir, &key));
-        let _ = std::fs::remove_file(hand_file(&qdir, &key));
-        let _ = std::fs::remove_file(render_check_file(&qdir, &key));
-        let _ = std::fs::remove_dir_all(generated_dir(&qdir, &key));
+        remove_round_files(&qdir, &key);
         io.out("stopped\n");
         return 0;
     }
@@ -1382,6 +1521,11 @@ pub fn run(argv: &[String], io: &mut Io) -> i32 {
         let ok = next_round.get("options").and_then(|o| o.as_array()).map(|o| !o.is_empty()).unwrap_or(false);
         if !ok {
             io.err("serve-question: --update payload needs an options array; nothing was delivered. Fix the payload and rerun --update on the same key.\n");
+            return 1;
+        }
+        let reserved = reserved_option_ids(&next_round);
+        if !reserved.is_empty() {
+            io.err(&reserved_ids_message(&reserved, "rerun --update on the same key", "nothing was delivered"));
             return 1;
         }
         let roll = read_roll(&qdir);
@@ -1429,6 +1573,11 @@ pub fn run(argv: &[String], io: &mut Io) -> i32 {
                 return 1;
             }
         };
+        let reserved = reserved_option_ids(&start_payload);
+        if !reserved.is_empty() {
+            io.err(&reserved_ids_message(&reserved, "rerun --start", "the page was not served"));
+            return 1;
+        }
         let roll = read_roll(&qdir);
         let (problems, dealt) = card_identity_problems(roll.as_deref(), &start_payload);
         if !problems.is_empty() {
@@ -1718,7 +1867,7 @@ pub fn run(argv: &[String], io: &mut Io) -> i32 {
             }
             continue;
         }
-        if method == "POST" && (path == "/build-path" || path == "/answer") {
+        if method == "POST" && (path == "/build-path" || path == "/answer" || path == "/save" || path == "/unsave") {
             // JS: both handlers start with rejectDetachedPost (the /answer gate
             // from #555, the /build-path gate from the follow-up commit).
             if let Some(code) = reject_detached_post(st.detached_key.as_deref(), origin.as_deref(), &query, actual_port) {
@@ -1754,16 +1903,60 @@ pub fn run(argv: &[String], io: &mut Io) -> i32 {
                 request.respond(&ok_resp());
                 continue;
             }
+            if path == "/save" || path == "/unsave" {
+                // The shelf lives beside the detached round's files; a blocking
+                // page has none and never offers the buttons.
+                let parsed = serde_json::from_str::<Value>(&body).unwrap_or(Value::Null);
+                let done = match st.detached_key.clone() {
+                    Some(key) if path == "/save" => {
+                        let card = parsed.get("optionId").and_then(Value::as_str).and_then(|id| st.options.iter().find(|o| o.get("id").and_then(Value::as_str) == Some(id))).cloned();
+                        card.and_then(|c| save_card(&st.cwd, &st.qdir, &key, &c, parsed.get("notes").and_then(Value::as_str)).ok()).is_some()
+                    }
+                    Some(key) => parsed.get("savedId").and_then(Value::as_str).is_some_and(|id| unsave_card(&st.qdir, &key, id).unwrap_or(false)),
+                    None => false,
+                };
+                if done {
+                    st.reload_shelf();
+                    request.respond(&ok_resp());
+                } else {
+                    request.respond(&Response::new(404));
+                }
+                continue;
+            }
             request.respond(&ok_resp());
             // /answer
             let parsed = serde_json::from_str::<Value>(&body).ok().and_then(|v| v.as_object().cloned()).unwrap_or_default();
             let option_id = parsed.get("optionId").cloned().unwrap_or(Value::Null);
-            let chosen = st.options.iter().find(|o| o.get("id") == Some(&option_id) && !option_id.is_null()).cloned();
+            // A saved card answers as stored, its images moved out of the shelf
+            // that the closing round deletes.
+            let saved = option_id.as_str().filter(|id| id.starts_with("saved-")).and_then(|id| {
+                let key = st.detached_key.as_deref()?;
+                let mut card = read_shelf(&st.qdir, key).1.into_iter().find_map(|e| e.get("card").filter(|c| c.get("id").and_then(Value::as_str) == Some(id)).cloned())?;
+                for field in ["comp", "html"] {
+                    let kept = card.get(field).and_then(Value::as_str).and_then(|rel| keep_shelf_image(&st.cwd, rel, id));
+                    match kept {
+                        Some(k) => card[field] = Value::String(k),
+                        None => {
+                            card.as_object_mut()?.remove(field);
+                        }
+                    }
+                }
+                Some(card)
+            });
+            let chosen = saved.clone().or_else(|| st.options.iter().find(|o| o.get("id") == Some(&option_id) && !option_id.is_null()).cloned());
             let is_reroll = option_id.as_str() == Some("reroll");
-            let followup_open = st.detached_key.is_some() && st.payload.get("followup") == Some(&Value::Bool(true)) && !is_reroll;
+            let is_palette = option_id.as_str() == Some("palette");
+            let followup_open = st.detached_key.is_some() && st.payload.get("followup") == Some(&Value::Bool(true)) && !is_reroll && !is_palette;
             let mut ans = Map::new();
             ans.insert("optionId".into(), if option_id.is_null() { Value::Null } else { option_id.clone() });
             ans.insert("steer".into(), parsed.get("steer").cloned().filter(|v| !v.is_null()).unwrap_or(Value::String(String::new())));
+            if is_palette {
+                if let Some(t) = parsed.get("target").and_then(Value::as_str) {
+                    ans.insert("target".into(), Value::String(t.to_string()));
+                }
+            } else if let Some(n) = parsed.get("notes").and_then(Value::as_str).map(crate::util::js_trim).filter(|n| !n.is_empty() && !is_reroll) {
+                ans.insert("notes".into(), Value::String(n.to_string()));
+            }
             if is_reroll {
                 if let Some(r) = parsed.get("register").and_then(|v| v.as_str()) {
                     if r == "safer" || r == "bolder" {
@@ -1795,8 +1988,11 @@ pub fn run(argv: &[String], io: &mut Io) -> i32 {
                     ans.insert("comp".into(), cv.clone());
                 }
             }
+            if let Some(card) = saved {
+                ans.insert("saved".into(), card);
+            }
             if let Some(lbp) = st.live_build_path.clone() {
-                if !is_reroll {
+                if !is_reroll && !is_palette {
                     ans.insert("buildPath".into(), Value::String(lbp.clone()));
                     ans.insert("buildPathFlipped".into(), Value::Bool(Some(lbp.as_str()) != st.build_path_default.as_ref().map(|b| b.0.as_str())));
                 }
@@ -1824,7 +2020,7 @@ pub fn run(argv: &[String], io: &mut Io) -> i32 {
                     })
             };
             let was_awaiting = st.awaiting_next;
-            st.awaiting_next = (is_reroll || followup_open) && st.detached_key.is_some();
+            st.awaiting_next = (is_reroll || is_palette || followup_open) && st.detached_key.is_some();
             if st.awaiting_next && !was_awaiting {
                 st.awaiting_next_since = now_ms();
             }
@@ -1851,7 +2047,7 @@ pub fn run(argv: &[String], io: &mut Io) -> i32 {
                     }
                 })
             });
-            if !((is_reroll || followup_open) && st.detached_key.is_some()) {
+            if !((is_reroll || is_palette || followup_open) && st.detached_key.is_some()) {
                 drop(st);
                 sleep_ms(150);
                 let _ = io.stdout.flush();
@@ -2023,6 +2219,11 @@ struct ServerState {
     local_images: Vec<String>,
     /// Declared sketches as (path as written, absolute path), served at /sketch/<n>.
     local_sketches: Vec<(String, String)>,
+    /// How many images and sketches the round's own cards took; the shelf's follow.
+    base_images: usize,
+    base_sketches: usize,
+    /// The saved cards, decorated like options, each with the digest of the card they were saved from.
+    shelf: Vec<Value>,
     build_path_default: Option<(String, bool)>,
     live_build_path: Option<String>,
     awaiting_next: bool,
@@ -2083,6 +2284,53 @@ fn str_of(o: &Value, k: &str) -> Option<String> {
     get(o, k).filter(|v| crate::staleness::js_truthy(v)).map(js_str)
 }
 
+/// A card with the page's own URLs beside the paths the agent wrote: local
+/// images are served at `/img/<n>` and sketches at `/sketch/<n>`.
+fn decorate_card(cwd: &str, local_images: &mut Vec<String>, local_sketches: &mut Vec<(String, String)>, option: &Value) -> Value {
+    let is_url = |s: &str| s.starts_with("http://") || s.starts_with("https://");
+    fn image_src(cwd: &str, local_images: &mut Vec<String>, value: Option<&Value>) -> Value {
+        let Some(v) = value.filter(|v| crate::staleness::js_truthy(v)) else { return Value::Null };
+        let s = js_str(v);
+        if s.starts_with("http://") || s.starts_with("https://") {
+            return Value::String(s);
+        }
+        let abs = jsp::resolve(cwd, &[&s]);
+        if !exists(&abs) {
+            return Value::Null;
+        }
+        local_images.push(abs);
+        Value::String(format!("/img/{}", local_images.len() - 1))
+    }
+    let mut m = option.as_object().cloned().unwrap_or_default();
+    let hero = image_src(cwd, local_images, option.get("hero"));
+    let board = image_src(cwd, local_images, option.get("board"));
+    let comp_val = option.get("comp").filter(|v| !v.is_null()).or_else(|| option.get("sketch").filter(|v| !v.is_null()));
+    let comp = match comp_val.filter(|v| crate::staleness::js_truthy(v)) {
+        None => Value::Null,
+        Some(v) => {
+            let s = js_str(v);
+            if is_url(&s) {
+                Value::String(s)
+            } else {
+                local_images.push(jsp::resolve(cwd, &[&s]));
+                Value::String(format!("/img/{}", local_images.len() - 1))
+            }
+        }
+    };
+    let html = match option.get("html").filter(|v| crate::staleness::js_truthy(v)).map(js_str) {
+        Some(s) if !is_url(&s) => {
+            local_sketches.push((s.clone(), jsp::resolve(cwd, &[&s])));
+            Value::String(format!("/sketch/{}", local_sketches.len() - 1))
+        }
+        _ => Value::Null,
+    };
+    m.insert("htmlSrc".into(), html);
+    m.insert("heroSrc".into(), hero);
+    m.insert("boardSrc".into(), board);
+    m.insert("compSrc".into(), comp);
+    Value::Object(m)
+}
+
 impl ServerState {
     fn new(cwd: String, qdir: String, detached_key: Option<String>, idle_grace_ms: f64) -> ServerState {
         ServerState {
@@ -2094,6 +2342,9 @@ impl ServerState {
             options: vec![],
             local_images: vec![],
             local_sketches: vec![],
+            base_images: 0,
+            base_sketches: 0,
+            shelf: vec![],
             build_path_default: None,
             live_build_path: None,
             awaiting_next: false,
@@ -2118,53 +2369,10 @@ impl ServerState {
         let mut local_images: Vec<String> = Vec::new();
         let mut local_sketches: Vec<(String, String)> = Vec::new();
         let cwd = self.cwd.clone();
-        let is_url = |s: &str| s.starts_with("http://") || s.starts_with("https://");
-        fn image_src(cwd: &str, local_images: &mut Vec<String>, value: Option<&Value>) -> Value {
-            let Some(v) = value.filter(|v| crate::staleness::js_truthy(v)) else { return Value::Null };
-            let s = js_str(v);
-            if s.starts_with("http://") || s.starts_with("https://") {
-                return Value::String(s);
-            }
-            let abs = jsp::resolve(cwd, &[&s]);
-            if !exists(&abs) {
-                return Value::Null;
-            }
-            local_images.push(abs);
-            Value::String(format!("/img/{}", local_images.len() - 1))
-        }
         let mut decorated: Vec<Value> = Vec::new();
         let opts = parsed.get("options").unwrap().as_array().unwrap().clone();
         let canon_card = parsed.get("canonCard").filter(|c| c.is_object() || c.is_array());
-        let mut decorate = |option: &Value| -> Value {
-            let mut m = option.as_object().cloned().unwrap_or_default();
-            let hero = image_src(&cwd, &mut local_images, option.get("hero"));
-            let board = image_src(&cwd, &mut local_images, option.get("board"));
-            let comp_val = option.get("comp").filter(|v| !v.is_null()).or_else(|| option.get("sketch").filter(|v| !v.is_null()));
-            let comp = match comp_val.filter(|v| crate::staleness::js_truthy(v)) {
-                None => Value::Null,
-                Some(v) => {
-                    let s = js_str(v);
-                    if is_url(&s) {
-                        Value::String(s)
-                    } else {
-                        local_images.push(jsp::resolve(&cwd, &[&s]));
-                        Value::String(format!("/img/{}", local_images.len() - 1))
-                    }
-                }
-            };
-            let html = match option.get("html").filter(|v| crate::staleness::js_truthy(v)).map(js_str) {
-                Some(s) if !is_url(&s) => {
-                    local_sketches.push((s.clone(), jsp::resolve(&cwd, &[&s])));
-                    Value::String(format!("/sketch/{}", local_sketches.len() - 1))
-                }
-                _ => Value::Null,
-            };
-            m.insert("htmlSrc".into(), html);
-            m.insert("heroSrc".into(), hero);
-            m.insert("boardSrc".into(), board);
-            m.insert("compSrc".into(), comp);
-            Value::Object(m)
-        };
+        let mut decorate = |option: &Value| decorate_card(&cwd, &mut local_images, &mut local_sketches, option);
         for o in &opts {
             decorated.push(decorate(o));
         }
@@ -2184,8 +2392,11 @@ impl ServerState {
         options.extend(declined);
         self.payload = parsed.clone();
         self.options = options;
+        self.base_images = local_images.len();
+        self.base_sketches = local_sketches.len();
         self.local_images = local_images;
         self.local_sketches = local_sketches;
+        self.reload_shelf();
         self.build_path_default = parsed.get("buildPath").filter(|b| crate::staleness::js_truthy(b)).and_then(|b| {
             let v = b.get("value").and_then(|x| x.as_str())?;
             if v == "comp" || v == "code" {
@@ -2197,6 +2408,25 @@ impl ServerState {
         self.live_build_path = self.build_path_default.as_ref().map(|b| b.0.clone());
         self.awaiting_next = false;
         Ok(())
+    }
+
+    /// Reads the shelf back and decorates its cards after the round's own
+    /// images, so the indexes the page already holds stay valid.
+    fn reload_shelf(&mut self) {
+        self.local_images.truncate(self.base_images);
+        self.local_sketches.truncate(self.base_sketches);
+        self.shelf.clear();
+        let Some(key) = self.detached_key.clone() else { return };
+        for entry in read_shelf(&self.qdir, &key).1 {
+            let Some(card) = entry.get("card") else { continue };
+            let mut v = decorate_card(&self.cwd, &mut self.local_images, &mut self.local_sketches, card);
+            if let Some(m) = v.as_object_mut() {
+                // A saved card is a plain card on the shelf, never a demoted one.
+                m.remove("verdict");
+                m.insert("savedSrc".into(), entry.get("src").cloned().unwrap_or(Value::Null));
+            }
+            self.shelf.push(v);
+        }
     }
 
     /// JS: page(waiting)
@@ -2223,7 +2453,9 @@ impl ServerState {
         let has_media = |o: &Value| face_comp(o).is_some() || face_html(o).is_some() || ((has(o, "heroSrc") || has(o, "boardSrc")) && !thumb_only(o));
         let has_back = |o: &Value| has_media(o) && (has(o, "viewport") || has(o, "case") || (has(o, "boardSrc") && has(o, "heroSrc")));
         let options = &self.options;
-        let anatomy = |o: &Value| -> String {
+        // Save and Re-roll palette need a detached round to hold the shelf and to take the next hand.
+        let can_save = self.detached_key.is_some();
+        let anatomy = |o: &Value, shelf: bool| -> String {
             let mut rows: Vec<String> = Vec::new();
             if let Some(t) = get(o, "thesis").filter(|v| crate::staleness::js_truthy(v)) {
                 rows.push(format!("<p class=\"thesis\">{}</p>", esc(t)));
@@ -2232,6 +2464,9 @@ impl ServerState {
             if let Some(p) = o.get("palette").and_then(|p| p.as_array()).filter(|p| !p.is_empty()) {
                 let sw: String = p.iter().take(6).map(|c| format!("<i style=\"background:{}\" title=\"{}\"></i>", esc(c), esc(c))).collect();
                 id_bits.push(format!("<span class=\"swatches\">{}</span>", sw));
+                if can_save && !shelf {
+                    id_bits.push(format!("<button type=\"button\" class=\"tag palette-reroll\" data-id=\"{}\" aria-label=\"Re-roll the palette of {}\" title=\"Deal this card a new palette; the rest of the hand stays\">Re-roll palette</button>", esc(o.get("id").unwrap_or(&Value::Null)), esc(o.get("label").unwrap_or(&Value::Null))));
+                }
             }
             if let Some(m) = o.get("materials").and_then(|p| p.as_array()).filter(|p| !p.is_empty()) {
                 id_bits.push(m.iter().take(4).map(|x| format!("<span class=\"tag\">{}</span>", esc(x))).collect::<Vec<_>>().join(""));
@@ -2399,10 +2634,8 @@ impl ServerState {
             format!("<div class=\"media wire\" role=\"img\" aria-label=\"Layout schematic\">\n            <div class=\"wire-field\">{}</div>\n            <p class=\"media-label\">layout</p>\n          </div>", cells)
         };
         let choose_label = |o: &Value| if truthy(o, "isCanon") { "Play it straight" } else if demoted(o) { "Adopt anyway" } else { "Build this" };
-        let cards: Vec<String> = options
-            .iter()
-            .enumerate()
-            .map(|(index, o)| {
+        let render_card = |index: usize, o: &Value, shelf: bool| -> String {
+                let lead = !shelf && index == 0;
                 let media_html = media(o);
                 let wire_html = if media_html.is_empty() { wire(o) } else { String::new() };
                 let media_or_wire = if !media_html.is_empty() { media_html.clone() } else { wire_html.clone() };
@@ -2417,11 +2650,29 @@ impl ServerState {
                     String::new()
                 };
                 let label_esc = esc(o.get("label").unwrap_or(&Value::Null));
+                let choose_text = if shelf { "Build this" } else { choose_label(o) };
+                let save_btn = if shelf {
+                    format!("<button type=\"button\" class=\"quiet remove\" data-id=\"{}\">Remove</button>", id_esc)
+                } else if can_save {
+                    let digest = hand_digest(&raw_card(o));
+                    let saved = self.shelf.iter().any(|s| s.get("savedSrc").and_then(Value::as_str) == Some(digest.as_str()));
+                    format!("<button type=\"button\" class=\"quiet save\" data-id=\"{}\"{}>{}</button>", id_esc, if saved { " disabled" } else { "" }, if saved { "Saved" } else { "Save" })
+                } else {
+                    String::new()
+                };
+                let saved_notes = if shelf { str_of(o, "notes") } else { None };
+                let notes_html = format!(
+                    "<details class=\"notes\"{}><summary>Notes</summary><textarea class=\"notes-text\" data-for=\"{}\" rows=\"3\" aria-label=\"Notes for {}\">{}</textarea></details>",
+                    if saved_notes.is_some() { " open" } else { "" },
+                    id_esc,
+                    label_esc,
+                    esc_s(&saved_notes.unwrap_or_default())
+                );
                 let back = if has_back(o) {
                     let board = str_of(o, "boardSrc");
                     format!(
                         "<div class=\"face back{}\">\n          {}\n          <div class=\"body back-body\">\n            {}\n            {}\n            <button class=\"choose\" data-id=\"{}\">{}</button>\n          </div>\n        </div>",
-                        if index == 0 { " lead" } else { "" },
+                        if lead { " lead" } else { "" },
                         match &board {
                             Some(b) => format!("<div class=\"media back-media\">\n            <img src=\"{}\" alt=\"\">\n            <div class=\"chips\">{}{}</div>\n          </div>", esc_s(b), expand_chip, flip_chip("Front")),
                             None => format!("<div class=\"back-head\"><p class=\"tier\">The full read &middot; {}</p>{}</div>", label_esc, flip_chip("Front")),
@@ -2429,33 +2680,43 @@ impl ServerState {
                         if board.is_some() { format!("<p class=\"tier\">The full read &middot; {}</p>", label_esc) } else { String::new() },
                         back_facts(o),
                         id_esc,
-                        choose_label(o)
+                        choose_text
                     )
                 } else {
                     String::new()
                 };
                 format!(
-                    "\n    <article class=\"card{}{}\" style=\"--fan:{};--deal:{}ms\" data-id=\"{}\"{}>\n      <div class=\"card-inner\">\n        <div class=\"face front{}{}\">\n          {}\n          {}\n          <div class=\"body\">\n            {}\n            <h2>{}</h2>\n            {}\n            <button class=\"choose\" data-id=\"{}\">{}</button>\n          </div>\n        </div>\n        {}\n      </div>\n    </article>",
+                    "\n    <article class=\"card{}{}\" style=\"--fan:{};--deal:{}ms\" data-id=\"{}\"{}>\n      <div class=\"card-inner\">\n        <div class=\"face front{}{}\">\n          {}\n          {}\n          <div class=\"body\">\n            {}\n            <h2>{}</h2>\n            {}\n            {}\n            <div class=\"actions\"><button class=\"choose\" data-id=\"{}\">{}</button>{}</div>\n          </div>\n        </div>\n        {}\n      </div>\n    </article>",
                     if truthy(o, "isCanon") { " canon" } else { "" },
                     if demoted(o) { " declined" } else { "" },
                     if index == 0 { "0deg" } else if index % 2 == 1 { "1.4deg" } else { "-1.2deg" },
                     index * 90,
                     id_esc,
-                    if code_led && has(o, "compSrc") && !demoted(o) { format!(" data-comp-slot=\"{}\"", esc_s(&str_of(o, "compSrc").unwrap_or_default())) } else { String::new() },
-                    if index == 0 { " lead" } else { "" },
+                    if !shelf && code_led && has(o, "compSrc") && !demoted(o) { format!(" data-comp-slot=\"{}\"", esc_s(&str_of(o, "compSrc").unwrap_or_default())) } else { String::new() },
+                    if lead { " lead" } else { "" },
                     if media_or_wire.is_empty() { " text-only" } else { "" },
                     kicker,
                     media_or_wire,
                     if has(o, "lineage") { format!("<p class=\"tier\">{}</p>", esc(o.get("lineage").unwrap())) } else { String::new() },
                     label_esc,
-                    anatomy(o),
+                    anatomy(o, shelf),
+                    notes_html,
                     id_esc,
-                    choose_label(o),
+                    choose_text,
+                    save_btn,
                     back
                 )
-            })
-            .collect();
-        let cards_html = cards.join("\n");
+        };
+        let cards_html = options.iter().enumerate().map(|(index, o)| render_card(index, o, false)).collect::<Vec<_>>().join("\n");
+        // The Saved row: every saved card, on every hand of the round.
+        let shelf_html = if self.shelf.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "<div class=\"deck-shell shelf\">\n      <h2 class=\"tier shelf-title\">Saved</h2>\n      <div class=\"grid\">{}</div>\n    </div>",
+                self.shelf.iter().enumerate().map(|(index, o)| render_card(index, o, true)).collect::<Vec<_>>().join("\n")
+            )
+        };
         let payload = &self.payload;
         let title_default = |d: &str| -> String {
             match get(payload, "title").filter(|v| crate::staleness::js_truthy(v)) {
@@ -2503,7 +2764,7 @@ impl ServerState {
         let await_next = if waiting { format!("awaitNextRound(false, {});", crate::util::js_number_to_string(wait_budget_ms)) } else { String::new() };
         // JS: const KEY = ${JSON.stringify(detachedKey || '')};
         let key_json = serde_json::to_string(self.detached_key.as_deref().unwrap_or("")).unwrap_or_else(|_| "\"\"".into());
-        let subs: [(&str, String); 15] = [
+        let subs: [(&str, String); 16] = [
             ("@@1@@", title_default("impeccable · decision")),
             ("@@2@@", expand_chip.to_string()),
             ("@@3@@", bp_confirm),
@@ -2519,6 +2780,7 @@ impl ServerState {
             ("@@13@@", crate::util::js_number_to_string(self.idle_grace_ms)),
             ("@@14@@", await_next),
             ("@@15@@", key_json),
+            ("@@16@@", shelf_html),
         ];
         let mut html = PAGE.to_string();
         // Replace higher numbers first so @@1@@ does not clobber @@10@@..@@15@@.
@@ -4228,5 +4490,231 @@ mod tests {
         assert!(std::fs::read_to_string(qdir.join("roll.json")).unwrap().contains("seed:fedcba9876543210"));
         assert!(!qdir.join("roll.local.json").exists());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- shelf (save), palette re-roll and notes ----
+
+    /// Serves `payload` as a detached page on key `pk` and returns its port
+    /// and the thread running it (which ends once an answer closes the round).
+    fn serve_detached(dir: &std::path::Path, payload: &Value) -> (u16, std::thread::JoinHandle<i32>) {
+        let qdir = dir.join(".impeccable/questions");
+        std::fs::write(dir.join("payload.json"), payload.to_string()).unwrap();
+        let cwd = dir.to_path_buf();
+        let server = std::thread::spawn(move || {
+            let (mut io, _cap) = Io::captured("", cwd, Env::from([("IMPECCABLE_SELF".to_string(), "impeccable".to_string()), ("IMPECCABLE_NO_TELEMETRY".to_string(), "1".to_string())]));
+            let argv: Vec<String> = ["--payload", "payload.json", "--detached-serve", "--key", "pk", "--timeout", "0", "--no-open"].iter().map(|s| s.to_string()).collect();
+            run(&argv, &mut io)
+        });
+        let deadline = now_ms() + 5000.0;
+        let port = loop {
+            if let Some(p) = read_state(&qdir.to_string_lossy(), "pk").and_then(|s| s.get("port").and_then(Value::as_u64)) {
+                break p as u16;
+            }
+            assert!(now_ms() < deadline, "server never wrote its state");
+            sleep_ms(20);
+        };
+        (port, server)
+    }
+
+    /// POSTs `body` to `path` with the session key; the status on a refusal.
+    fn post_json(port: u16, path: &str, body: &Value) -> Result<(), u16> {
+        match ureq::post(&format!("http://127.0.0.1:{}{}?key=pk", port, path)).send_string(&body.to_string()) {
+            Ok(_) => Ok(()),
+            Err(ureq::Error::Status(code, _)) => Err(code),
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    fn page_at(port: u16) -> String {
+        ureq::get(&format!("http://127.0.0.1:{}/", port)).call().unwrap().into_string().unwrap()
+    }
+
+    /// The server answers a POST before it writes the answer file, so a file
+    /// that is not there yet is waited for.
+    fn json_file(path: std::path::PathBuf) -> Value {
+        let deadline = now_ms() + 5000.0;
+        while !path.exists() && now_ms() < deadline {
+            sleep_ms(20);
+        }
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    /// Two palette cards; `a` has a comp and a sketch that exist on disk.
+    fn shelf_payload(dir: &std::path::Path) -> Value {
+        write_file(&dir.join(".impeccable/mocks/decision/a.png"), b"comp bytes of a");
+        write_file(&dir.join(".impeccable/mocks/decision/a.html"), b"<body>sketch of a</body>");
+        json!({
+            "title": "Choose the visual world",
+            "reroll": true,
+            "options": [
+                { "id": "a", "label": "Card A", "thesis": "First.", "palette": ["#111111", "#eeeeee"], "comp": ".impeccable/mocks/decision/a.png", "html": ".impeccable/mocks/decision/a.html" },
+                { "id": "b", "label": "Card B", "thesis": "Second.", "palette": ["#222222"] },
+                { "id": "c", "label": "Card C", "thesis": "Third." }
+            ]
+        })
+    }
+
+    #[test]
+    fn save_shelves_a_card_with_its_images_and_keeps_the_round_open() {
+        let dir = temp_project("shelf-save");
+        let qdir = dir.join(".impeccable/questions");
+        let (port, _server) = serve_detached(&dir, &shelf_payload(&dir));
+        post_json(port, "/save", &json!({ "optionId": "a", "notes": "keep the grid" })).unwrap();
+        let shelf = json_file(qdir.join("pk.shelf.json"));
+        let card = &shelf["cards"][0]["card"];
+        assert_eq!(card["id"], "saved-1");
+        assert_eq!(card["label"], "Card A");
+        assert_eq!(card["palette"], json!(["#111111", "#eeeeee"]));
+        assert_eq!(card["notes"], "keep the grid");
+        assert_eq!(card["comp"], ".impeccable/questions/pk.shelf/saved-1.png");
+        assert_eq!(card["html"], ".impeccable/questions/pk.shelf/saved-1.html");
+        assert_eq!(std::fs::read(dir.join(card["comp"].as_str().unwrap())).unwrap(), b"comp bytes of a");
+        assert_eq!(std::fs::read(dir.join(card["html"].as_str().unwrap())).unwrap(), b"<body>sketch of a</body>");
+        assert!(!qdir.join("pk.answer.json").exists(), "a save is not an answer");
+        // The next save is the next id, and the copy is the shelf's own: the
+        // slot may be overwritten by the next hand.
+        std::fs::write(dir.join(".impeccable/mocks/decision/a.png"), b"overwritten").unwrap();
+        post_json(port, "/save", &json!({ "optionId": "b" })).unwrap();
+        let shelf = json_file(qdir.join("pk.shelf.json"));
+        assert_eq!(shelf["cards"][1]["card"]["id"], "saved-2");
+        assert!(shelf["cards"][1]["card"].get("notes").is_none(), "empty notes are omitted");
+        assert!(shelf["cards"][1]["card"].get("comp").is_none());
+        assert_eq!(std::fs::read(qdir.join("pk.shelf/saved-1.png")).unwrap(), b"comp bytes of a");
+        // The page shows a Saved row with Build this and Remove, and the
+        // source cards read Saved.
+        let page = page_at(port);
+        assert!(page.contains("<h2 class=\"tier shelf-title\">Saved</h2>"), "{page}");
+        assert!(page.contains("class=\"quiet remove\" data-id=\"saved-1\"") && page.contains("class=\"quiet remove\" data-id=\"saved-2\""));
+        assert!(page.contains("<button class=\"choose\" data-id=\"saved-1\">Build this</button>"));
+        assert!(page.contains("data-id=\"a\" disabled>Saved</button>") && page.contains("data-id=\"b\" disabled>Saved</button>"));
+        assert!(page.contains("data-id=\"c\">Save</button>"), "an unsaved card still offers Save");
+        // A saved card shows its notes.
+        assert!(page.contains(">keep the grid</textarea>"));
+        // An unknown card saves nothing.
+        assert_eq!(post_json(port, "/save", &json!({ "optionId": "nope" })), Err(404));
+        assert_eq!(json_file(qdir.join("pk.shelf.json"))["cards"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn unsave_removes_the_card_and_its_copies() {
+        let dir = temp_project("shelf-unsave");
+        let qdir = dir.join(".impeccable/questions");
+        let (port, _server) = serve_detached(&dir, &shelf_payload(&dir));
+        post_json(port, "/save", &json!({ "optionId": "a" })).unwrap();
+        assert!(qdir.join("pk.shelf/saved-1.png").exists());
+        assert_eq!(post_json(port, "/unsave", &json!({ "savedId": "saved-9" })), Err(404));
+        post_json(port, "/unsave", &json!({ "savedId": "saved-1" })).unwrap();
+        assert!(json_file(qdir.join("pk.shelf.json"))["cards"].as_array().unwrap().is_empty());
+        assert!(!qdir.join("pk.shelf/saved-1.png").exists() && !qdir.join("pk.shelf/saved-1.html").exists());
+        let page = page_at(port);
+        assert!(!page.contains("class=\"tier shelf-title\"") && !page.contains("saved-1"), "an empty shelf draws nothing");
+        // Ids are not reused within the round.
+        post_json(port, "/save", &json!({ "optionId": "a" })).unwrap();
+        assert_eq!(json_file(qdir.join("pk.shelf.json"))["cards"][0]["card"]["id"], "saved-2");
+    }
+
+    #[test]
+    fn the_shelf_survives_an_update_and_goes_with_the_round() {
+        let dir = temp_project("shelf-update");
+        let qdir = dir.join(".impeccable/questions");
+        let (port, _server) = serve_detached(&dir, &shelf_payload(&dir));
+        post_json(port, "/save", &json!({ "optionId": "a", "notes": "n" })).unwrap();
+        // A re-roll reuses ids and overwrites the slot; the next hand still has the shelf.
+        let mut next = shelf_payload(&dir);
+        next["options"][0]["palette"] = json!(["#ff0000"]);
+        std::fs::write(dir.join("next.json"), next.to_string()).unwrap();
+        let (code, out) = run_captured(&dir, &["--update", "--key", "pk", "--payload", "next.json"]);
+        assert_eq!(code, 0, "{out}");
+        let page = page_at(port);
+        assert!(page.contains("<button class=\"choose\" data-id=\"saved-1\">Build this</button>"), "{page}");
+        assert!(page.contains("#ff0000") && page.contains("#111111"), "the new hand and the saved palette both draw");
+        // The re-rolled card is a different card from the one saved.
+        assert!(page.contains("data-id=\"a\">Save</button>") && !page.contains("data-id=\"a\" disabled>Saved</button>"), "{page}");
+        // Closing the round deletes the shelf with the rest of its files.
+        post_json(port, "/answer", &json!({ "optionId": "b" })).unwrap();
+        let (code, out) = run_captured(&dir, &["--wait", "--key", "pk", "--poll", "5"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(!qdir.join("pk.shelf.json").exists() && !qdir.join("pk.shelf").exists());
+    }
+
+    #[test]
+    fn building_a_saved_card_answers_with_the_card_and_durable_images() {
+        let dir = temp_project("shelf-build");
+        let qdir = dir.join(".impeccable/questions");
+        let (port, server) = serve_detached(&dir, &shelf_payload(&dir));
+        post_json(port, "/save", &json!({ "optionId": "a", "notes": "saved note" })).unwrap();
+        post_json(port, "/answer", &json!({ "optionId": "saved-1", "steer": "", "notes": "edited note" })).unwrap();
+        assert_eq!(server.join().unwrap(), 0, "a build closes the round");
+        let answer = json_file(qdir.join("pk.answer.json"));
+        assert_eq!(answer["optionId"], "saved-1");
+        assert_eq!(answer["notes"], "edited note");
+        assert_eq!(answer["saved"]["id"], "saved-1");
+        assert_eq!(answer["saved"]["label"], "Card A");
+        assert_eq!(answer["saved"]["notes"], "saved note");
+        // The shelf is deleted with the round, so the answer points past it.
+        assert_eq!(answer["comp"], ".impeccable/mocks/decision/saved-1.png");
+        assert_eq!(answer["html"], ".impeccable/mocks/decision/saved-1.html");
+        assert_eq!(answer["saved"]["comp"], answer["comp"]);
+        assert_eq!(std::fs::read(dir.join(".impeccable/mocks/decision/saved-1.png")).unwrap(), b"comp bytes of a");
+        assert_eq!(std::fs::read(dir.join(".impeccable/mocks/decision/saved-1.html")).unwrap(), b"<body>sketch of a</body>");
+        let (code, out) = run_captured(&dir, &["--wait", "--key", "pk", "--poll", "5"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("CHOSEN COMP:") && out.contains("CHOSEN SKETCH:") && out.contains("SAVED CARD:"), "{out}");
+        assert!(!qdir.join("pk.shelf.json").exists());
+        assert!(dir.join(".impeccable/mocks/decision/saved-1.png").exists(), "the durable copy outlives the shelf");
+    }
+
+    #[test]
+    fn a_palette_answer_names_the_card_and_keeps_the_round_open() {
+        let dir = temp_project("palette");
+        let qdir = dir.join(".impeccable/questions");
+        let (port, _server) = serve_detached(&dir, &shelf_payload(&dir));
+        let page = page_at(port);
+        assert_eq!(page.matches("class=\"tag palette-reroll\"").count(), 2, "one control per card with a palette");
+        assert!(page.contains("class=\"tag palette-reroll\" data-id=\"a\"") && !page.contains("palette-reroll\" data-id=\"c\""));
+        post_json(port, "/answer", &json!({ "optionId": "palette", "target": "a", "steer": "warmer", "notes": "ignored" })).unwrap();
+        let answer = json_file(qdir.join("pk.answer.json"));
+        assert_eq!(answer, json!({ "optionId": "palette", "steer": "warmer", "target": "a" }));
+        let (code, out) = run_captured(&dir, &["--wait", "--key", "pk", "--poll", "5"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("PALETTE:") && out.contains("\"a\""), "{out}");
+        assert!(qdir.join("pk.state.json").exists(), "the round stays open");
+        assert!(ureq::get(&format!("http://127.0.0.1:{}/next-status", port)).call().unwrap().into_string().unwrap().contains("false"));
+        // The page now waits on the same hand.
+        let waiting = page_at(port);
+        assert!(waiting.contains("awaitNextRound(false,"), "{waiting}");
+    }
+
+    #[test]
+    fn notes_ride_a_build_answer_and_empty_notes_do_not() {
+        for (name, notes, expect) in [("notes-set", "  keep the nav  ", Some("keep the nav")), ("notes-blank", "   ", None)] {
+            let dir = temp_project(name);
+            let (port, server) = serve_detached(&dir, &shelf_payload(&dir));
+            let page = page_at(port);
+            assert!(page.contains("<details class=\"notes\"><summary>Notes</summary><textarea class=\"notes-text\" data-for=\"b\""), "{page}");
+            post_json(port, "/answer", &json!({ "optionId": "b", "notes": notes })).unwrap();
+            assert_eq!(server.join().unwrap(), 0);
+            let answer = json_file(dir.join(".impeccable/questions/pk.answer.json"));
+            assert_eq!(answer.get("notes").and_then(Value::as_str), expect, "{answer}");
+        }
+    }
+
+    #[test]
+    fn palette_and_saved_ids_are_reserved_for_the_page() {
+        let dir = temp_project("reserved");
+        for id in ["palette", "saved-3"] {
+            std::fs::write(dir.join("p.json"), json!({ "options": [{ "id": "a" }, { "id": id }] }).to_string()).unwrap();
+            for args in [["--start", "--no-open", "--key", "k1", "--payload", "p.json"], ["--update", "--no-open", "--key", "k1", "--payload", "p.json"]] {
+                let env = Env::from([("IMPECCABLE_SKILL_DIR".into(), "/skill".into())]);
+                let (mut io, cap) = Io::captured("", dir.clone(), env);
+                let argv: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+                assert_eq!(run(&argv, &mut io), 1, "{args:?} {id}");
+                let err = String::from_utf8(cap.stderr.borrow().clone()).unwrap();
+                assert!(err.contains(&format!("reserved option id \"{id}\"")), "{err}");
+                assert!(err.contains("nothing was delivered") || err.contains("the page was not served"), "{err}");
+            }
+        }
+        let (_, out) = run_captured(&dir, &["--schema"]);
+        assert!(out.contains("\"reroll\", \"canon\" and \"palette\" are reserved"), "the schema note names palette");
     }
 }
