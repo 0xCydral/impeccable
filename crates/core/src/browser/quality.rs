@@ -3451,8 +3451,9 @@ fn widest_past_edge(dom: &dyn Dom, side: Side, vw: f64, limit: f64) -> Option<(E
 /// the text count. A box that also runs past the other side of the viewport,
 /// lays its children out in a row and is moved along by a translate (its
 /// own or its parent's) is a track (studying.jp's 5,700px `slick-track`,
-/// translated 1,200px to the left to show its current slide), not the
-/// layout that cuts the text, and is passed over. A centred layout box too
+/// translated 1,200px to the left to show its current slide) when it runs
+/// further past one side than the other, not the layout that cuts the text,
+/// and is passed over. A row translated only to centre it is layout. A centred layout box too
 /// wide for the window on both sides is still named, whether it stacks its
 /// content (cloudlinks.cn's 1,614px footer) or sets it in a row that
 /// nothing moves. Ties go to the outer box.
@@ -3472,7 +3473,9 @@ fn widest_holding_text(dom: &dyn Dom, past: &[(ElId, Side, f64)], side: Side, vw
             let r = dom.rect(c);
             if r.all_finite() && (r.width > 0.0 || r.height > 0.0) {
                 let d = side.past(r.left, r.right, vw);
-                let track = side.opposite().past(r.left, r.right, vw) >= 1.0
+                let other = side.opposite().past(r.left, r.right, vw);
+                let track = other >= 1.0
+                    && (other - d).abs() > TRACK_MIN_ASYMMETRY_PX
                     && super::text_geometry::holds_row(dom, c)
                     && (translates_x(dom, c) || dom.parent(c).is_some_and(|p| translates_x(dom, p)));
                 if d >= 1.0 && !track && chain.map_or(true, |(_, b)| d + 0.5 >= b) {
@@ -3489,6 +3492,11 @@ fn widest_holding_text(dom: &dyn Dom, past: &[(ElId, Side, f64)], side: Side, vw
     }
     best
 }
+
+/// How much further a slider track runs past one side of the viewport than
+/// the other. A row centred with `left: 50%; transform: translateX(-50%)`
+/// runs past both sides by the same amount and is layout, not a track.
+const TRACK_MIN_ASYMMETRY_PX: f64 = 16.0;
 
 /// Whether `el` is moved on the x axis by a `transform` or `translate`: the
 /// translation of a `matrix()` or `matrix3d()`, or the `translate`
@@ -6658,6 +6666,14 @@ mod tests {
             vec!["text runs past the right edge of the 390px viewport and is cut off: div.reason__container reaches 606px past it, with text in 2 blocks"
                 .to_string()]
         );
+        // A row translated only to centre it runs past both sides alike:
+        // layout, and the name.
+        d.set_rect(track, -2655.0, 600.0, 5700.0, 300.0);
+        d.set_style(track, "transform", "matrix(1, 0, 0, 1, -2850, 0)");
+        let centred = detail(&d);
+        assert!(centred[0].contains("div.slick-track reaches 2655px"), "{centred:?}");
+        d.set_rect(track, -1184.0, 600.0, 5700.0, 300.0);
+        d.set_style(track, "transform", "matrix(1, 0, 0, 1, -1200, 0)");
         // A row nothing moves (a centred flex row too wide for the window)
         // is layout, and it is the name.
         d.set_style(track, "transform", "none");

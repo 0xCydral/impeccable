@@ -1652,8 +1652,13 @@ fn rhythm_spacer_paints(dom: &dyn Dom, el: ElId) -> bool {
 /// ancestor that paints a fill or a background image band. A fill differs
 /// as [`rhythm_band_differs_from_backdrop`] reads it; a band painted only
 /// with an image (a `linear-gradient` section, a photo) is not read here,
-/// and the fill counts as shown, as before.
+/// and the fill counts as shown, as before; so does a translucent fill.
 fn rhythm_spacer_fill_shows(dom: &dyn Dom, el: ElId) -> bool {
+    // A translucent fill paints over whatever is behind it, its own colour
+    // included: a block, as before.
+    if rhythm_painted_background(dom, el).is_some_and(|c| c.alpha_or_one() < 1.0) {
+        return true;
+    }
     let mut cur = dom.parent(el);
     while let Some(c) = cur {
         // The image paints over the box's own colour, so it is read first.
@@ -6288,6 +6293,15 @@ mod tests {
         // So is one whose band also sets a white colour under the gradient.
         d.set_style(page, "backgroundColor", "rgb(255, 255, 255)");
         assert!(!rhythm_is_spacer(&d, s), "a white strip across a gradient over white");
+        // A translucent spacer on a band of the same translucent fill draws
+        // over it: a darker stripe, a block.
+        let mut d = FakeDom::new();
+        let (_h, body) = d.with_page();
+        let band = flow(&mut d, body, "div", (0.0, 0.0, 800.0, 1000.0), "");
+        d.set_style(band, "backgroundColor", "rgba(0, 0, 0, 0.5)");
+        let s = flow(&mut d, band, "div", (0.0, 20.0, 800.0, 40.0), "");
+        d.set_style(s, "backgroundColor", "rgba(0, 0, 0, 0.5)");
+        assert!(!rhythm_is_spacer(&d, s), "a translucent strip on its own colour");
     }
 
     /// observations-35 row 12 (improved-rotary-phone-two.vercel.app 213861):
