@@ -546,17 +546,20 @@ fn axis_travels(a: TranslateAxis, b: TranslateAxis) -> bool {
 fn keyframes_move_or_resize(body: &str) -> bool {
     let mut translations: Vec<[TranslateAxis; 3]> = Vec::new();
     let mut sizes: Vec<(String, Option<String>)> = Vec::new();
-    let mut offsets: Vec<(&'static str, String)> = Vec::new();
+    // Per step: the offsets, margins and box size it declares.
+    let mut offsets: Vec<Vec<(&'static str, String)>> = Vec::new();
     for step in KEYFRAME_STEP_BLOCK_RE.captures_iter(body) {
         let decls = parse_css_decl_block(&step[2]);
         if let Some(t) = step_translation(&decls) {
             translations.push(t);
         }
-        for prop in PULSE_OFFSET_PROPS {
+        let mut step_offsets: Vec<(&'static str, String)> = Vec::new();
+        for &prop in PULSE_OFFSET_PROPS.iter().chain(["width", "height"].iter()) {
             if let Some(v) = decls.get(prop) {
-                offsets.push((prop, js::to_lower_case(&v.split_ascii_whitespace().collect::<Vec<_>>().join(" "))));
+                step_offsets.push((prop, js::to_lower_case(&v.split_ascii_whitespace().collect::<Vec<_>>().join(" "))));
             }
         }
+        offsets.push(step_offsets);
         if let Some(h) = decls.get("height") {
             let norm = |v: &str| js::to_lower_case(&v.split_ascii_whitespace().collect::<String>());
             sizes.push((norm(h), decls.get("width").map(|w| norm(w))));
@@ -581,14 +584,27 @@ fn keyframes_move_or_resize(body: &str) -> bool {
     // containing block: zcad.ai's connector dot runs `left: 0px` to
     // `left: calc(100% - 4px)` (observations-1010 row 11). Two px lengths
     // under [`PULSE_TRAVEL_MIN_PX`] apart are a breath, not travel; values
-    // that cannot both be read in px travel when they differ.
-    let offset_travels = offsets.iter().any(|(pa, va)| {
-        offsets.iter().any(|(pb, vb)| {
-            pa == pb
-                && match (offset_px(va), offset_px(vb)) {
-                    (Some(x), Some(y)) => (x - y).abs() >= PULSE_TRAVEL_MIN_PX,
-                    _ => va != vb,
-                }
+    // that cannot both be read in px travel when they differ. An offset that
+    // changes with the box's size, or with the offset on its opposite side,
+    // keeps a growing dot centred: that is a ripple, not travel.
+    let changed = |a: &[(&'static str, String)], b: &[(&'static str, String)], prop: &str| -> bool {
+        let get = |s: &[(&'static str, String)]| s.iter().find(|(p, _)| *p == prop).map(|(_, v)| v.clone());
+        match (get(a), get(b)) {
+            (Some(va), Some(vb)) => match (offset_px(&va), offset_px(&vb)) {
+                (Some(x), Some(y)) => (x - y).abs() >= PULSE_TRAVEL_MIN_PX,
+                _ => va != vb,
+            },
+            _ => false,
+        }
+    };
+    let offset_travels = offsets.iter().any(|a| {
+        offsets.iter().any(|b| {
+            if changed(a, b, "width") || changed(a, b, "height") {
+                return false;
+            }
+            PULSE_OFFSET_PROPS
+                .iter()
+                .any(|&prop| changed(a, b, prop) && !changed(a, b, pulse_opposite_offset(prop)))
         })
     });
     travels || resizes || offset_travels
@@ -603,27 +619,49 @@ fn offset_px(v: &str) -> Option<f64> {
     css_length_to_px(v)
 }
 
-/// The box offsets and margins a keyframe step can move a dot with.
-const PULSE_OFFSET_PROPS: [&str; 18] = [
+/// The box offsets and margins a keyframe step can move a dot with: one
+/// side each. A shorthand that sets every side (`inset`, `margin`) moves
+/// all four at once, which keeps a dot in place.
+const PULSE_OFFSET_PROPS: [&str; 16] = [
     "left",
     "right",
     "top",
     "bottom",
-    "inset",
-    "inset-inline",
     "inset-inline-start",
     "inset-inline-end",
-    "inset-block",
     "inset-block-start",
     "inset-block-end",
-    "margin",
     "margin-left",
     "margin-right",
     "margin-top",
     "margin-bottom",
     "margin-inline-start",
+    "margin-inline-end",
     "margin-block-start",
+    "margin-block-end",
 ];
+
+/// The offset on the other side of the box from `prop`.
+fn pulse_opposite_offset(prop: &str) -> &'static str {
+    match prop {
+        "left" => "right",
+        "right" => "left",
+        "top" => "bottom",
+        "bottom" => "top",
+        "inset-inline-start" => "inset-inline-end",
+        "inset-inline-end" => "inset-inline-start",
+        "inset-block-start" => "inset-block-end",
+        "inset-block-end" => "inset-block-start",
+        "margin-left" => "margin-right",
+        "margin-right" => "margin-left",
+        "margin-top" => "margin-bottom",
+        "margin-bottom" => "margin-top",
+        "margin-inline-start" => "margin-inline-end",
+        "margin-inline-end" => "margin-inline-start",
+        "margin-block-start" => "margin-block-end",
+        _ => "margin-block-start",
+    }
+}
 
 re!(
     SCALE_FN_RE,

@@ -3410,12 +3410,21 @@ mod tests {
             "@keyframes handoff-network-flow { 0% { opacity: 0; left: 0px; transform: scale(0.7); } 14% { opacity: 0.9; } 100% { opacity: 0; left: calc(100% - 4px); transform: scale(0.95); } }"
         ));
         assert!(!pulses("@keyframes m { 0% { opacity: 1; margin-top: 0 } 100% { opacity: .2; margin-top: 24px } }"));
+        assert!(!pulses("@keyframes bob { 0%,100% { opacity: 1; top: 0 } 50% { opacity: .6; top: -6px } }"));
         // Should-flag twins.
         assert!(pulses("@keyframes dot { 0%,100% { transform: scale(.5); opacity: 1 } 50% { transform: scale(1); opacity: .5 } }"));
         assert!(pulses("@keyframes sq { 0%,100% { transform: scaleX(1) scaleY(1) } 50% { transform: scaleX(1.3) scaleY(1.3) } }"));
         assert!(pulses("@keyframes blinkfade { 0%,100% { transform: scaleY(1); opacity: 1 } 50% { transform: scaleY(.1); opacity: .4 } }"));
         assert!(pulses("@keyframes breathe { 0%,100% { opacity: 1; margin-top: 0 } 50% { opacity: .5; margin-top: -1px } }"));
         assert!(pulses("@keyframes still { 0%,100% { opacity: 1; left: 8px } 50% { opacity: .5; left: 8px } }"));
+        // Review of round 14: a ripple kept centred while it grows, by a
+        // shorthand that moves every side, by a margin that changes with
+        // the size, or by both opposite offsets, is a ping.
+        assert!(pulses("@keyframes r1 { 0% { width: 8px; height: 8px; margin: 0; opacity: 1 } 100% { width: 16px; height: 16px; margin: -4px; opacity: .3 } }"));
+        assert!(pulses("@keyframes r2 { 0%,100% { margin: 4px; opacity: 1 } 50% { margin: 0; opacity: .4 } }"));
+        assert!(pulses("@keyframes r3 { 0% { inset: 0; opacity: 1 } 100% { inset: -4px; opacity: 0 } }"));
+        assert!(pulses("@keyframes r4 { 0% { width: 8px; height: 8px; margin-left: 0; margin-top: 0; opacity: 1 } 100% { width: 16px; height: 16px; margin-left: -4px; margin-top: -4px; opacity: 0 } }"));
+        assert!(pulses("@keyframes r5 { 0% { top: 4px; bottom: 4px; opacity: 1 } 100% { top: -4px; bottom: -4px; opacity: 0 } }"));
     }
 
     /// observations-1010 row 4: `DARK_BG_RE` reads the leading channel of a

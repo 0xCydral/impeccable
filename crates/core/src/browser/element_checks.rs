@@ -3726,7 +3726,7 @@ pub fn check_element_glow_dom(dom: &dyn Dom, el: ElId) -> Vec<RuleHit> {
 const AI_PALETTE_MIN_STOP_ALPHA: f64 = 0.15;
 /// A gradient of one colour whose every stop keeps this much alpha or more
 /// is that colour laid flat, not a fade.
-const AI_PALETTE_SAME_COLOUR_FADE_MIN_ALPHA: f64 = 0.5;
+const AI_PALETTE_SAME_COLOUR_FADE_MIN_ALPHA: f64 = 0.75;
 /// Past this blur radius a gradient is atmosphere: no edge and no hue
 /// survives it as something a visitor reads as a color choice.
 const AI_PALETTE_MAX_BLUR_PX: f64 = 24.0;
@@ -3924,7 +3924,7 @@ fn ai_palette_gradient_hit(
     }) {
         return None;
     }
-    // One colour fading only part of the way (articulation-hub.vercel.app's
+    // One colour fading only a little (articulation-hub.vercel.app's
     // `rgb(29, 74, 84)` to the same at 0.8, observations-1010 row 14) still
     // reads as that flat colour over what lies behind; the ramp a glow blob
     // draws runs down toward transparent.
@@ -9437,7 +9437,7 @@ mod tests {
     }
 
     /// observations-1010 row 14 (articulation-hub.vercel.app 10136044): one
-    /// colour fading only to 0.8 is that colour laid flat. The same colour
+    /// colour fading only to 0.8 (0.75 or more) is that colour laid flat. The same colour
     /// fading toward transparent is a glow blob and reports.
     #[test]
     fn ai_palette_gradient_skips_a_colour_that_barely_fades() {
@@ -9448,6 +9448,14 @@ mod tests {
         assert_eq!(palette_hits(&d, blob)[0].snippet, "Cyan gradient background");
         let half = gradient_surface(&mut d, body, "linear-gradient(90deg, rgb(20, 184, 166), rgba(20, 184, 166, 0.4))");
         assert_eq!(palette_hits(&d, half)[0].snippet, "Cyan gradient background");
+        // Review of round 14: teal to the same at 0.5 or 0.6, and the
+        // stock violet to lavender, are visible two-tone ramps.
+        for end in ["0.5", "0.6"] {
+            let ramp = gradient_surface(&mut d, body, &format!("linear-gradient(90deg, rgb(20, 184, 166), rgba(20, 184, 166, {end}))"));
+            assert_eq!(palette_hits(&d, ramp)[0].snippet, "Cyan gradient background", "{end}");
+        }
+        let violet = gradient_surface(&mut d, body, "linear-gradient(135deg, rgb(124, 58, 237), rgba(124, 58, 237, 0.5))");
+        assert_eq!(palette_hits(&d, violet)[0].snippet, "Purple/violet gradient background");
     }
 
     /// observations-1004 row 24 (librairielorguaise.fr 10046523): a 7px

@@ -144,6 +144,14 @@ pub trait Dom {
         None
     }
 
+    /// For each face that heads the font stack of an element holding text,
+    /// whether the browser draws text in it at all, from a face installed on
+    /// the system or one the page loaded: `(face, drawn)`, measured on a
+    /// canvas at capture. `None` where the capture did not measure.
+    fn rendered_faces(&self) -> Option<Vec<(String, bool)>> {
+        None
+    }
+
     // ── element identity / tree ───────────────────────────────────────
     /// `el.tagName` (uppercase for HTML elements, as-is for SVG/foreign).
     fn tag_name(&self, el: ElId) -> String;

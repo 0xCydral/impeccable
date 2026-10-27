@@ -103,16 +103,16 @@ fn overused_font_stands_down_for_a_face_that_sets_next_to_no_text() {
     assert_eq!(flag[0].0, "Primary font: inter (79% of text)", "{flag:?}");
 }
 
-/// Taste call r12-t2: the same thirty Inter labels on a page whose only
-/// Inter `@font-face` fails to load set their text in a fallback, so Inter
-/// is not reported as the page's face. `overused-font-share-flag.html`,
+/// Taste call r12-t2: the same thirty labels on a page whose only Recoleta
+/// `@font-face` fails to load, and which no test host installs, set their
+/// text in a fallback, so Recoleta is not reported as the page's face. `overused-font-share-flag.html`,
 /// which loads its Inter, is the should-flag twin above.
 #[test]
 fn overused_font_stands_down_for_a_face_the_browser_never_loaded() {
     let Some(engine) = engine() else { return };
     let port = serve();
     let pass = findings(&engine, port, "overused-font-never-loaded.html", "overused-font");
-    assert_eq!(pass, vec![], "Inter never loaded");
+    assert_eq!(pass, vec![], "Recoleta never loaded");
 }
 
 fn snippets(engine: &BrowserEngine, port: u16, fixture: &str, rule: &str) -> Vec<String> {

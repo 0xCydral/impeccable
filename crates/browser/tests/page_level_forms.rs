@@ -137,9 +137,17 @@ fn each_declaration_reports_once_where_it_paints() {
     // template no element computes does not report. The base engine
     // reports it "on dark page". A script's string is not markup.
     assert_eq!(scan(&engine, port, "page-level-forms-white-canvas.html"), pairs(&[]));
-    // The twin: the same page whose in-flow root paints it near-black.
-    assert_eq!(
-        scan(&engine, port, "page-level-forms-dark-root.html"),
-        pairs(&[("dark-glow", "Colored box-shadow glow (#667eea) on dark page")])
-    );
+    // The twins: the same page whose ground something else paints dark.
+    for twin in [
+        "page-level-forms-dark-root.html",
+        "page-level-forms-dark-contents.html",
+        "page-level-forms-dark-pseudo.html",
+        "page-level-forms-dark-meta.html",
+    ] {
+        assert_eq!(
+            scan(&engine, port, twin),
+            pairs(&[("dark-glow", "Colored box-shadow glow (#667eea) on dark page")]),
+            "{twin}"
+        );
+    }
 }

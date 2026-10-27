@@ -1359,7 +1359,7 @@ fn selector_list_pseudos(selector: &str) -> Vec<Option<&'static str>> {
 /// `html` with the text inside every `<script>` element removed and the
 /// tags kept. A serialized document cannot hold `</script` inside a script,
 /// so the first one after the start tag closes it. A `<script` inside an
-/// HTML comment is not a script, and a script with no `</script` after it
+/// HTML comment or a `<style>` block is not a script, and a script with no `</script` after it
 /// keeps its text: the rest of the document stays as it was.
 fn without_script_text(html: &str) -> String {
     let lower = html.to_ascii_lowercase();
@@ -1368,10 +1368,18 @@ fn without_script_text(html: &str) -> String {
     let mut search = 0usize;
     while let Some(rel) = lower[search..].find("<script") {
         let start = search + rel;
-        if let Some(comment) = lower[search..start].find("<!--").map(|p| search + p) {
-            match lower[comment + 4..].find("-->") {
+        // A comment or a `<style>` block before it is skipped whole: a
+        // `<script` in either is text, not a tag.
+        let comment = lower[search..start].find("<!--").map(|p| (search + p, "<!--".len(), "-->"));
+        let style = lower[search..start]
+            .match_indices("<style")
+            .map(|(p, _)| search + p)
+            .find(|&p| lower.as_bytes().get(p + 6).is_some_and(|b| b.is_ascii_whitespace() || *b == b'>'))
+            .map(|p| (p, "<style".len(), "</style"));
+        if let Some((at, open_len, close)) = [comment, style].into_iter().flatten().min_by_key(|(at, _, _)| *at) {
+            match lower[at + open_len..].find(close) {
                 Some(end) => {
-                    search = comment + 4 + end + 3;
+                    search = at + open_len + end + close.len();
                     continue;
                 }
                 None => break,
@@ -5043,6 +5051,10 @@ mod page_level_form_tests {
             d.set_rect(body, 0.0, 0.0, 1280.0, 2400.0);
             let main = d.add(Some(body), "main");
             d.set_rect(main, 0.0, 0.0, 1280.0, 2100.0);
+            let copy = d.add(Some(main), "p");
+            d.set_rect(copy, 32.0, 32.0, 640.0, 48.0);
+            d.add_text(copy, "Pick a course to see its outline and enrol.");
+            d.set_style(copy, "color", "rgb(17, 17, 17)");
             let footer = d.add(Some(body), "footer");
             d.set_rect(footer, 0.0, 2100.0, 1280.0, 300.0);
             d.set_style(footer, "backgroundColor", "rgb(34, 34, 34)");
@@ -5074,6 +5086,54 @@ mod page_level_form_tests {
         d.set_style(html, "colorScheme", "dark");
         assert_eq!(painted_root_is_dark(&d), None);
         assert_eq!(details(&scan(&d), "dark-glow"), vec![(body, on_dark)]);
+
+        // Review of round 14: grounds the first walk did not see.
+        // SvelteKit's `display: contents` root around a dark app box.
+        let (mut d, body, main) = laid_out();
+        let contents = d.add(Some(body), "div");
+        d.set_style(contents, "display", "contents");
+        d.set_rect(contents, 0.0, 0.0, 0.0, 0.0);
+        let app = d.add(Some(contents), "div");
+        d.set_rect(app, 0.0, 0.0, 1280.0, 2400.0);
+        d.set_style(app, "backgroundColor", "rgb(10, 10, 10)");
+        let _ = main;
+        assert_eq!(painted_root_is_dark(&d), None, "display: contents");
+        // A dark main four transparent wrappers down.
+        let (mut d, body, _) = laid_out();
+        let mut parent = body;
+        for _ in 0..3 {
+            let wrap = d.add(Some(parent), "div");
+            d.set_rect(wrap, 0.0, 0.0, 1280.0, 2400.0);
+            parent = wrap;
+        }
+        let deep = d.add(Some(parent), "main");
+        d.set_rect(deep, 0.0, 0.0, 1280.0, 2400.0);
+        d.set_style(deep, "backgroundColor", "rgb(10, 10, 10)");
+        assert_eq!(painted_root_is_dark(&d), None, "four levels down");
+        // `body::before { position: fixed; inset: 0; background: #0a0a0a }`.
+        let (mut d, body, _) = laid_out();
+        d.set_pseudo_style(body, "::before", "content", "\"\"");
+        d.set_pseudo_style(body, "::before", "backgroundColor", "rgb(10, 10, 10)");
+        assert_eq!(painted_root_is_dark(&d), None, "body::before");
+        // `<meta name="color-scheme" content="dark">`.
+        let (mut d, _body, _) = laid_out();
+        let html = d.document_element.unwrap();
+        let head = d.add(Some(html), "head");
+        let meta = d.add(Some(head), "meta");
+        d.set_attr(meta, "name", "color-scheme");
+        d.set_attr(meta, "content", "dark light");
+        assert_eq!(painted_root_is_dark(&d), None, "meta color-scheme");
+        // A fixed canvas drawn dark behind the page.
+        let (mut d, body, _) = laid_out();
+        let canvas = d.add(Some(body), "canvas");
+        d.set_rect(canvas, 0.0, 0.0, 1280.0, 800.0);
+        d.set_style(canvas, "position", "fixed");
+        assert_eq!(painted_root_is_dark(&d), None, "fixed canvas");
+        // Light text: the ground is painted somewhere the walks cannot see.
+        let (mut d, _body, main) = laid_out();
+        let copy = d.children(main)[0];
+        d.set_style(copy, "color", "rgb(245, 245, 245)");
+        assert_eq!(painted_root_is_dark(&d), None, "light text");
 
         // A translucent tint on the body is not read as the white canvas.
         let (mut d, body, _) = laid_out();
@@ -5114,6 +5174,10 @@ mod page_level_form_tests {
         );
         assert_eq!(without_script_text("<!-- <script --> <i style=a>"), "<!-- <script --> <i style=a>");
         assert_eq!(without_script_text("<!-- unclosed <script>x</script>"), "<!-- unclosed <script>x</script>");
+        assert_eq!(
+            without_script_text("<style>.a::after{content:\"<script>\"}</style><b style=\"c\"><script>x</script>"),
+            "<style>.a::after{content:\"<script>\"}</style><b style=\"c\"><script></script>"
+        );
 
         let card = "<button style=\"box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4)\">Go</button><div style=\"background: #000\"></div>";
         let build = |markup: String| {

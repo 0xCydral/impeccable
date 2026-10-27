@@ -6,25 +6,28 @@
   <title>Overused font never loaded: should pass (browser-only)</title>
   <!--
     Taste call r12-t2 (looot.ai run 1010, felixowolf.com run 1006): the page
-    names Inter for thirty labels, but nothing supplies it: its one
+    names Recoleta for thirty labels, but nothing supplies it. Its one
     @font-face points at a file that is not there, so document.fonts lists
-    the face at "error" and the labels render in the fallback. The URL
-    engine does not report Inter as the page's face. The static engine cannot know and keeps reporting. Its
-    should-flag twin is overused-font-share-flag.html, the same page with a
-    face that loads.
+    the face at "error", and the canvas probe finds Recoleta drawn nowhere:
+    the labels render in the fallback. Recoleta is a commercial face no test
+    host installs; Inter is avoided here because a host that installs it
+    draws it, and then the finding rightly stands. The URL engine does not
+    report Recoleta as the page's face. The static engine cannot know and
+    keeps reporting. Its should-flag twin is overused-font-share-flag.html,
+    the same page with a face that loads (Inter, from a data: URI).
   -->
   <style>
-    @font-face { font-family: Inter; src: url(missing-inter-face.woff2) format("woff2"); }
+    @font-face { font-family: Recoleta; src: url(missing-recoleta-face.woff2) format("woff2"); }
     body { margin: 0; padding: 24px 40px; width: 1000px; color: #1a1a1a; background: #fff; font: 16px/24px Georgia, serif; }
     h1 { font-size: 32px; line-height: 40px; margin: 0 0 16px; }
     .tags { display: flex; flex-wrap: wrap; gap: 8px; width: 720px; margin: 0 0 24px; }
-    .tags span { display: block; padding: 4px 10px; border: 1px solid #cbd5e1; border-radius: 4px; font: 12px/16px Inter, sans-serif; }
+    .tags span { display: block; padding: 4px 10px; border: 1px solid #cbd5e1; border-radius: 4px; font: 12px/16px Recoleta, sans-serif; }
     p { width: 640px; margin: 0 0 16px; }
-    .drawer { display: none; width: 640px; font-family: Inter, sans-serif; }
+    .drawer { display: none; width: 640px; font-family: Recoleta, sans-serif; }
   </style>
 </head>
 <body>
-  <h1>Pass: Inter is named for thirty labels and never loads</h1>
+  <h1>Pass: Recoleta is named for thirty labels and never loads</h1>
   <div class="tags">
     <span>Platform</span>
     <span>Agents</span>
@@ -66,8 +69,8 @@
   <p>Search reads every field, including the notes people leave in the margins, and it returns the record with the matching words marked so a reader can see at a glance why it came up in the first place.</p>
   <p>Support answers in writing within a working day, and every answer is kept with the record it was about, so the next person to ask the same question finds the answer already waiting where they looked.</p>
 
-  <!-- Not rendered: a closed drawer whose copy is set in Inter. It counts as
-       Inter text elements, and its characters are not weighed. -->
+  <!-- Not rendered: a closed drawer whose copy is set in Recoleta. It counts as
+       Recoleta text elements, and its characters are not weighed. -->
   <nav class="drawer">
     <a href="#x">The workspace keeps every draft, review and decision in one place, so a team that picks up a project after a month away can read how it got to where it is without asking anyone who was there at the time.</a>
     <a href="#x">Each record carries its own history. A change shows who made it and what it replaced, and a reviewer can step back through the versions one at a time until the point where the numbers stopped adding up.</a>
