@@ -1358,8 +1358,9 @@ fn selector_list_pseudos(selector: &str) -> Vec<Option<&'static str>> {
 
 /// `html` with the text inside every `<script>` element removed and the
 /// tags kept. A serialized document cannot hold `</script` inside a script,
-/// so the first one after the start tag closes it; an unclosed script runs
-/// to the end of the document, as a parser reads it.
+/// so the first one after the start tag closes it. A `<script` inside an
+/// HTML comment is not a script, and a script with no `</script` after it
+/// keeps its text: the rest of the document stays as it was.
 fn without_script_text(html: &str) -> String {
     let lower = html.to_ascii_lowercase();
     let mut out = String::with_capacity(html.len());
@@ -1367,6 +1368,15 @@ fn without_script_text(html: &str) -> String {
     let mut search = 0usize;
     while let Some(rel) = lower[search..].find("<script") {
         let start = search + rel;
+        if let Some(comment) = lower[search..start].find("<!--").map(|p| search + p) {
+            match lower[comment + 4..].find("-->") {
+                Some(end) => {
+                    search = comment + 4 + end + 3;
+                    continue;
+                }
+                None => break,
+            }
+        }
         let after = start + "<script".len();
         let delimited = lower
             .as_bytes()
@@ -1379,17 +1389,12 @@ fn without_script_text(html: &str) -> String {
         let Some(open_end) = lower[after..].find('>').map(|p| after + p + 1) else {
             break;
         };
+        let Some(close) = lower[open_end..].find("</script").map(|p| open_end + p) else {
+            break;
+        };
         out.push_str(&html[from..open_end]);
-        match lower[open_end..].find("</script") {
-            Some(p) => {
-                from = open_end + p;
-                search = from + "</script".len();
-            }
-            None => {
-                from = html.len();
-                search = html.len();
-            }
-        }
+        from = close;
+        search = close + "</script".len();
     }
     out.push_str(&html[from..]);
     out
@@ -5100,7 +5105,15 @@ mod page_level_form_tests {
             "<p>a</p><script></script><script src=\"a.js\"></script><scripts>k</scripts>"
         );
         assert_eq!(without_script_text("<SCRIPT type=\"module\">x</SCRIPT>y"), "<SCRIPT type=\"module\"></SCRIPT>y");
-        assert_eq!(without_script_text("a<script>never closed <i style=a>"), "a<script>");
+        // Fail safe: a script never closed keeps its text, and a `<script`
+        // in a comment is not one, so the markup after it stays.
+        assert_eq!(without_script_text("a<script>never closed <i style=a>"), "a<script>never closed <i style=a>");
+        assert_eq!(
+            without_script_text("<!-- TODO: add <script> here --><style>.a{}</style><script>x</script><b style=\"c\">"),
+            "<!-- TODO: add <script> here --><style>.a{}</style><script></script><b style=\"c\">"
+        );
+        assert_eq!(without_script_text("<!-- <script --> <i style=a>"), "<!-- <script --> <i style=a>");
+        assert_eq!(without_script_text("<!-- unclosed <script>x</script>"), "<!-- unclosed <script>x</script>");
 
         let card = "<button style=\"box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4)\">Go</button><div style=\"background: #000\"></div>";
         let build = |markup: String| {
