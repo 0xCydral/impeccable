@@ -28,6 +28,9 @@
   page's h1). A phone shape with no clock, a portrait card with a lone time
   on it, and captions that only open with the words say nothing.
 
+  Decision r14-t7: a dotted window whose text is mostly code (a pre, code,
+  kbd or samp, or a monospace face) is no mock; its code reports in full.
+
   No class here says mock, preview, terminal or code: those are exempt from
   two of the three rules already.
 -->
@@ -77,6 +80,7 @@
   .app .small { padding: 12px 16px; }
   .status { display: flex; justify-content: space-between; box-sizing: border-box; }
   .battery { display: inline-block; width: 20px; height: 9px; border: 1px solid #111; border-radius: 3px; }
+  .mono { font-family: ui-monospace, "SFMono-Regular", Menlo, monospace; }
 </style>
 </head>
 <body>
@@ -166,6 +170,17 @@
        shell that is the page's own (it holds the h1) -->
   <div class="phone"><div class="screen"><div class="status">Inbox</div><span class="small fail-phone-no-clock">Two drafts</span></div></div>
   <div class="phone"><div class="screen"><div class="status"><span>9:41</span><i class="battery"></i></div><h1>Departures</h1><span class="small fail-phone-shell">Gate B12</span></div></div>
+
+  <!-- decision r14-t7: a dotted window that holds a code sample is reading
+       content, so its faint and small code reports in full -->
+  <div class="shot">
+    <div class="bar"><span class="lights"><i class="dot"></i><i class="dot"></i><i class="dot"></i></span></div>
+    <div class="pane mono">
+      <span class="small fail-config-small">timeout_ms = 3000</span>
+      <span class="dim fail-config-dim" style="color: #ababab">retries = 2  # attempts after the first</span>
+      <span class="small">backoff = "exponential"</span>
+    </div>
+  </div>
 
   <!-- round 14 review: a time alone on a portrait card is no status bar: a
        video's duration badge, a talk's start time, and an app column whose

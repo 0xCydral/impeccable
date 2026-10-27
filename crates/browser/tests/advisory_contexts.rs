@@ -271,6 +271,7 @@ fn text_in_a_framed_demo_is_advisory() {
         "fail-app-header",
         "fail-caption-sample",
         "fail-caption-fictional",
+        "fail-config-small",
     ] {
         assert_eq!(on(&f, rule, class), ["warning"], "{class}: {f:#?}");
     }
@@ -281,6 +282,8 @@ fn text_in_a_framed_demo_is_advisory() {
     assert_eq!(on(&f, "tiny-text", "adv-dots-run"), ["advisory"], "{f:#?}");
     assert_eq!(on(&f, "tiny-text", "fail-sentence"), ["warning"], "{f:#?}");
     assert_eq!(on(&f, "low-contrast", "adv-dots-dim"), ["advisory"], "{f:#?}");
+    // r14-t7: faint code in a dotted window reports in full.
+    assert_eq!(on(&f, "low-contrast", "fail-config-dim"), ["warning"], "{f:#?}");
 }
 
 #[test]
@@ -308,6 +311,7 @@ fn nested_cards_in_a_mockup_are_advisory() {
         "#fail-prose-panel",
         "#fail-marked-inner",
         "#fail-shell-inner",
+        "#fail-code-inner",
     ] {
         assert_eq!(on(&f, rule, id), ["warning"], "{id}: {f:#?}");
     }

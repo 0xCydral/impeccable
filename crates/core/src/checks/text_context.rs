@@ -711,7 +711,7 @@ fn bar_leads_with_traffic_lights<N: ContextNode>(bar: &N) -> Option<bool> {
 fn is_demo_window<N: ContextNode>(c: &N) -> bool {
     let Some(bar) = title_bar(c) else { return false };
     if let Some(leads) = bar_leads_with_traffic_lights(&bar) {
-        return leads;
+        return leads && !holds_code_sample(c);
     }
     is_frame_box(c) && bar_has_preview_caption(&bar)
 }
@@ -730,7 +730,46 @@ fn is_traffic_light_window<N: ContextNode>(c: &N) -> bool {
     let measured = c.rect().is_some()
         && bar.rect().is_some()
         && find_dot_trio(&bar).is_some_and(|trio| trio.iter().all(|d| d.rect().is_some()));
-    measured && bar_leads_with_traffic_lights(&bar) == Some(true) && !landmark_holds_the_page(c)
+    measured
+        && bar_leads_with_traffic_lights(&bar) == Some(true)
+        && !landmark_holds_the_page(c)
+        && !holds_code_sample(c)
+}
+
+/// Tags whose text is code.
+const CODE_TAGS: &[&str] = &["pre", "code", "kbd", "samp"];
+
+/// Whether the window's text is mostly a code sample (decision r14-t7,
+/// 2026-10-26: "Bad design is bad design."): more than half its rendered
+/// characters sit in a `pre`, `code`, `kbd` or `samp`, or in a box whose
+/// computed face is monospace. A terminal or a config file drawn with
+/// traffic lights is reading content, so its dots are no mock cue; a
+/// dashboard or an app screen in the same chrome stays one.
+fn holds_code_sample<N: ContextNode>(c: &N) -> bool {
+    const MAX_VISITED: usize = 2000;
+    let (mut code, mut all) = (0usize, 0usize);
+    let mut stack = vec![(c.clone(), false)];
+    let mut visited = 0usize;
+    while let Some((n, in_code)) = stack.pop() {
+        visited += 1;
+        if visited > MAX_VISITED {
+            break;
+        }
+        let tag = n.tag();
+        if SOURCE_TEXT_TAGS.contains(&tag.as_str()) {
+            continue;
+        }
+        let in_code = in_code
+            || CODE_TAGS.contains(&tag.as_str())
+            || crate::checks::text_rules::is_monospace_family(&n.style("fontFamily"));
+        let chars = n.direct_text().chars().filter(|ch| !ch.is_whitespace()).count();
+        all += chars;
+        if in_code {
+            code += chars;
+        }
+        stack.extend(n.children().into_iter().map(|k| (k, in_code)));
+    }
+    all > 0 && code * 2 > all
 }
 
 /// Whether a landmark is the page's own content rather than a drawing on
@@ -1931,6 +1970,40 @@ mod tests {
         }
         let text = art.add("div").add("span").text("847 results").font(9.0);
         assert!(!in_framed_demo(&text));
+    }
+
+    /// Decision r14-t7: a dotted window that holds a code sample is reading
+    /// content; a dashboard in the same chrome stays a mock.
+    #[test]
+    fn a_dotted_window_holding_code_is_no_mock() {
+        // A docs config window: the text is in a `pre`.
+        let (_t, body) = Tree::new();
+        let (win, bar, label) = window(&body);
+        bar.add("span").text("config.toml");
+        let pre = win.children()[1].add("pre");
+        let line = pre.add("span").text("timeout_ms = 3000  # default, raise for slow networks");
+        pre.add("span").text("retries = 2  # attempts after the first");
+        assert!(!in_framed_demo(&line));
+        assert!(!in_framed_demo(&label));
+        assert!(!is_demo_frame(&win));
+        // The same text set in a monospace face, no `pre`.
+        let (_t, body) = Tree::new();
+        let (win, _bar, _label) = window(&body);
+        let mono = win.children()[1]
+            .add("div")
+            .style("fontFamily", "\"JetBrains Mono\", ui-monospace, monospace")
+            .text("const client = createClient({ retries: 2, timeoutMs: 3000 })");
+        assert!(!in_framed_demo(&mono));
+        // A dashboard in the same chrome, with one short code chip, stays a
+        // mock.
+        let (_t, body) = Tree::new();
+        let (win, _bar, label) = window(&body);
+        let pane = win.children()[1].clone();
+        pane.add("span").text("Revenue this quarter");
+        pane.add("span").text("Active subscriptions by plan");
+        pane.add("code").text("v2");
+        assert!(in_framed_demo(&label));
+        assert!(is_demo_frame(&win));
     }
 
     #[test]

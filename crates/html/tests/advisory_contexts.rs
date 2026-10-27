@@ -196,9 +196,11 @@ fn text_in_a_framed_demo_is_advisory_under_three_rules() {
         s.sort_unstable();
         assert_eq!(s, ["advisory", "warning"], "{label}");
     }
-    // tiny-text: the short run in the window is advisory, the sentence fails.
+    // tiny-text: the short run in the window is advisory; the sentence and
+    // the code line in the dotted config window (r14-t7) fail.
     assert_eq!(count(&f, "tiny-text", true), 1, "{f:#?}");
-    assert_eq!(count(&f, "tiny-text", false), 1, "{f:#?}");
+    assert_eq!(count(&f, "tiny-text", false), 2, "{f:#?}");
+    assert_eq!(severities(&f, "undersized-ui-text", "timeout_ms = 3000"), ["warning"]);
     // low-contrast: the dim label in the window is advisory.
     let dim: Vec<&Finding> = f
         .iter()
@@ -244,9 +246,10 @@ fn nested_cards_in_a_mockup_are_advisory() {
     // one whose footer is a sentence with the word "example" in it (fails).
     // Round 14 adds a window whose title bar follows an aria-hidden glow
     // (advisory), a phone, which only a measured box shows (fails here), and
-    // a phone-shaped shell that holds the page's h1 (fails).
+    // a phone-shaped shell that holds the page's h1 (fails), and r14-t7 a
+    // card in a dotted window that holds code (fails).
     assert_eq!(count(&f, "nested-cards", true), 7, "{f:#?}");
-    assert_eq!(count(&f, "nested-cards", false), 9, "{f:#?}");
+    assert_eq!(count(&f, "nested-cards", false), 10, "{f:#?}");
 }
 
 #[test]

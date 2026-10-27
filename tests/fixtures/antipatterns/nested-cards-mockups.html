@@ -10,6 +10,9 @@
   title-bar dots, a device frame tilted in 3D or scaled down, a frame
   under a wrapper that carries the scale), when it is that window itself, or when it sits under an HTML role="img". Every row reports; the column says at which severity.
 
+  A dotted window whose text is mostly code is no mockup (decision
+  r14-t7), so a card inside it keeps failing.
+
   Bordered cards in a bordered panel outside any mockup (paseo.sh) keep
   failing, and so does a window with two dots, which is not window chrome.
   A class that names a mockup is not read for this rule: "illustration"
@@ -84,6 +87,12 @@
     <div class="status"><span>9:41</span><i class="battery"></i></div>
     <h1>Departures</h1>
     <div class="inner border rounded-xl" id="fail-shell-inner"><p>Gate B12, boarding at 10:40.</p><p>A second line makes it a surface, not a label.</p></div>
+  </div>
+
+  <!-- decision r14-t7: a dotted window that holds a code sample -->
+  <div class="shot border rounded-xl shadow-lg" id="fail-code-window" style="font-family: ui-monospace, Menlo, monospace">
+    <div class="bar"><span class="lights"><i class="dot"></i><i class="dot"></i><i class="dot"></i></span></div>
+    <div class="pane"><div class="inner border rounded-xl" id="fail-code-inner"><p>retries = 2</p><p>timeout_ms = 3000  # raise on slow networks</p></div></div>
   </div>
 
   <!-- a class that names a mockup is not read -->
