@@ -48,7 +48,9 @@
 //!   page sets aside from reading and pointing (`aria-hidden`, no pointer
 //!   events, or behind a negative `z-index`), shown at
 //!   [`WORDMARK_MAX_OPACITY`] or less or at most [`GHOST_MAX_RATIO`] from
-//!   its ground, whatever it says (taste call r14-t3). Outside controls.
+//!   its ground, whatever it says (taste call r14-t3), unless its words are
+//!   part of a visually hidden heading or of the document title. Outside
+//!   controls.
 //!
 //! The adapters gather [`DecorativeTextFacts`] against their own DOM; the
 //! decision is made here, once, for both engines.
@@ -159,6 +161,11 @@ pub struct DecorativeTextFacts {
     /// The ink stands at most [`GHOST_MAX_RATIO`] from its ground, where the
     /// caller measured it; false where it did not.
     pub faint_ground: bool,
+    /// The text's words run word for word inside a visually hidden heading
+    /// on the page or the document title: the visible copy of the page's
+    /// heading, set `aria-hidden` beside an sr-only one. Read only where
+    /// [`Self::ghost_marked`] holds.
+    pub names_page_heading: bool,
 }
 
 /// The shape a text with no reading job was recognised by.
@@ -204,6 +211,7 @@ pub fn classify_decorative_text(f: &DecorativeTextFacts) -> Option<DecorativeSha
         && f.font_size_px.is_finite()
         && f.font_size_px >= WORDMARK_MIN_PX
         && f.ghost_marked
+        && !f.names_page_heading
         && (f.shown_opacity <= WORDMARK_MAX_OPACITY || f.faint_ground)
     {
         return Some(DecorativeShape::GhostWord);
@@ -641,6 +649,8 @@ mod tests {
         assert_eq!(shape(&ghost("效率", 110.0, 0.1, true, true)), None);
         assert_eq!(shape(&DecorativeTextFacts { in_control: true, ..ghost("oo", 410.0, 0.05, true, true) }), None);
         assert_eq!(shape(&DecorativeTextFacts { control_label: true, ..ghost("oo", 410.0, 0.05, true, true) }), None);
+        // The page's own heading, shown aria-hidden beside an sr-only copy.
+        assert_eq!(shape(&DecorativeTextFacts { names_page_heading: true, ..ghost("oo", 410.0, 0.05, true, true) }), None);
     }
 
     #[test]

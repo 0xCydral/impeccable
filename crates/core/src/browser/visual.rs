@@ -839,6 +839,125 @@ fn pseudo_quad(dom: &dyn Dom, node: ElId, which: &str) -> Option<Quad> {
     Some(Quad { laid, m: box_matrix(laid, &get("transform"), &get("translate"))?, shift: (0.0, 0.0) })
 }
 
+/// The 2D matrix a pseudo-element's `rotate` and `scale` properties apply
+/// (CSS order: `translate`, then `rotate`, then `scale`, then `transform`),
+/// as its linear part. `None` for a value this cannot read (a 3D axis, an
+/// unknown unit).
+fn rotate_scale_linear(rotate: &str, scale: &str) -> Option<[f64; 4]> {
+    let mut angle = 0.0;
+    let rotate = js::trim(rotate);
+    if !rotate.is_empty() && rotate != "none" {
+        let tokens: Vec<&str> = rotate.split_ascii_whitespace().collect();
+        // `z 10deg` and `0 0 1 10deg` turn in the plane; any other axis is 3D.
+        match tokens.as_slice() {
+            [_] => {}
+            ["z", _] => {}
+            [x, y, z, _] if parse_float(x) == 0.0 && parse_float(y) == 0.0 && parse_float(z) > 0.0 => {}
+            _ => return None,
+        }
+        let a = tokens.last()?;
+        let deg = if let Some(v) = a.strip_suffix("deg") {
+            parse_float(v)
+        } else if let Some(v) = a.strip_suffix("grad") {
+            parse_float(v) * 0.9
+        } else if let Some(v) = a.strip_suffix("rad") {
+            parse_float(v).to_degrees()
+        } else if let Some(v) = a.strip_suffix("turn") {
+            parse_float(v) * 360.0
+        } else if parse_float(a) == 0.0 {
+            0.0
+        } else {
+            return None;
+        };
+        if !deg.is_finite() {
+            return None;
+        }
+        angle = deg.to_radians();
+    }
+    let (mut sx, mut sy) = (1.0, 1.0);
+    let scale = js::trim(scale);
+    if !scale.is_empty() && scale != "none" {
+        let factor = |t: &str| {
+            let v = match t.strip_suffix('%') {
+                Some(p) => parse_float(p) / 100.0,
+                None => parse_float(t),
+            };
+            v.is_finite().then_some(v)
+        };
+        let tokens: Vec<&str> = scale.split_ascii_whitespace().collect();
+        match tokens.as_slice() {
+            [one] => {
+                sx = factor(one)?;
+                sy = sx;
+            }
+            [x, y] | [x, y, _] => {
+                sx = factor(x)?;
+                sy = factor(y)?;
+            }
+            _ => return None,
+        }
+    }
+    let (c, s) = (angle.cos(), angle.sin());
+    // R · S, column-major like the matrix: [a, b, c, d].
+    Some([c * sx, s * sx, -s * sy, c * sy])
+}
+
+/// Whether a positioned pseudo face still lies under all of `text` once its
+/// transform, `translate`, `rotate` and `scale` are applied. A face parked
+/// off its box at rest (aproov.es's sweep `::before`, a full width to the
+/// left inside `overflow: hidden`) does not; a centred chip
+/// (`left: 50%; translate(-50%, -50%)`), a face turned 2deg, skewed 10deg
+/// or scaled to 1.04 does. Where the capture places the face, the
+/// parallelogram it paints has to cover the run for every
+/// `transform-origin` inside its box ([`quads_cover_any_origin`]). Where it
+/// does not (offsets or a containing block it did not resolve), the
+/// transform is read alone: it keeps the face where it moves it by at most
+/// half the face's size on each axis, scales it by 0.5 or more on each
+/// axis, and turns it by at most 15 degrees. A 3D transform, or a value
+/// this cannot read, does not.
+pub(crate) fn pseudo_face_covers_after_transform(dom: &dyn Dom, node: ElId, which: &str, text: &Rect) -> bool {
+    let get = |prop: &str| dom.pseudo_style(node, which, prop).unwrap_or_default();
+    let Some(rs) = rotate_scale_linear(&get("rotate"), &get("scale")) else {
+        return false;
+    };
+    let (w, h) = match (px_length(&get("width")), px_length(&get("height"))) {
+        (Some(w), Some(h)) if w > 0.0 && h > 0.0 => (w, h),
+        _ => return false,
+    };
+    let probe = Rect::from_xywh(0.0, 0.0, w, h);
+    let Some(t) = box_matrix(probe, &get("transform"), "none") else {
+        return false;
+    };
+    let Some(tr) = box_matrix(probe, "none", &get("translate")) else {
+        return false;
+    };
+    // T · (R·S) · transform.
+    let m = [
+        rs[0] * t[0] + rs[2] * t[1],
+        rs[1] * t[0] + rs[3] * t[1],
+        rs[0] * t[2] + rs[2] * t[3],
+        rs[1] * t[2] + rs[3] * t[3],
+        rs[0] * t[4] + rs[2] * t[5] + tr[4],
+        rs[1] * t[4] + rs[3] * t[5] + tr[5],
+    ];
+    let placed = (|| {
+        if js::trim(&get("position")) != "absolute" {
+            return None;
+        }
+        let cb = containing_block(dom, node)?;
+        let left = px_length(&get("left")).or_else(|| px_length(&get("right")).map(|r| cb.width - r - w))?;
+        let top = px_length(&get("top")).or_else(|| px_length(&get("bottom")).map(|b| cb.height - b - h))?;
+        Some(Rect::from_xywh(cb.left + left, cb.top + top, w, h))
+    })();
+    if let Some(laid) = placed {
+        return quads_cover_any_origin(&[Quad { laid, m, shift: (0.0, 0.0) }], text);
+    }
+    let scale_x = (m[0] * m[0] + m[1] * m[1]).sqrt();
+    let scale_y = (m[2] * m[2] + m[3] * m[3]).sqrt();
+    let turn = m[1].atan2(m[0]).to_degrees().abs();
+    m[4].abs() <= w / 2.0 && m[5].abs() <= h / 2.0 && scale_x >= 0.5 && scale_y >= 0.5 && turn <= 15.0
+}
+
 /// The padding box an absolutely positioned child of `host` is placed in:
 /// the nearest positioned or transformed box, the host included. `None`
 /// where that is the initial containing block, or an inline box, whose

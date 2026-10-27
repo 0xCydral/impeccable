@@ -6,12 +6,15 @@
 //! - A light dialog title over a translucent panel reads on the sibling
 //!   scrim under it, and passes; on a bare panel it fails.
 //! - A sweep face parked off its button, or hidden, is not the label's
-//!   ground; in place it is, and the label fails on it.
-//! - A dot grid over a fill is texture; opaque stripes are a surface.
+//!   ground; in place it is, and so is a chip moved, turned, skewed or
+//!   scaled but still under its label.
+//! - A sparse dot grid over a fill is texture; opaque stripes, a pinhole
+//!   mesh and a dense halftone are surfaces.
 //! - A hover underline parked at zero size is no ground for the element pass
 //!   or the pixels; drawn over the box it is.
 //! - A faint word set aside from reading is advisory; the same word not set
-//!   aside, or shown above 1.5:1 at 0.4, keeps its warning.
+//!   aside, shown above 1.5:1 at 0.4, part of the sr-only heading, or under
+//!   a wrapper that passes clicks, keeps its warning.
 //!
 //! The assertions name cases and severities, never a measured colour, so
 //! they hold whatever fonts the host has.
@@ -112,6 +115,14 @@ fn grounds_borrowed_from_scrims_sweeps_textures_underlines_and_ghost_words() {
         "#flag-faint-word-not-set-aside",
         "#flag-dark-word-not-set-aside",
         "#flag-word-shown-at-forty",
+        "#flag-dark-label-on-centred-chip",
+        "#flag-dark-label-on-turned-chip",
+        "#flag-dark-label-on-skewed-chip",
+        "#flag-dark-label-on-scaled-chip",
+        "#flag-dark-copy-on-pinhole-mesh",
+        "#flag-grey-copy-on-dense-halftone",
+        "#flag-ghost-of-hidden-heading",
+        "#flag-word-in-click-through-wrapper",
     ] {
         let hits = low(selector);
         assert!(!hits.is_empty(), "missing low-contrast on {selector} in {flagged:#?}");

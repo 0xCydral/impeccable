@@ -278,16 +278,18 @@ fn gradient_is_decoration(layer: &str) -> bool {
             .any(|v| v > 0.0 && v <= HAIRLINE_MAX_PX)
 }
 
-/// Whether every background layer of a box is a dot pattern: a
-/// `radial-gradient` [`gradient_is_decoration`] calls dots, repeated in cells
-/// at most [`TEXTURE_MAX_CELL_PX`] on both axes. spacesheep.dev's body draws a
-/// 1px dot every 24px over its fill; the reader sees the fill, not the dot
-/// (observations-1010 row 8). An opaque checker has no transparent stop and
-/// is not one; a layer whose cell the style does not state is not one
-/// either. Grid lines (`linear-gradient` hairlines) are left as they were
-/// read: on juskoe.vercel.app's `section.bg-grid` the lines' colour is what
-/// several of the page's failing words were reported on, and the corpus
-/// judged them harmful there.
+/// Whether every background layer of a box is a sparse dot pattern: a
+/// `radial-gradient` that paints a dot ([`radial_dot`]: coloured stops
+/// first, then transparent to the end), repeated in cells at most
+/// [`TEXTURE_MAX_CELL_PX`] on both axes, whose ink (the dot's area over the
+/// cell's, times its strongest stop's alpha) is at most
+/// [`DOT_TEXTURE_MAX_INK`]. spacesheep.dev's body draws a 1px dot every
+/// 24px over its fill; the reader sees the fill, not the dot
+/// (observations-1010 row 8). A mesh of pinholes (clear centre, opaque
+/// outside), a dense halftone, an opaque checker and grid lines are not
+/// sparse dots and are read as before (juskoe.vercel.app's `bg-grid` lines
+/// are what several of its failing words were reported on, judged harmful
+/// there). A layer whose cell the style does not state is not one either.
 pub(crate) fn gradient_layers_are_dot_texture(dom: &dyn Dom, node: ElId, image: &str) -> bool {
     let sizes = split_top_level_commas(&js::to_lower_case(&dom.style(node, "backgroundSize")));
     let shorthand = split_top_level_commas(&js::to_lower_case(&dom.style(node, "background")));
@@ -297,13 +299,73 @@ pub(crate) fn gradient_layers_are_dot_texture(dom: &dyn Dom, node: ElId, image: 
         && layers.iter().enumerate().all(|(i, layer)| {
             let lower = js::to_lower_case(layer);
             let repeats = !shorthand.get(i).map_or(false, |s| s.contains("no-repeat"));
-            js::trim(&lower).starts_with("radial-gradient(")
-                && !lower.contains("url(")
-                && repeats
-                && explicit_cell(sizes[i % sizes.len()].as_str())
-                    .map_or(false, |(w, h)| w > 0.0 && h > 0.0 && w <= TEXTURE_MAX_CELL_PX && h <= TEXTURE_MAX_CELL_PX)
+            let Some((w, h)) = explicit_cell(sizes[i % sizes.len()].as_str()) else {
+                return false;
+            };
+            let Some((radius, alpha)) = radial_dot(js::trim(&lower)) else {
+                return false;
+            };
+            repeats
+                && w > 0.0
+                && h > 0.0
+                && w <= TEXTURE_MAX_CELL_PX
+                && h <= TEXTURE_MAX_CELL_PX
                 && gradient_is_decoration(&lower)
+                && std::f64::consts::PI * radius * radius / (w * h) * alpha <= DOT_TEXTURE_MAX_INK
         })
+}
+
+/// The most ink a dot pattern may lay over its cell, as a share of the
+/// cell's area times the dot's alpha, and still be texture over the fill.
+const DOT_TEXTURE_MAX_INK: f64 = 0.15;
+
+/// A `radial-gradient` layer that paints a dot: its colour stops are opaque
+/// enough to see first (alpha over 0.05), then transparent to the end, with
+/// every position in pixels. The dot's radius (the first transparent stop's
+/// position, or the last coloured one's where that is larger) and its
+/// strongest alpha. `None` for any other shape: a ring, a hole, a stop
+/// placed in percent or not at all.
+fn radial_dot(layer: &str) -> Option<(f64, f64)> {
+    let inner = layer.strip_prefix("radial-gradient(")?.strip_suffix(')')?;
+    let mut coloured: Vec<(f64, Option<f64>)> = Vec::new();
+    let mut clear: Vec<Option<f64>> = Vec::new();
+    for arg in split_top_level_commas(inner) {
+        let arg = js::trim(&arg).to_string();
+        // The colour is the leading token, or the leading function call.
+        let (colour, rest) = match arg.find('(') {
+            Some(open) if !arg[..open].contains(char::is_whitespace) => {
+                let close = arg.rfind(')')?;
+                (&arg[..=close], &arg[close + 1..])
+            }
+            _ => match arg.split_once(char::is_whitespace) {
+                Some((c, r)) => (c, r),
+                None => (arg.as_str(), ""),
+            },
+        };
+        let Some(c) = crate::color::parse_any_color(Some(colour)) else {
+            // The shape and position argument, allowed only first.
+            if coloured.is_empty() && clear.is_empty() {
+                continue;
+            }
+            return None;
+        };
+        let mut position = None;
+        for t in rest.split_ascii_whitespace() {
+            position = Some(px(t)?);
+        }
+        if c.alpha_or_one() > 0.05 {
+            if !clear.is_empty() {
+                return None;
+            }
+            coloured.push((c.alpha_or_one(), position));
+        } else {
+            clear.push(position);
+        }
+    }
+    let first_clear = (*clear.first()?)?;
+    let last_coloured = coloured.last()?.1?;
+    let alpha = coloured.iter().map(|(a, _)| *a).fold(0.0, f64::max);
+    Some((first_clear.max(last_coloured), alpha))
 }
 
 /// What a box's background images paint. Every layer has to be texture for

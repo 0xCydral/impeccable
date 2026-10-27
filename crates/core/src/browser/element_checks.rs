@@ -795,13 +795,14 @@ pub fn is_stripe_heading_host(host_tag: &str) -> bool {
     matches!(host_tag, "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
 }
 
-/// Whether a positioned pseudo face sits where its box says, untransformed.
-/// A face moved, scaled or turned at rest (a slide-in parked at
-/// `translateX(-101%)`, `scaleX(0)` or `rotate: 90deg`) may not be under the
-/// text; the capture places only one that is not transformed.
+/// Whether a positioned pseudo face is under the text it would be the
+/// ground of: untransformed, or transformed in a way that still covers the
+/// text ([`crate::browser::visual::pseudo_face_covers_after_transform`]). A
+/// face moved, scaled or turned off the text at rest (a slide-in parked at
+/// `translateX(-101%)`, `scaleX(0)` or `rotate: 90deg`) is not.
 /// `translate: 0px`, `scale: 1` and a zero `rotate` angle (`0deg`,
 /// `z 0deg`) are the identity; `scale: 0` is a face parked at nothing.
-fn pseudo_face_untransformed(dom: &dyn Dom, el: ElId, which: &str) -> bool {
+fn pseudo_face_in_place(dom: &dyn Dom, el: ElId, which: &str, text: &Rect) -> bool {
     let individual = |prop: &str, identity: f64| {
         let raw = pseudo_str(dom, el, which, prop);
         let raw = js::trim(&raw);
@@ -814,7 +815,8 @@ fn pseudo_face_untransformed(dom: &dyn Dom, el: ElId, which: &str) -> bool {
     };
     let matrix: String = pseudo_str(dom, el, which, "transform").split_whitespace().collect();
     let untransformed = matrix.is_empty() || matrix == "none" || is_identity_matrix(&matrix);
-    untransformed && individual("translate", 0.0) && individual("scale", 1.0) && unrotated
+    (untransformed && individual("translate", 0.0) && individual("scale", 1.0) && unrotated)
+        || crate::browser::visual::pseudo_face_covers_after_transform(dom, el, which, text)
 }
 
 /// JS: checks.mjs#readPseudoSurfaceDOM(el, rect)
@@ -851,7 +853,8 @@ pub fn read_pseudo_surface_dom(dom: &dyn Dom, el: ElId, rect: &Rect) -> Option<R
         // its green `::before` a full width to the left, inside
         // `overflow: hidden`, until hover) is not the ground at rest, as
         // [`read_pseudo_gradient_face`] reads it (observations-1010 row 8).
-        if !pseudo_face_untransformed(dom, el, which) {
+        // A centred, tilted or slightly scaled chip still under the text is.
+        if !pseudo_face_in_place(dom, el, which, &dom.direct_text_rect(el).unwrap_or(*rect)) {
             continue;
         }
         let w = pseudo_px(dom, el, which, "width");
@@ -942,7 +945,7 @@ pub(crate) fn read_pseudo_gradient_face(
         {
             continue;
         }
-        if !pseudo_face_untransformed(dom, el, which) {
+        if !pseudo_face_in_place(dom, el, which, &dom.direct_text_rect(el).unwrap_or(*rect)) {
             continue;
         }
         let w = pseudo_px(dom, el, which, "width");
@@ -13119,6 +13122,7 @@ mod tests {
             visible(&mut d, b);
             d.add_text(b, "Ver casos");
             d.set_rect(b, 40.0, 600.0, 165.0, 48.0);
+            d.set_text_rect(b, 60.0, 612.0, 100.0, 24.0);
             d.set_styles(
                 b,
                 &[
@@ -13155,15 +13159,24 @@ mod tests {
             &[("transform", "matrix(1, 0, 0, 1, -165.2, 0)")][..],
             &[("translate", "-101%")][..],
             &[("scale", "0 1")][..],
+            &[("rotate", "90deg")][..],
             &[("visibility", "hidden")][..],
         ] {
             assert!(run(extra).is_empty(), "{extra:?}: {:?}", run(extra));
         }
-        // Twin: in place (translate 0, the identity matrix), the face is the
-        // ground and the label fails on it.
+        // Twins: in place (translate 0, the identity matrix), or moved but
+        // still under the label (a centred chip, 2deg of tilt, a 10deg skew,
+        // 1.04 of scale, a 2deg `rotate`), the face is the ground and the
+        // label fails on it.
         for extra in [
             &[][..],
             &[("transform", "matrix(1, 0, 0, 1, 0, 0)"), ("translate", "0px")][..],
+            &[("left", "82.5px"), ("top", "24px"), ("transform", "matrix(1, 0, 0, 1, -82.5, -24)")][..],
+            &[("transform", "matrix(0.999391, -0.0348995, 0.0348995, 0.999391, 0, 0)")][..],
+            &[("transform", "matrix(1, 0, -0.176327, 1, 0, 0)")][..],
+            &[("transform", "matrix(1.04, 0, 0, 1.04, 0, 0)")][..],
+            &[("rotate", "-2deg")][..],
+            &[("scale", "1.04")][..],
         ] {
             let hits = run(extra);
             assert_eq!(hits.len(), 1, "{extra:?}: {hits:?}");

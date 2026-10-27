@@ -250,6 +250,7 @@ pub fn decorative_text_facts_dom(dom: &dyn Dom, el: ElId) -> DecorativeTextFacts
         Vec::new()
     };
     let ghost_marked = font_size_px >= WORDMARK_MIN_PX && set_aside(dom, el);
+    let names_page_heading = ghost_marked && names_page_heading(dom, el, &text);
     DecorativeTextFacts {
         font_size_px,
         largest_h1_px,
@@ -257,6 +258,7 @@ pub fn decorative_text_facts_dom(dom: &dyn Dom, el: ElId) -> DecorativeTextFacts
         site_names,
         ghost_marked,
         faint_ground: false,
+        names_page_heading,
         avatar_box: !text.is_empty() && text.chars().count() <= 3 && in_avatar_box(dom, el, &text),
         in_kbd: closest_or_none(dom, el, "kbd").is_some(),
         font_family: dom.style(el, "fontFamily"),
@@ -272,11 +274,14 @@ pub fn decorative_text_facts_dom(dom: &dyn Dom, el: ElId) -> DecorativeTextFacts
 }
 
 /// Whether the element is set aside from reading and pointing: it or a box
-/// it sits in is `aria-hidden="true"`, it takes no pointer events (computed,
-/// so inherited), or a box it sits in is laid at a negative `z-index` where
-/// that applies (a positioned box, or a flex or grid item).
+/// it sits in is `aria-hidden="true"`, it sets `pointer-events: none` on
+/// itself (its parent takes pointer events: an overlay wrapper that passes
+/// clicks through says nothing of the copy inside it), or a box it sits in
+/// is laid at a negative `z-index` where that applies (a positioned box, or
+/// a flex or grid item).
 fn set_aside(dom: &dyn Dom, el: ElId) -> bool {
-    if js::trim(&dom.style(el, "pointerEvents")) == "none" {
+    let no_pointer = |n: ElId| js::trim(&dom.style(n, "pointerEvents")) == "none";
+    if no_pointer(el) && !dom.parent(el).is_some_and(no_pointer) {
         return true;
     }
     let mut cur = Some(el);
@@ -301,6 +306,41 @@ fn set_aside(dom: &dyn Dom, el: ElId) -> bool {
         cur = dom.parent(n);
     }
     false
+}
+
+/// The words of `text`, letters and digits only, lower-cased.
+fn words_of(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// Whether `text` is the page's own heading, or part of it: its words run
+/// word for word inside the text of a visually hidden heading (the sr-only
+/// `h1` a page sets beside the same words drawn `aria-hidden`, "Northwind"
+/// beside "Northwind Studio") or of the document title. At least three
+/// letters or digits.
+fn names_page_heading(dom: &dyn Dom, el: ElId, text: &str) -> bool {
+    let words = words_of(text);
+    if words.concat().chars().count() < 3 {
+        return false;
+    }
+    let holds = |other: &str| {
+        let theirs = words_of(other);
+        theirs.windows(words.len()).any(|w| w == words.as_slice())
+    };
+    if let Some(title) = dom.query_one(None, "title").ok().flatten() {
+        if holds(&collapsed_text(dom, title)) {
+            return true;
+        }
+    }
+    dom.query_all(None, HEADING_SELECTOR)
+        .unwrap_or_default()
+        .into_iter()
+        .take(64)
+        .filter(|&h| h != el && !dom.contains(h, el) && !dom.contains(el, h))
+        .any(|h| holds(&collapsed_text(dom, h)) && super::quality::is_visually_hidden(dom, h))
 }
 
 /// [`decorative_text_shape_dom`], where the caller measured the ink against
@@ -370,7 +410,7 @@ mod tests {
     #[test]
     fn a_ghost_word_set_aside_and_faint_is_decorative() {
         let mut d = FakeDom::new();
-        let (_html, body) = d.with_page();
+        let (html, body) = d.with_page();
         d.hostname = "aproov.es".into();
         let layer = d.add(Some(body), "div");
         let word = d.add(Some(layer), "div");
@@ -384,6 +424,10 @@ mod tests {
         d.set_attr(layer, "aria-hidden", "false");
         d.set_style(word, "pointerEvents", "none");
         assert_eq!(decorative_text_shape_dom(&d, word), Some(DecorativeShape::GhostWord));
+        // Inherited from an overlay wrapper, it says nothing of the copy.
+        d.set_style(layer, "pointerEvents", "none");
+        assert_eq!(decorative_text_shape_dom(&d, word), None);
+        d.set_style(layer, "pointerEvents", "auto");
         // Behind the page at a negative z-index, where it applies.
         d.set_style(word, "pointerEvents", "auto");
         d.set_styles(layer, &[("zIndex", "-10"), ("position", "static")]);
@@ -395,6 +439,26 @@ mod tests {
         assert_eq!(decorative_text_shape_dom(&d, word), None);
         assert_eq!(decorative_text_shape_measured_dom(&d, word, Some(1.3)), Some(DecorativeShape::GhostWord));
         assert_eq!(decorative_text_shape_measured_dom(&d, word, Some(1.6)), None);
+        // The page's heading drawn aria-hidden beside an sr-only copy, or the
+        // document title, keeps its warning.
+        d.set_attr(layer, "aria-hidden", "true");
+        let name = d.add(Some(layer), "div");
+        d.add_text(name, "Northwind");
+        d.set_styles(name, &[("fontSize", "140px"), ("color", "rgb(230, 230, 230)"), ("opacity", "0.2")]);
+        d.set_rect(name, 0.0, 500.0, 900.0, 170.0);
+        let h1 = d.add(Some(body), "h1");
+        d.add_text(h1, "Northwind Studio");
+        d.set_attr(h1, "class", "title");
+        assert_eq!(decorative_text_shape_dom(&d, name), Some(DecorativeShape::GhostWord));
+        // Clipped to nothing, as `sr-only` draws it.
+        d.set_styles(h1, &[("position", "absolute"), ("clip", "rect(0px, 0px, 0px, 0px)")]);
+        assert_eq!(decorative_text_shape_dom(&d, name), None);
+        d.set_styles(h1, &[("position", "static"), ("clip", "auto")]);
+        assert_eq!(decorative_text_shape_dom(&d, name), Some(DecorativeShape::GhostWord));
+        let head = d.add(Some(html), "head");
+        let title = d.add(Some(head), "title");
+        d.add_text(title, "Northwind | Trade software");
+        assert_eq!(decorative_text_shape_dom(&d, name), None);
         // Under 120px it is not display type.
         d.set_style(word, "fontSize", "110px");
         assert_eq!(decorative_text_shape_measured_dom(&d, word, Some(1.1)), None);

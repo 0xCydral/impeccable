@@ -873,6 +873,17 @@ mod tests {
         let dots = |d: &FakeDom| super::super::text_layers::gradient_layers_are_dot_texture(d, body, &d.style(body, "backgroundImage"));
         paint(&mut d, "radial-gradient(circle, rgba(26, 26, 31, 0.6) 1px, rgba(0, 0, 0, 0) 1.4px)", "120px 120px");
         assert!(!dots(&d));
+        // The capture's own serialisation of spacesheep's dot is one.
+        paint(&mut d, "radial-gradient(circle, color(srgb 0.101961 0.101961 0.121569 / 0.13) 1px, rgba(0, 0, 0, 0) 1.4px)", "24px 24px");
+        assert!(dots(&d));
+        // Twins: a mesh of pinholes (clear centre, black outside) and a dense
+        // halftone (3px dots in 7px cells, 58% of the cell) are surfaces.
+        paint(&mut d, "radial-gradient(circle, rgba(0, 0, 0, 0) 1px, rgb(17, 17, 17) 1.5px)", "4px 4px");
+        assert!(!dots(&d));
+        paint(&mut d, "radial-gradient(circle, rgb(34, 34, 34) 3px, rgba(0, 0, 0, 0) 3px)", "7px 7px");
+        assert!(!dots(&d));
+        let s = resolve_text_surface(&d, label, &|_| false, text, 14.0);
+        assert!(s.samples.is_some(), "{:?}", s.info);
         paint(
             &mut d,
             "linear-gradient(rgba(124, 58, 237, 0.12) 1px, rgba(0, 0, 0, 0) 1px), linear-gradient(90deg, rgba(124, 58, 237, 0.12) 1px, rgba(0, 0, 0, 0) 1px)",

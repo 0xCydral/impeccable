@@ -25,13 +25,21 @@
          negative `z-index`) and shown faint (opacity 0.25 or less, or 1.5:1
          or less) is a ghost word and reports as advisory whatever it says.
          The same word not set aside, or shown at 0.4 and above 1.5:1, keeps
-         its warning.
+         its warning. So does a set-aside word that is part of the page's
+         sr-only heading, and a word whose wrapper, not itself, takes no
+         pointer events.
+       - A chip `::before` moved but still under its text (centred with
+         `translate(-50%, -50%)`, turned 2deg, skewed 10deg, scaled 1.04) is
+         still the text's ground, and the dark label fails on it.
+       - A mesh of pinholes and a dense halftone are surfaces, not sparse
+         dots: the copy fails on them.
 
        The static HTML engine reads no layers, no pseudo faces and no
        sampled gradients: it scores both dialog titles on the page, the
        sweep labels on the button's own fill (they pass), neither textured
-       box, and the drawn underline as a gradient. It never reads the ghost
-       word shape, so all five words keep their warnings. The URL behavior
+       box or dense pattern, the drawn underline as a gradient, and the four
+       chips on their `::before`. It never reads the ghost word shape, so
+       every ghost word keeps its warning. The URL behavior
        is pinned by crates/browser/tests/borrowed_grounds.rs. Every case uses
        its own text colour or id so a finding names the case. */
     * { box-sizing: border-box; }
@@ -86,6 +94,31 @@
     .ghost-ground.isolated { isolation: isolate; }
     #flag-dark-word-not-set-aside { color: #00285a; }
     #flag-word-shown-at-forty { color: #333333; opacity: 0.4; }
+
+    /* Chips moved but still under their text. */
+    .chips { position: relative; z-index: 0; }
+    .chip { position: relative; display: inline-block; padding: 14px 28px; font: 600 18px/24px system-ui, sans-serif; }
+    .chip::before { content: ""; position: absolute; z-index: -1; background: #1a1a1a; left: 0; top: 0; width: 100%; height: 100%; }
+    .chip.centred::before { left: 50%; top: 50%; transform: translate(-50%, -50%); }
+    .chip.turned::before { transform: rotate(-2deg); }
+    .chip.skewed::before { transform: skewX(-10deg); }
+    .chip.scaled::before { transform: scale(1.04); }
+    #flag-dark-label-on-centred-chip { color: #333331; }
+    #flag-dark-label-on-turned-chip { color: #333332; }
+    #flag-dark-label-on-skewed-chip { color: #333333; }
+    #flag-dark-label-on-scaled-chip { color: #333334; }
+
+    /* Dense dot patterns. */
+    .mesh { background-color: #ffffff; background-image: radial-gradient(circle, transparent 1px, #111111 1.5px); background-size: 4px 4px; }
+    .halftone { background-color: #ffffff; background-image: radial-gradient(circle, #222222 3px, transparent 3px); background-size: 7px 7px; }
+    #flag-dark-copy-on-pinhole-mesh { color: #333335; }
+    #flag-grey-copy-on-dense-halftone { color: #666667; }
+
+    /* A ghost of the page's own heading, and a wrapper that passes clicks. */
+    .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    .passes-clicks { pointer-events: none; }
+    #flag-ghost-of-hidden-heading { color: #f8efeb; opacity: 0.06; }
+    #flag-word-in-click-through-wrapper { color: #f8efec; opacity: 0.06; }
   </style>
 </head>
 <body>
@@ -131,6 +164,25 @@
   </div>
   <div class="row">
     <div class="ghost-ground light" aria-hidden="true"><p class="ghost" id="flag-word-shown-at-forty">Ab</p></div>
+  </div>
+  <div class="row chips">
+    <span class="chip centred" id="flag-dark-label-on-centred-chip">Centred chip label</span>
+    <span class="chip turned" id="flag-dark-label-on-turned-chip">Turned chip label</span>
+    <span class="chip skewed" id="flag-dark-label-on-skewed-chip">Skewed marker label</span>
+    <span class="chip scaled" id="flag-dark-label-on-scaled-chip">Scaled chip label</span>
+  </div>
+
+  <div class="row">
+    <div class="textured mesh"><span id="flag-dark-copy-on-pinhole-mesh">Dark copy on a pinhole mesh</span></div>
+  </div>
+  <div class="row">
+    <div class="textured halftone"><span id="flag-grey-copy-on-dense-halftone">Grey copy on a dense halftone</span></div>
+  </div>
+
+  <h2 class="sr-only">Northwind Studio</h2>
+  <div class="row">
+    <div class="ghost-ground light"><div aria-hidden="true"><p class="ghost" id="flag-ghost-of-hidden-heading">Northwind</p></div></div>
+    <div class="ghost-ground light"><div class="passes-clicks"><p class="ghost" id="flag-word-in-click-through-wrapper">Harbor</p></div></div>
   </div>
 </body>
 </html>
