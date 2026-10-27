@@ -882,6 +882,9 @@ mod tests {
         assert!(!dots(&d));
         paint(&mut d, "radial-gradient(circle, rgb(34, 34, 34) 3px, rgba(0, 0, 0, 0) 3px)", "7px 7px");
         assert!(!dots(&d));
+        // An ellipse is not read as a circle's area (#1201 review).
+        paint(&mut d, "radial-gradient(4px 32px, rgb(17, 17, 17) 3px, rgba(0, 0, 0, 0) 3px)", "8px 64px");
+        assert!(!dots(&d));
         let s = resolve_text_surface(&d, label, &|_| false, text, 14.0);
         assert!(s.samples.is_some(), "{:?}", s.info);
         paint(

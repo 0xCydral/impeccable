@@ -55,7 +55,14 @@ fn handle(mut stream: TcpStream) {
         .next()
         .unwrap_or("/")
         .to_string();
-    let (status, body) = match std::fs::read(fixtures_dir().join(path.trim_start_matches('/'))) {
+    // Serve fixtures only: no path that climbs out of the directory.
+    let name = path.trim_start_matches('/');
+    let read = if name.split('/').any(|part| part == ".." || part.is_empty()) {
+        Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+    } else {
+        std::fs::read(fixtures_dir().join(name))
+    };
+    let (status, body) = match read {
         Ok(body) => ("200 OK", body),
         Err(_) => ("404 Not Found", b"missing".to_vec()),
     };

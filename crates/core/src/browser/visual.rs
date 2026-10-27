@@ -3793,22 +3793,28 @@ pub fn css_plan(dom: &dyn Dom, node: ElId, text_color: Option<&Rgba>) -> CssPlan
     }
     let bg_image = dom.style(node, "backgroundImage");
     // Gradient layers drawn at zero or hairline size paint no surface under
-    // the text, whatever the box's own fill: the walk reads the fill, or
-    // goes on beneath the box.
-    let image_paints_no_surface = {
-        let layers = split_top_level_commas(&bg_image);
-        !layers.is_empty() && (0..layers.len()).all(|i| gradient_layer_paints_no_surface(dom, node, &layers, i))
+    // the text, whatever the box's own fill: each is left out, and where
+    // none is left the walk reads the fill, or goes on beneath the box. The
+    // layers kept keep their places in the size, position and repeat lists.
+    let all_layers = split_top_level_commas(&bg_image);
+    let kept: Vec<usize> =
+        (0..all_layers.len()).filter(|&i| !gradient_layer_paints_no_surface(dom, node, &all_layers, i)).collect();
+    let image_paints_no_surface = !all_layers.is_empty() && kept.is_empty();
+    let painting_image = if kept.len() == all_layers.len() {
+        bg_image.clone()
+    } else {
+        kept.iter().map(|&i| js::trim(&all_layers[i]).to_string()).collect::<Vec<_>>().join(", ")
     };
     if !bg_image.is_empty() && bg_image != "none" && !image_paints_no_surface {
-        if GRADIENT_RE.is_match(&bg_image) {
+        if GRADIENT_RE.is_match(&painting_image) {
             if let Some(tc) = text_color {
                 // Compared raw, `transparent` reads as black (issue #881). Over the
                 // element's own opaque background-color the layers composite bottom
                 // up before they are judged, while every layer is a gradient that
                 // paints the whole box; anything else takes the path below.
-                let layers = split_top_level_commas(&bg_image);
+                let layers: Vec<String> = kept.iter().map(|&i| all_layers[i].clone()).collect();
                 let own = parse_rgb_or_any(&dom.style(node, "backgroundColor")).filter(|c| {
-                    c.alpha_or_one() >= 0.999 && (0..layers.len()).all(|i| gradient_layer_covers_box(dom, node, &layers, i))
+                    c.alpha_or_one() >= 0.999 && kept.iter().all(|&i| gradient_layer_covers_box(dom, node, &all_layers, i))
                 });
                 // Set when a translucent stop lands on more than one color: which
                 // composite is painted then depends on where each of them sits.
@@ -3830,7 +3836,7 @@ pub fn css_plan(dom: &dyn Dom, node: ElId, text_color: Option<&Rgba>) -> CssPlan
                         // A stack too deep to enumerate is left unread, not cut short.
                         (over.len() <= 4096).then_some(over)
                     }),
-                    None => Some(parse_gradient_colors(Some(&bg_image))),
+                    None => Some(parse_gradient_colors(Some(&painting_image))),
                 };
                 let Some(colors) = colors else {
                     return CssPlan::Sample {
@@ -6348,6 +6354,25 @@ mod tests {
         // A 1px rule repeated down the box is stripes: a surface.
         let sample = plan(&mut d, "rgba(0, 0, 0, 0)", "100% 1px", "repeat");
         assert_eq!(sample["method"], "analytic-gradient", "{sample}");
+        // A parked underline over a full gradient is left out on its own: the
+        // gradient beneath decides, not the underline's ink stop.
+        d.set_styles(
+            span,
+            &[
+                ("backgroundImage", "linear-gradient(rgb(109, 118, 124), rgb(109, 118, 124)), linear-gradient(rgb(255, 255, 255), rgb(250, 250, 250))"),
+                ("backgroundColor", "rgba(0, 0, 0, 0)"),
+                ("backgroundSize", "0px 1px, 100% 100%"),
+                ("backgroundRepeat", "no-repeat, no-repeat"),
+                ("backgroundPosition", "0% 100%, 0% 0%"),
+            ],
+        );
+        match css_plan(&d, span, Some(&ink)) {
+            CssPlan::Sample { sample } => {
+                assert_eq!(sample["method"], "analytic-gradient", "{sample}");
+                assert_ne!(sample["color"]["r"], 109.0, "{sample}");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     /// freesubtitlemaker.lovable.app: a gradient word inside a white h1.

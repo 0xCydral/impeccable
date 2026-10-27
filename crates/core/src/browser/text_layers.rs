@@ -305,7 +305,11 @@ pub(crate) fn gradient_layers_are_dot_texture(dom: &dyn Dom, node: ElId, image: 
             let Some((radius, alpha)) = radial_dot(js::trim(&lower)) else {
                 return false;
             };
+            // The default shape is an ellipse in the cell's own proportions:
+            // a circle only in a square cell.
+            let circular = lower.contains("circle") || (w - h).abs() < 0.5;
             repeats
+                && circular
                 && w > 0.0
                 && h > 0.0
                 && w <= TEXTURE_MAX_CELL_PX
@@ -324,9 +328,20 @@ const DOT_TEXTURE_MAX_INK: f64 = 0.15;
 /// every position in pixels. The dot's radius (the first transparent stop's
 /// position, or the last coloured one's where that is larger) and its
 /// strongest alpha. `None` for any other shape: a ring, a hole, a stop
-/// placed in percent or not at all.
+/// placed in percent or not at all, and an ellipse written as one (the
+/// default shape is one too, which the caller allows only in a square
+/// cell).
 fn radial_dot(layer: &str) -> Option<(f64, f64)> {
     let inner = layer.strip_prefix("radial-gradient(")?.strip_suffix(')')?;
+    // Only a circle: an ellipse's area is not the circle its stops give
+    // (`ellipse 4px 32px` paints far more of a tall cell).
+    let shape = split_top_level_commas(inner).into_iter().next().unwrap_or_default();
+    let shape = js::trim(&shape).to_string();
+    if crate::color::parse_any_color(Some(shape.split_ascii_whitespace().next().unwrap_or(""))).is_none()
+        && !shape.starts_with("circle")
+    {
+        return None;
+    }
     let mut coloured: Vec<(f64, Option<f64>)> = Vec::new();
     let mut clear: Vec<Option<f64>> = Vec::new();
     for arg in split_top_level_commas(inner) {
