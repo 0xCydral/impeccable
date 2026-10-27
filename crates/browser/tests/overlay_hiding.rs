@@ -535,3 +535,22 @@ fn an_unnamed_fixed_hero_with_a_long_animation_is_not_waited_for() {
     assert!(report.hidden.is_empty(), "{report:?}");
     assert!(report.waited_ms < 1000, "{}", report.waited_ms);
 }
+
+/// The unnamed intro over a sparse page (under 200 characters outside it,
+/// as on articulation-hub.vercel.app's inner pages): while it animates the
+/// wait drops only that minimum, so it is still waited for, and with too
+/// little page to front it is never hidden.
+#[test]
+fn an_unnamed_intro_over_a_sparse_page_is_still_waited_for() {
+    let Some(engine) = engine() else { return };
+    let port = serve();
+    let url = format!("http://127.0.0.1:{port}/intro-unnamed-sparse.html");
+    let mut browser = engine.launch().expect("launch");
+    let (_, evidence) =
+        detect_url_evidence(&mut browser, &url, &ScanOptions::default(), "load", 100, &EvidenceRequest::default())
+            .expect("scan");
+    browser.close();
+    let report = evidence.overlays.as_ref().expect("overlay report");
+    assert!(report.hidden.is_empty(), "{report:?}");
+    assert!(report.waited_ms > 0 && report.waited_ms < impeccable_browser::overlays::INTRO_WAIT_MS, "{}", report.waited_ms);
+}
