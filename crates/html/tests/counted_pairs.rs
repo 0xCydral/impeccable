@@ -30,6 +30,17 @@ fn a_colour_pair_reports_once_and_counts_the_rest() {
             "2.8:1 (need 4.5:1) — text #e15c99 on #f9e5ef (and 1 more)",
             "2.1:1 (need 4.5:1) — text #b4b4b4 on #ffffff (and 1 more)",
             "1.8:1 (need 4.5:1) — text #c2c2c2 on #ffffff",
+            "2.1:1 (need 4.5:1) — text #b5b5b5 on #ffffff (and 2 more)",
+            // The avatar initial (advisory) and the tags stay apart.
+            "1.8:1 (need 4.5:1) — text #ffffff on #93c5fd",
+            "1.8:1 (need 4.5:1) — text #ffffff on #93c5fd (and 1 more)",
+            // The file scan reads no vendor or pixel hand-over, so those
+            // copies share their pair here.
+            "2.4:1 (need 4.5:1) — text #a6a6a6 on #ffffff (and 1 more)",
+            "2.1:1 (need 4.5:1) — text #b2b2b2 on #ffffff (and 2 more)",
+            // Links over a dark photo are not counted.
+            "2.2:1 (need 4.5:1) — text #c9a3c8 on #ffffff",
+            "1.4:1 (need 4.5:1) — text #bbbbbb on #dddddd (gradient on div.grad-card) (and 2 more)",
         ]
     );
 }

@@ -604,9 +604,10 @@ impl SafeTagTextSeen {
     /// walk cannot read under another — and registering the pair before
     /// those verdicts would let a single waived element silence every other
     /// element on the page wearing the same colour. `keep` is called at most
-    /// once per hit, and only for a hit whose pair the page has not reported
-    /// yet: a duplicate the dedupe drops anyway costs no engine work, so an
-    /// engine may put real work behind the callback.
+    /// once per hit. A duplicate of a pair the page already reported is
+    /// asked too, when the caller names the claimant, so the copy is counted
+    /// on the reporting finding (` (and N more)`) only where it would have
+    /// reported itself; it is dropped either way.
     pub fn keep_first(&mut self, hits: &mut Vec<RuleHit>, keep: &mut dyn FnMut(&RuleHit) -> bool) {
         self.keep_first_keyed(hits, &|h: &RuleHit| vec![h.snippet.clone()], keep);
     }
@@ -645,15 +646,21 @@ impl SafeTagTextSeen {
         hits.retain(|h| {
             let keys: Vec<(String, String)> =
                 keys_of(h).into_iter().map(|k| (h.id.clone(), k)).collect();
+            // A copy of a claimed pair is dropped, and counted for the
+            // claimant only where the engine would have let it report.
             if let Some(k) = keys.iter().find(|k| self.reported.contains(k)) {
-                self.record_copy(k, claim);
+                if claim.is_some() && keep(h) {
+                    self.record_copy(k, claim);
+                }
                 return false;
             }
             let held = keys
                 .iter()
                 .find(|k| self.provisional.iter().any(|(p, _, _)| p == *k));
             if let (Some(k), false) = (held, on_screen) {
-                self.record_copy(k, claim);
+                if claim.is_some() && keep(h) {
+                    self.record_copy(k, claim);
+                }
                 return false;
             }
             let held = held.is_some();

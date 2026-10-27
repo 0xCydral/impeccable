@@ -90,12 +90,29 @@ fn a_colour_pair_reports_once_and_counts_the_rest() {
             ("#flag-name-first", "1.9:1 (need 4.5:1) — text #bbbbbb on #ffffff (and 2 more)"),
             // Three links, the SAFE_TAGS path.
             ("#flag-share-first", "2.3:1 (need 4.5:1) — text #ababab on #ffffff (and 2 more)"),
-            // A price span and a name div: one pair across both paths.
-            ("#flag-shop-price", "2.8:1 (need 4.5:1) — text #e15c99 on #f9e5ef (and 1 more)"),
+            // A price span and a name div: one pair across both paths. The
+            // price holds no word, so the name reports.
+            ("#flag-shop-name", "2.8:1 (need 4.5:1) — text #e15c99 on #f9e5ef (and 1 more)"),
             // The ignored first note waives itself only.
             ("#flag-note-second", "2.1:1 (need 4.5:1) — text #b4b4b4 on #ffffff (and 1 more)"),
             // A pair worn once carries no count.
             ("#flag-lone-caption", "1.8:1 (need 4.5:1) — text #c2c2c2 on #ffffff"),
+            // The first worded link reports, not the glyph before it.
+            ("#flag-mark-word", "2.1:1 (need 4.5:1) — text #b5b5b5 on #ffffff (and 2 more)"),
+            // An advisory initial never speaks for the failing tags.
+            ("#adv-avatar-initial", "1.8:1 (need 4.5:1) — text #ffffff on #93c5fd"),
+            ("#flag-tag-first", "1.8:1 (need 4.5:1) — text #ffffff on #93c5fd (and 1 more)"),
+            // A vendor's copy never speaks for the page's.
+            ("#flag-vend-page", "2.4:1 (need 4.5:1) — text #a6a6a6 on #ffffff"),
+            ("#flag-vend-feed", "2.4:1 (need 4.5:1) — text #a6a6a6 on #ffffff (third-party: Taboola)"),
+            // The outlined copy is handed to the pixels and is not counted
+            // by the two plain ones.
+            ("#flag-hand-first", "2.1:1 (need 4.5:1) — text #b2b2b2 on #ffffff (and 1 more)"),
+            // Links that read well over a dark photo are not counted.
+            ("#flag-lilac-white", "2.2:1 (need 4.5:1) — text #c9a3c8 on #ffffff"),
+            // Copies on a gradient: one finding, and the visual pass neither
+            // reports the other two again nor reads them.
+            ("#flag-grad-first", "1.4:1 (need 4.5:1) — text #bbbbbb on #dfdfdf (gradient on div.grad-card) (and 2 more)"),
         ],
         "{found:#?}"
     );
@@ -118,4 +135,7 @@ fn an_outer_panel_reports_once_and_counts_its_cards() {
     assert!(on("#flag-tiles-third").is_empty(), "{found:#?}");
     // A panel with one inner card is unchanged.
     assert_eq!(on("#flag-outlined-inner"), ["Card inside card"], "{found:#?}");
+    // A mockup's inner card (advisory) never speaks for a plain one.
+    assert_eq!(on("#flag-mixed-plain"), ["Card inside card"], "{found:#?}");
+    assert_eq!(on("#adv-mixed-picture"), ["Card inside card"], "{found:#?}");
 }

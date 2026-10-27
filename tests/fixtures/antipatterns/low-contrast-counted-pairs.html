@@ -21,7 +21,18 @@
   - three notes on one pair, the first under an inline ignore of
     low-contrast: the ignore waives that note only, so the second reports
     and counts the third, `(and 1 more)`;
-  - a lone caption on a pair nobody else wears: no count.
+  - a lone caption on a pair nobody else wears: no count;
+  - a glyph link (`𝕏`) and two worded links on one pair: the first worded
+    link reports, so the crop shows a word;
+  - three notes on a gradient card: one finding, and the visual pass
+    neither reports the other two again nor reads them.
+
+  Should stay separate, two findings each: an avatar initial (advisory) and
+  two tags (failing) on one pair; a vendor feed's copy and the page's copy;
+  an outlined copy the element pass hands to the pixels and two plain
+  copies (URL engine; the file scan hands nothing over). Should not count:
+  two links over a dark photo wearing the white-page link's colours, which
+  read well where they sit.
 
   Should pass: the same layout set in readable colours.
 
@@ -42,6 +53,18 @@
   .item-name { width: 400px; height: 24px; color: #e15c99; }
   .note { color: #b4b4b4; }
   .caption { color: #c2c2c2; }
+  .mark { display: inline-block; width: 150px; height: 24px; margin: 0 16px 8px 0; color: #b5b5b5; }
+  .av { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; background: #93c5fd; color: #ffffff; font-size: 12px; }
+  .tag { display: block; width: 300px; height: 24px; margin: 8px 0; padding: 4px; background: #93c5fd; color: #ffffff; font-size: 14px; }
+  .vend { color: #a6a6a6; }
+  .hand { color: #b2b2b2; }
+  .outlined { -webkit-text-stroke: 1px #000000; }
+  .photo-row { position: relative; width: 300px; height: 80px; margin: 8px 0; }
+  .photo-row img { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .photo-row a { position: relative; display: block; padding: 28px 10px; }
+  .lilac { color: #c9a3c8; }
+  .grad-card { width: 520px; height: 120px; padding: 12px; background: linear-gradient(#dddddd, #eeeeee); }
+  .grad-card p { margin: 0 0 8px; height: 20px; color: #bbbbbb; font-size: 14px; }
   .ok-name { color: #333333; }
   .ok-share { display: inline-block; width: 120px; height: 24px; margin: 0 16px 8px 0; color: #1d4ed8; }
 </style>
@@ -69,6 +92,33 @@
 
     <h3>A lone caption</h3>
     <div class="row caption" id="flag-lone-caption">A caption nobody else wears</div>
+
+    <h3>A word reports, not a glyph</h3>
+    <p class="row"><a class="mark" href="#m1" id="pass-mark-glyph">&#x1D54F;</a><a class="mark" href="#m2" id="flag-mark-word">Share on the web</a><a class="mark" href="#m3" id="pass-mark-mail">Share by mail</a></p>
+
+    <h3>An avatar initial and a tag on one pair</h3>
+    <span class="av" id="adv-avatar-initial">AB</span>
+    <div class="tag" id="flag-tag-first">Shipping update for your order</div>
+    <div class="tag" id="flag-tag-second">Second notice in the same colours</div>
+
+    <h3>A vendor feed beside the page</h3>
+    <div class="row vend" id="flag-vend-page">Page copy in the shared grey</div>
+    <div id="taboola-below-article"><div class="row vend" id="flag-vend-feed">Sponsored copy in the shared grey</div></div>
+
+    <h3>An outlined copy handed to the pixels</h3>
+    <div class="row hand" id="flag-hand-first">Plain grey note, first</div>
+    <div class="row hand" id="flag-hand-second">Plain grey note, second</div>
+    <div class="row hand outlined" id="flag-hand-outlined">Outlined grey note</div>
+
+    <h3>Copies over a dark photo</h3>
+    <p class="row"><a class="lilac" href="#l1" id="flag-lilac-white">Lilac link on the white page</a></p>
+    <div class="photo-row"><img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='80'%3E%3Crect width='300' height='80' fill='%23101010'/%3E%3C/svg%3E" alt="" width="300" height="80"><a class="lilac" href="#l2" id="pass-lilac-photo-one">Lilac link over a dark photo</a></div>
+    <div class="photo-row"><img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='80'%3E%3Crect width='300' height='80' fill='%23101010'/%3E%3C/svg%3E" alt="" width="300" height="80"><a class="lilac" href="#l3" id="pass-lilac-photo-two">Another over a dark photo</a></div>
+
+    <h3>Copies on a gradient card</h3>
+    <div class="grad-card"><p id="flag-grad-first">Alpha note on the gradient</p></div>
+    <div class="grad-card"><p id="flag-grad-second">Bravo note on the gradient</p></div>
+    <div class="grad-card"><p id="flag-grad-third">Charlie note on the gradient</p></div>
   </section>
 
   <section aria-label="Should pass">
