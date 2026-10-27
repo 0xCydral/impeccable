@@ -655,7 +655,8 @@ pub fn check_em_dash_overuse_dom(dom: &dyn Dom) -> Vec<RuleHit> {
         Some(t) => without_choice_lines(dom, &without_lone_dash_cells(&t)),
         None => dom.text_content(body),
     };
-    let rendered = collapse_ws(&text);
+    // Lowercased: `text-transform` changes the case `innerText` reports.
+    let rendered = collapse_ws(&text).to_lowercase();
     hits(check_em_dash_overuse_less(Some(&text), list_separator_dashes(dom, &rendered)))
 }
 
@@ -744,7 +745,10 @@ fn list_separator_dashes(dom: &dyn Dom, rendered: &str) -> usize {
         // item has to be painted, and the term with its dash has to be in
         // the rendered text the count was taken from.
         if super::painted::unpainted_at_capture(dom, li, super::painted::OwnOpacity::Counts).is_some()
-            || !(rendered.contains(&format!("{term} —")) || rendered.contains(&format!("{term}—")))
+            || !{
+                let term = term.to_lowercase();
+                rendered.contains(&format!("{term} —")) || rendered.contains(&format!("{term}—"))
+            }
         {
             continue;
         }
@@ -1624,6 +1628,10 @@ mod tests {
         }
         d.el_mut(body).inner_text = Some("a — b — c — d — e — f — g — h — i".to_string());
         assert_eq!(check_em_dash_overuse_dom(&d).len(), 1, "eight prose dashes stand");
+        // A label set in capitals by `text-transform` is in the rendered
+        // text all the same.
+        d.el_mut(body).inner_text = Some("WEATHER — LIVE IN THE MENU PANEL.\nFLIGHTS — LIVE IN THE MENU PANEL.\nHEADLINES — LIVE IN THE MENU PANEL.\na — b — c — d — e — f — g — h".to_string());
+        assert!(check_em_dash_overuse_dom(&d).is_empty(), "three uppercase separators come off the ten");
         assert_eq!(page("p", &prose, false), 1, "eight prose sentences");
     }
 
