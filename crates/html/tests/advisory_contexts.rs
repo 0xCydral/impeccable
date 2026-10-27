@@ -242,8 +242,14 @@ fn nested_cards_in_a_mockup_are_advisory() {
     // one under a mockup class keep failing.
     // r8-t1 adds a panel with an illustrative footer note (advisory) and
     // one whose footer is a sentence with the word "example" in it (fails).
+    // One panel, one finding (r14-t5): the three paseo.sh cards report once,
+    // counting two more.
     assert_eq!(count(&f, "nested-cards", true), 6, "{f:#?}");
-    assert_eq!(count(&f, "nested-cards", false), 7, "{f:#?}");
+    assert_eq!(count(&f, "nested-cards", false), 5, "{f:#?}");
+    assert!(
+        f.iter().any(|x| x.antipattern == "nested-cards" && x.snippet == "Card inside card (div) (and 2 more)"),
+        "{f:#?}"
+    );
 }
 
 #[test]

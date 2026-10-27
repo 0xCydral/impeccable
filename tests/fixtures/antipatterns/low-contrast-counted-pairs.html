@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Low contrast: one report per colour pair, counted</title>
+<!--
+  A page reports each failing colour pair once, on every path, and the one
+  report says how many more elements wear the pair (taste call r14-t2).
+  jaksa.me set 99 idea cards' share buttons in #bbbbbb and reported once;
+  mariasmm.com.br's product names (`div`s) reported 57 times per capture
+  while the price `span` beside each reported once. Now both report once,
+  with the count: `... (and N more)`.
+
+  Should flag, one finding per case:
+  - three product names in `div`s on one pair (the full pass): the first
+    reports, `(and 2 more)`;
+  - three share links on one pair (the SAFE_TAGS path): the first reports,
+    `(and 2 more)`;
+  - a price `span` and a name `div` on one pair (the two paths share it):
+    the first in document order reports, `(and 1 more)`;
+  - three notes on one pair, the first under an inline ignore of
+    low-contrast: the ignore waives that note only, so the second reports
+    and counts the third, `(and 1 more)`;
+  - a lone caption on a pair nobody else wears: no count.
+
+  Should pass: the same layout set in readable colours.
+
+  Each case wears its own pair, so the cases never count one another.
+  crates/browser/tests/counted_pairs.rs and
+  crates/html/tests/counted_pairs.rs pin the snippets.
+-->
+<style>
+  body { margin: 0; padding: 24px; background: #ffffff; color: #111111; font: 16px/24px Arial, sans-serif; }
+  .cols { display: grid; grid-template-columns: 560px 560px; gap: 40px; }
+  h2 { margin: 0 0 16px; font: 600 18px/24px Arial, sans-serif; color: #111111; }
+  h3 { margin: 24px 0 8px; font: 600 16px/20px Arial, sans-serif; color: #111111; }
+  .row { display: block; width: 520px; height: 24px; margin: 0 0 8px; font-size: 16px; }
+  .name { color: #bbbbbb; }
+  .share { display: inline-block; width: 120px; height: 24px; margin: 0 16px 8px 0; color: #ababab; }
+  .shop { width: 520px; height: 56px; padding: 8px; background: #f9e5ef; }
+  .price { display: inline-block; width: 120px; height: 24px; color: #e15c99; }
+  .item-name { width: 400px; height: 24px; color: #e15c99; }
+  .note { color: #b4b4b4; }
+  .caption { color: #c2c2c2; }
+  .ok-name { color: #333333; }
+  .ok-share { display: inline-block; width: 120px; height: 24px; margin: 0 16px 8px 0; color: #1d4ed8; }
+</style>
+</head>
+<body>
+<div class="cols">
+  <section aria-label="Should flag">
+    <h2>Should flag</h2>
+
+    <h3>Product names in divs</h3>
+    <div class="row name" id="flag-name-first">Linen shirt in sand</div>
+    <div class="row name" id="flag-name-second">Wool coat in charcoal</div>
+    <div class="row name" id="flag-name-third">Cotton tee in white</div>
+
+    <h3>Share links</h3>
+    <p class="row"><a class="share" href="#a" id="flag-share-first">Share idea</a><a class="share" href="#b" id="flag-share-second">Share plan</a><a class="share" href="#c" id="flag-share-third">Share note</a></p>
+
+    <h3>A price and a name on one pair</h3>
+    <div class="shop"><span class="price" id="flag-shop-price">R$ 89,90</span><div class="item-name" id="flag-shop-name">Vestido midi floral</div></div>
+
+    <h3>An ignored first note</h3>
+    <div class="row note" id="pass-note-ignored" data-impeccable-ignore="low-contrast">Ignored note, first of three</div>
+    <div class="row note" id="flag-note-second">Faint note, second of three</div>
+    <div class="row note" id="flag-note-third">Faint note, third of three</div>
+
+    <h3>A lone caption</h3>
+    <div class="row caption" id="flag-lone-caption">A caption nobody else wears</div>
+  </section>
+
+  <section aria-label="Should pass">
+    <h2>Should pass</h2>
+
+    <h3>Readable names</h3>
+    <div class="row ok-name" id="pass-name-first">Linen shirt in sand</div>
+    <div class="row ok-name" id="pass-name-second">Wool coat in charcoal</div>
+
+    <h3>Readable links</h3>
+    <p class="row"><a class="ok-share" href="#d" id="pass-share-first">Share idea</a><a class="ok-share" href="#e" id="pass-share-second">Share plan</a></p>
+  </section>
+</div>
+</body>
+</html>

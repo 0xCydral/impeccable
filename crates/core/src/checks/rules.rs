@@ -575,6 +575,14 @@ pub struct SafeTagTextSeen {
     /// Provisional hits a later on-screen element wearing the same pair
     /// replaced: `(handle, snippet)`.
     superseded: Vec<(u64, String)>,
+    /// The element that holds each claimed key, where the caller named one.
+    owners: Vec<((String, String), u64)>,
+    /// Copies of a claimed pair this dedupe dropped, as `(owner, copy)`:
+    /// the element whose report speaks for the copy, and the copy. A
+    /// provisional owner a later element replaced hands its copies, and
+    /// itself, to the replacement. Only hits from a named claimant are
+    /// recorded.
+    copies: Vec<(u64, u64)>,
 }
 
 /// Who claims a colour pair, for [`SafeTagTextSeen::keep_first_keyed_claiming`]:
@@ -637,15 +645,18 @@ impl SafeTagTextSeen {
         hits.retain(|h| {
             let keys: Vec<(String, String)> =
                 keys_of(h).into_iter().map(|k| (h.id.clone(), k)).collect();
-            if keys.iter().any(|k| self.reported.contains(k)) {
+            if let Some(k) = keys.iter().find(|k| self.reported.contains(k)) {
+                self.record_copy(k, claim);
                 return false;
             }
             let held = keys
                 .iter()
-                .any(|k| self.provisional.iter().any(|(p, _, _)| p == k));
-            if held && !on_screen {
+                .find(|k| self.provisional.iter().any(|(p, _, _)| p == *k));
+            if let (Some(k), false) = (held, on_screen) {
+                self.record_copy(k, claim);
                 return false;
             }
+            let held = held.is_some();
             if !keep(h) {
                 return false;
             }
@@ -664,7 +675,21 @@ impl SafeTagTextSeen {
                 for r in replaced {
                     // Every key the replaced hit claimed goes with it.
                     self.provisional.retain(|(_, owner, snippet)| !(r.0 == *owner && r.1 == *snippet));
+                    // The withdrawn copy and the copies it spoke for are now
+                    // the replacement's to count.
+                    if let Some(c) = claim {
+                        for copy in self.copies.iter_mut().filter(|(o, _)| *o == r.0) {
+                            copy.0 = c.owner;
+                        }
+                        self.copies.push((c.owner, r.0));
+                    }
                     self.superseded.push(r);
+                }
+            }
+            if let Some(c) = claim {
+                for key in &keys {
+                    self.owners.retain(|(k, _)| k != key);
+                    self.owners.push((key.clone(), c.owner));
                 }
             }
             match claim {
@@ -685,6 +710,25 @@ impl SafeTagTextSeen {
         });
     }
 
+    /// Record a hit dropped because `key` is already claimed: the copy is
+    /// counted for the key's owner, where both are named.
+    fn record_copy(&mut self, key: &(String, String), claim: Option<PairClaim>) {
+        let Some(c) = claim else { return };
+        if let Some((_, owner)) = self.owners.iter().find(|(k, _)| k == key) {
+            if *owner != c.owner {
+                self.copies.push((*owner, c.owner));
+            }
+        }
+    }
+
+    /// The copies this dedupe dropped, as `(owner, copy)` (drained). The
+    /// engine decides which copies count: a copy the page does not paint,
+    /// or one an inline ignore waives, is not an element a reader sees
+    /// wearing the pair.
+    pub fn take_copies(&mut self) -> Vec<(u64, u64)> {
+        std::mem::take(&mut self.copies)
+    }
+
     /// Whether the page has already claimed `key` for rule `id`, outright or
     /// provisionally. Asking claims nothing.
     pub fn has_claimed(&self, id: &str, key: &str) -> bool {
@@ -698,6 +742,38 @@ impl SafeTagTextSeen {
         std::mem::take(&mut self.superseded)
     }
 }
+
+// ─── Counted repeats ────────────────────────────────────────────────────────
+
+/// How a finding that speaks for other elements says so: `low-contrast`
+/// reports a page's colour pair once, and `nested-cards` an outer panel
+/// once (taste calls r14-t2 and r14-t5). The suffix goes at the end of the
+/// snippet, only where there are others, so a pair worn once reads as it
+/// always did.
+pub fn with_more_count(snippet: &str, more: usize) -> String {
+    if more == 0 {
+        snippet.to_string()
+    } else {
+        format!("{snippet} (and {more} more)")
+    }
+}
+
+/// A snippet without the suffix [`with_more_count`] gave it, and the count
+/// the suffix carried (0 without one). A vendor tag the engine appends after
+/// it (` (third-party: X)`) is kept.
+pub fn split_more_count(snippet: &str) -> (String, usize) {
+    match MORE_COUNT_RE.captures_iter(snippet).last() {
+        Some(c) => {
+            let m = c.get(0).expect("whole match");
+            let n = c[1].parse::<usize>().unwrap_or(0);
+            (format!("{}{}", &snippet[..m.start()], &snippet[m.end()..]), n)
+        }
+        None => (snippet.to_string(), 0),
+    }
+}
+
+static MORE_COUNT_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r" \(and (\d+) more\)").expect("MORE_COUNT_RE"));
 
 // ─── Contrast severity ──────────────────────────────────────────────────────
 
@@ -1017,6 +1093,8 @@ pub fn check_colors_deduped_shaped(
             _ => None,
         };
         if shaped {
+            // Dropped where a failing copy reported the pair, and not counted
+            // there: an advisory copy never adds to a failing finding's count.
             hits.retain(|h| {
                 !(seen.has_claimed(&h.id, &h.snippet)
                     || surface_key.as_deref().is_some_and(|k| seen.has_claimed(&h.id, k)))
@@ -2882,6 +2960,53 @@ mod tests {
         let hits = check_flat_type_hierarchy_samples(&samples(&larger_first));
         assert_eq!(hits.len(), 1, "{hits:?}");
         assert!(hits[0].snippet.contains("h2 17px"), "{hits:?}");
+    }
+
+    #[test]
+    fn a_count_rides_at_the_end_and_comes_off_whole() {
+        let s = "2.8:1 (need 4.5:1) — text #e15c99 on #f9e5ef";
+        assert_eq!(with_more_count(s, 0), s);
+        assert_eq!(with_more_count(s, 98), format!("{s} (and 98 more)"));
+        assert_eq!(split_more_count(&with_more_count(s, 98)), (s.to_string(), 98));
+        assert_eq!(split_more_count(s), (s.to_string(), 0));
+        // A vendor tag the engine appends later stays.
+        assert_eq!(
+            split_more_count(&format!("{s} (and 3 more) (third-party: Taboola)")),
+            (format!("{s} (third-party: Taboola)"), 3)
+        );
+    }
+
+    #[test]
+    fn the_dedupe_counts_the_copies_it_drops_for_their_owner() {
+        let hit = || RuleHit::new("low-contrast", "2.2:1 (need 4.5:1) — text #c9a3c8 on #ffffff".to_string());
+        let keys = |h: &RuleHit| vec![h.snippet.clone()];
+        let claim = |owner: u64, on_screen: bool| Some(PairClaim { owner, on_screen });
+        let mut seen = SafeTagTextSeen::default();
+        // A copy cut by the edge claims provisionally; a second cut copy is
+        // dropped and counted for it.
+        let mut first = vec![hit()];
+        seen.keep_first_keyed_claiming(&mut first, &keys, claim(1, false), &mut |_| true);
+        let mut cut = vec![hit()];
+        seen.keep_first_keyed_claiming(&mut cut, &keys, claim(2, false), &mut |_| true);
+        assert!(cut.is_empty());
+        // The first copy wholly on screen takes the pair, the cut copy and
+        // the copy it spoke for.
+        let mut whole = vec![hit()];
+        seen.keep_first_keyed_claiming(&mut whole, &keys, claim(3, true), &mut |_| true);
+        assert_eq!(whole.len(), 1);
+        let mut later = vec![hit()];
+        seen.keep_first_keyed_claiming(&mut later, &keys, claim(4, true), &mut |_| true);
+        assert!(later.is_empty());
+        let mut copies = seen.take_copies();
+        copies.sort();
+        assert_eq!(copies, vec![(3, 1), (3, 2), (3, 4)]);
+        // An unnamed claimant records nothing.
+        let mut plain = SafeTagTextSeen::default();
+        for _ in 0..3 {
+            let mut h = vec![hit()];
+            plain.keep_first(&mut h, &mut |_| true);
+        }
+        assert!(plain.take_copies().is_empty());
     }
 
     #[test]

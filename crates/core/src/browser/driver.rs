@@ -2810,7 +2810,8 @@ pub fn collect_browser_findings(dom: &dyn Dom, config: &BrowserConfig) -> Collec
     // Product mockups the page declares are not content (decision 1 of round
     // 13), and boxes labelled as a screenshot report as advisory (r13-t5).
     let mockups = super::hidden_mockup::HiddenMockups::scan(dom);
-    for el in dom.query_all(None, "*").unwrap_or_default() {
+    let all_elements = dom.query_all(None, "*").unwrap_or_default();
+    for &el in &all_elements {
         if !element_is_scanned(dom, el) {
             continue;
         }
@@ -2936,6 +2937,22 @@ pub fn collect_browser_findings(dom: &dyn Dom, config: &BrowserConfig) -> Collec
                 .retain(|f| !(f.type_ == "low-contrast" && f.detail == snippet));
         }
     }
+    // The copies the dedupe dropped, counted below for the element whose
+    // report speaks for them. A copy counts where a reader sees it wearing
+    // the pair: painted at capture, not waived inline, and not inside a
+    // mockup the page declares.
+    let mut pair_copies: Vec<(ElId, ElId)> = Vec::new();
+    for (owner, copy) in color_seen.take_copies() {
+        let (Ok(owner), Ok(copy)) = (ElId::try_from(owner), ElId::try_from(copy)) else { continue };
+        if pair_copies.contains(&(owner, copy))
+            || scoped_ignore_active(dom, copy, "low-contrast")
+            || mockups.declared(copy)
+            || super::painted::unpainted_for(dom, copy, super::painted::PaintGate::Text).is_some()
+        {
+            continue;
+        }
+        pair_copies.push((owner, copy));
+    }
     // With the colour claims settled, a low-contrast finding still on an
     // element speaks for its size findings.
     for g in groups.iter_mut().filter(|g| vanishing_ink_candidates.contains(&g.el)) {
@@ -3046,7 +3063,163 @@ pub fn collect_browser_findings(dom: &dyn Dom, config: &BrowserConfig) -> Collec
         page_level.retain(|f| !browser_value_ignored(f, &disabled_values));
     }
 
+    // Once every waiver has spoken, one report per colour pair and one per
+    // outer panel, each counting the rest (taste calls r14-t2, r14-t5).
+    count_repeats(dom, &mut groups, &pair_copies, &all_elements);
+
     CollectResult { groups, page_level }
+}
+
+/// One `low-contrast` finding per colour pair, and one `nested-cards`
+/// finding per outer panel, each saying how many more elements it speaks
+/// for (taste calls r14-t2 and r14-t5).
+///
+/// A `low-contrast` pair is the finding's text (ratio, bar, ink, ground),
+/// its severity, whether the element pass hands the text to the pixels
+/// ([`super::visual::routed_reason`]), and the widget vendor whose markup
+/// holds it: a verdict the pixels may replace never speaks for one they do
+/// not read, and a vendor's copy never speaks for the page's own. The first
+/// element in document order reports; `pair_copies` adds the copies the
+/// SAFE_TAGS dedupe dropped before they reached a group, to the element
+/// that claimed their pair.
+///
+/// A `nested-cards` panel is the inner card's nearest card-like ancestor,
+/// the box `check_layout` found it in, with the severity: the first inner
+/// card in document order reports.
+///
+/// Runs after every waiver, so an inline ignore or a declared mockup on the
+/// first copy never silences the rest.
+fn count_repeats(
+    dom: &dyn Dom,
+    groups: &mut Vec<FindingGroup>,
+    pair_copies: &[(ElId, ElId)],
+    all_elements: &[ElId],
+) {
+    use std::collections::HashMap;
+    let mut order: Option<HashMap<ElId, usize>> = None;
+    let mut position = |el: ElId| -> usize {
+        let map = order.get_or_insert_with(|| {
+            all_elements.iter().enumerate().map(|(i, e)| (*e, i)).collect()
+        });
+        map.get(&el).copied().unwrap_or(usize::MAX)
+    };
+
+    // (group index, finding index, key) for every finding the pass counts.
+    let mut pair_members: Vec<(usize, usize, (String, Option<String>, bool, Option<&'static str>))> = Vec::new();
+    let mut panel_members: Vec<(usize, usize, (Option<ElId>, Option<String>))> = Vec::new();
+    for (gi, g) in groups.iter().enumerate() {
+        let mut routed: Option<bool> = None;
+        let mut vendor: Option<Option<&'static str>> = None;
+        let mut outer: Option<Option<ElId>> = None;
+        for (fi, f) in g.findings.iter().enumerate() {
+            if f.type_ == "low-contrast" {
+                let routed = *routed.get_or_insert_with(|| super::visual::routed_reason(dom, g.el).is_some());
+                let vendor = *vendor.get_or_insert_with(|| crate::third_party::widget_vendor(dom, g.el));
+                pair_members.push((gi, fi, (f.detail.clone(), f.severity.clone(), routed, vendor)));
+            } else if f.type_ == "nested-cards" {
+                let outer = *outer.get_or_insert_with(|| outer_card(dom, g.el));
+                panel_members.push((gi, fi, (outer, f.severity.clone())));
+            }
+        }
+    }
+
+    // The copies the SAFE_TAGS dedupe dropped, per element that claimed
+    // them; counted once, on that element's first low-contrast finding.
+    let mut copies_of: HashMap<ElId, usize> = HashMap::new();
+    for (owner, _) in pair_copies {
+        *copies_of.entry(*owner).or_default() += 1;
+    }
+    let mut first_pair_finding: HashMap<usize, usize> = HashMap::new();
+    for (gi, fi, _) in &pair_members {
+        first_pair_finding.entry(*gi).or_insert(*fi);
+    }
+
+    let mut drop: std::collections::HashSet<(usize, usize)> = std::collections::HashSet::new();
+    let mut rename: Vec<(usize, usize, usize)> = Vec::new();
+
+    // Low-contrast: group by key, the first in document order reports.
+    let mut by_pair: Vec<Vec<(usize, usize)>> = Vec::new();
+    let mut pair_index: HashMap<&(String, Option<String>, bool, Option<&'static str>), usize> = HashMap::new();
+    for (gi, fi, key) in &pair_members {
+        let i = *pair_index.entry(key).or_insert_with(|| {
+            by_pair.push(Vec::new());
+            by_pair.len() - 1
+        });
+        by_pair[i].push((*gi, *fi));
+    }
+    for mut members in by_pair {
+        if members.len() > 1 {
+            members.sort_by_key(|(gi, fi)| (position(groups[*gi].el), *gi, *fi));
+        }
+        let mut more = members.len() - 1;
+        for (gi, fi) in &members {
+            if first_pair_finding.get(gi) == Some(fi) {
+                more += copies_of.get(&groups[*gi].el).copied().unwrap_or(0);
+            }
+        }
+        let (rep_g, rep_f) = members[0];
+        rename.push((rep_g, rep_f, more));
+        drop.extend(members.into_iter().skip(1));
+    }
+
+    // Nested cards: group by outer panel and severity.
+    // An inner card with no panel found (none should reach here) stands alone.
+    let mut by_panel: Vec<Vec<(usize, usize)>> = Vec::new();
+    let mut panel_index: HashMap<&(Option<ElId>, Option<String>), usize> = HashMap::new();
+    for (gi, fi, key) in &panel_members {
+        if key.0.is_none() {
+            by_panel.push(vec![(*gi, *fi)]);
+            continue;
+        }
+        let i = *panel_index.entry(key).or_insert_with(|| {
+            by_panel.push(Vec::new());
+            by_panel.len() - 1
+        });
+        by_panel[i].push((*gi, *fi));
+    }
+    for mut members in by_panel {
+        if members.len() > 1 {
+            members.sort_by_key(|(gi, fi)| (position(groups[*gi].el), *gi, *fi));
+        }
+        let (rep_g, rep_f) = members[0];
+        rename.push((rep_g, rep_f, members.len() - 1));
+        drop.extend(members.into_iter().skip(1));
+    }
+
+    if rename.iter().all(|(_, _, more)| *more == 0) && drop.is_empty() {
+        return;
+    }
+    for (gi, fi, more) in rename {
+        let f = &mut groups[gi].findings[fi];
+        f.detail = crate::checks::rules::with_more_count(&f.detail, more);
+    }
+    for (gi, g) in groups.iter_mut().enumerate() {
+        let mut fi = 0;
+        g.findings.retain(|_| {
+            let keep = !drop.contains(&(gi, fi));
+            fi += 1;
+            keep
+        });
+    }
+    groups.retain(|g| !g.findings.is_empty());
+}
+
+/// The panel an inner card sits in for `nested-cards`: its nearest
+/// card-like ancestor, as `check_layout` walks to it.
+fn outer_card(dom: &dyn Dom, el: ElId) -> Option<ElId> {
+    let mut parent = dom.parent(el);
+    let mut steps = 0;
+    while let Some(p) = parent {
+        if super::page_checks::is_card_like_dom(dom, p) {
+            return Some(p);
+        }
+        steps += 1;
+        if steps > 10_000 {
+            return None;
+        }
+        parent = dom.parent(p);
+    }
+    None
 }
 
 #[cfg(test)]
