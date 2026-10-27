@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly upstream sync for the owner's Impeccable fork
+
+[Timer]
+OnBootSec=7min
+OnUnitActiveSec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Merge pbakaus/impeccable main into 0xCydral/impeccable main, then deploy it
+After=network-online.target
+
+[Service]
+Type=oneshot
+Environment=CLAUDE_CONFIG_DIR=%h/.claude2
+ExecStart=/bin/bash -c 'd=%h/.local/share/impeccable-sync; git -C "$d" fetch -q origin main && git -C "$d" show origin/main:fork/sync-upstream.sh > %t/impeccable-sync.sh && exec /bin/bash %t/impeccable-sync.sh'
+TimeoutStartSec=90min
