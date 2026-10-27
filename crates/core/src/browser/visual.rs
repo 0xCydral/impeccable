@@ -1552,6 +1552,11 @@ fn layer_in_box(
 /// through: more than [`TRANSLUCENT_FILL_MIN_ALPHA`] strong and under
 /// [`TRANSLUCENT_FILL_MAX_ALPHA`]. A dialog's `bg-black/80` scrim is one.
 fn translucent_fill(dom: &dyn Dom, node: ElId) -> Option<Rgba> {
+    // A mask or a clip can leave the run's ground clear while the box
+    // covers it (#1201 review): its coverage is unknown, so it is no layer.
+    if super::text_layers::masked_or_clipped(dom, node) {
+        return None;
+    }
     parse_rgb_or_any(&dom.style(node, "backgroundColor"))
         .filter(|c| c.alpha_or_one() > TRANSLUCENT_FILL_MIN_ALPHA && c.alpha_or_one() < TRANSLUCENT_FILL_MAX_ALPHA)
 }
@@ -5693,6 +5698,14 @@ mod tests {
         assert_eq!(verdict_over_layer(&d, title), UnreadVerdict::Fails);
         let (d, title) = build(Some("rgba(0, 0, 0, 0.05)"));
         assert_eq!(verdict_over_layer(&d, title), UnreadVerdict::Fails);
+        // A masked or clipped scrim may leave the title's ground clear: no
+        // layer, and the title fails on the page (#1201 review).
+        for (prop, value) in [("maskImage", "linear-gradient(transparent, black)"), ("clipPath", "inset(50% 0px 0px)")] {
+            let (mut d, title) = build(Some("rgba(0, 0, 0, 0.8)"));
+            let scrim = d.parent(title).and_then(|panel| d.previous_element_sibling(panel)).expect("scrim");
+            d.set_style(scrim, prop, value);
+            assert_eq!(verdict_over_layer(&d, title), UnreadVerdict::Fails, "{prop}");
+        }
     }
 
     #[test]
