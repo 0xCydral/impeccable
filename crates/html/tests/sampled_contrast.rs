@@ -545,8 +545,11 @@ fn every_text_descendant_of_a_data_uri_ground_gets_a_verdict() {
     let css = format!(".hero {{ background: url({uri}); }} p {{ color: #fdfdfd; }}");
     let body = format!("<div class=hero>{}</div>", "<p>White copy</p>".repeat(40));
     let found = site.contrast(&css, &body);
-    assert_eq!(found.len(), 40);
-    assert!(found.iter().all(|s| s.contains(" on data:image/png;")));
+    // Every copy is read, and the page reports the pair once, counting the
+    // other thirty-nine (taste call r14-t2).
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains(" on data:image/png;"), "{found:?}");
+    assert!(found[0].ends_with(" (and 39 more)"), "{found:?}");
 }
 
 #[test]

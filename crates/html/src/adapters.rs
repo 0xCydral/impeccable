@@ -1020,6 +1020,17 @@ pub fn check_element_stripe_child(el: &StaticElement<'_>, style: &StyleValues) -
     check_stripe_child(&class_selector(el), width, edge, bg)
 }
 
+/// An opaque handle for `el`, as the colour-pair dedupe names the element
+/// that claims a pair and the copies it speaks for. A claim with this
+/// handle is always on screen: this engine has no layout, so it behaves as
+/// an unnamed claim did.
+pub fn element_handle(el: &StaticElement<'_>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    el.id().hash(&mut h);
+    h.finish()
+}
+
 /// JS: checks.mjs#checkElementColors(el, style, tag, window, customPropMap, hasAnchorInheritRule)
 ///
 /// `images` serves the one branch the JS never had: text whose ground is a
@@ -1229,6 +1240,10 @@ pub fn check_element_colors(
     } else {
         sampled_image_contrast(el, &color_opts, images, Ink::Text)
     };
+    // This element claims the analytic pair, so the page's count of a colour
+    // pair can name the copies its report speaks for; always on screen, as
+    // this engine has no layout.
+    let claim = impeccable_core::checks::rules::PairClaim { owner: element_handle(el), on_screen: true };
     let mut findings = match &sampled {
         Some(_) => check_colors_deduped_shaped(
             &ColorOpts {
@@ -1237,11 +1252,11 @@ pub fn check_element_colors(
                 ..color_opts.clone()
             },
             seen,
-            None,
+            Some(claim),
             &is_decorative,
             &mut keep,
         ),
-        None => check_colors_deduped_shaped(&color_opts, seen, None, &is_decorative, &mut keep),
+        None => check_colors_deduped_shaped(&color_opts, seen, Some(claim), &is_decorative, &mut keep),
     };
     if let Some(Sampled::Fail(hit)) = sampled {
         if keep(&hit) {
