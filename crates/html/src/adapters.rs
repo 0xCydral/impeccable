@@ -567,10 +567,13 @@ pub fn check_element_radial_spotlight(el: &StaticElement<'_>, style: &StyleValue
 // ─── Element adapters ───────────────────────────────────────────────────────
 
 /// The border-box `[width, height]` a static element declares in px, for
-/// the circle test in `check_borders`: `width` and `height`, plus padding
-/// and border on each side unless `box-sizing` is `border-box`. `None` when
-/// the size is unset, or any of those lengths is in a unit other than px
-/// (no layout here to resolve it), which skips the circle test.
+/// the circle test in `check_borders`: `width` and `height` plus the border
+/// on each side. The static cascade does not keep `box-sizing`, so where a
+/// side has padding the border box cannot be known and this is `None`,
+/// which skips the circle test; a border alone moves the size by its width
+/// either way, which the circle test's aspect tolerance absorbs for a thin
+/// ring. `None` too when the size is unset or a length is in another unit
+/// than px (no layout here to resolve it).
 fn declared_px_size(style: &StyleValues) -> Option<[f64; 2]> {
     let px = |prop: &str, unset_is_zero: bool| -> Option<f64> {
         let v = sv(style, prop).trim().to_ascii_lowercase();
@@ -587,13 +590,12 @@ fn declared_px_size(style: &StyleValues) -> Option<[f64; 2]> {
     if !(w > 0.0 && h > 0.0) {
         return None;
     }
-    if sv(style, "boxSizing").trim().eq_ignore_ascii_case("border-box") {
-        return Some([w, h]);
-    }
     let extra = |sides: [&str; 2]| -> Option<f64> {
         let mut sum = 0.0;
         for side in sides {
-            sum += px(&format!("padding{side}"), true)?;
+            if px(&format!("padding{side}"), true)? > 0.0 {
+                return None;
+            }
             // A border with no style draws nothing and takes no room.
             let style_v = sv(style, &format!("border{side}Style")).trim().to_ascii_lowercase();
             if !style_v.is_empty() && style_v != "none" && style_v != "hidden" {
@@ -627,8 +629,11 @@ pub fn check_element_borders(
     let own_bg = parse_any_color(sv_opt(style, "backgroundColor"));
     // An accent on any edge is gated on the corners (left and right by the
     // rounded-card decision, top and bottom by r6-t2-side-tab-bands).
+    // A percentage radius resolves against the border box, the size the
+    // circle test reads, where that size is known.
+    let box_size = declared_px_size(style).filter(|_| !sv(style, "borderRadius").contains('/'));
     let corners = if widths.top > 0.0 || widths.right > 0.0 || widths.bottom > 0.0 || widths.left > 0.0 {
-        resolve_side_accent_corners(el, style, pf0(sv(style, "width")))
+        resolve_side_accent_corners(el, style, box_size.map_or_else(|| pf0(sv(style, "width")), |[w, _]| w))
     } else {
         None
     };
@@ -644,7 +649,7 @@ pub fn check_element_borders(
             corners,
             // An elliptical corner (`50% / 4px`) is read by its horizontal
             // radius only, so it leaves the circle test unread.
-            box_size: declared_px_size(style).filter(|_| !sv(style, "borderRadius").contains('/')),
+            box_size,
         },
     )
 }
