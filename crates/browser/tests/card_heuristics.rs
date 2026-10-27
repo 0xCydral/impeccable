@@ -275,6 +275,7 @@ fn page_level_misreads_stay_silent() {
         ("first-viewport-column-overflow.html", "first-viewport-column-overflow"),
         ("em-dash-prose-with-matrix.html", "em-dash-overuse"),
         ("em-dash-prose-list.html", "em-dash-overuse"),
+        ("em-dash-prose-bullets.html", "em-dash-overuse"),
         ("skipped-heading-sr-only.html", "skipped-heading"),
     ] {
         let Some(findings) = scan(fixture) else {
@@ -339,6 +340,7 @@ fn label_collectors_climb_and_scale() {
             "Display Title In A Band",
             "Plain Label Over A Large Card Title",
             "Pill In Flow Over A Large Card Title",
+            "Absolute Eyebrow In A Card",
         ],
         &[
             "Label Too Large For Its Heading",

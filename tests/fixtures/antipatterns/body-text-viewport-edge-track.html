@@ -6,7 +6,7 @@
 <!--
   The page clips x overflow at the body. A column laid out at a fixed
   2,400px runs its text past the right edge of the window, and a slider's
-  6,000px track, offset 1,016px to the left past the clones a looping slider
+  6,000px track, translated 1,016px to the left past the clones a looping slider
   puts before its first slide, holds a slide whose text also runs past it
   (studying.jp). The page-level
   finding names the column, the box whose width cuts the text, not the
@@ -18,7 +18,7 @@
   .wide-column { width: 2400px; padding: 24px 16px; }
   .wide-column p { margin: 0 0 16px; }
   .slider { width: 300px; margin: 24px 16px; }
-  .track { display: flex; position: relative; left: -1016px; width: 6000px; }
+  .track { display: flex; width: 6000px; transform: translateX(-1016px); }
   .slide { flex: none; width: 700px; padding: 0 16px; }
   .slide p { margin: 0; }
 </style>

@@ -1335,6 +1335,23 @@ fn is_page_frame(dom: &dyn Dom, el: ElId) -> bool {
         && r.left <= 1.0
         && r.width >= vw - 1.0
         && r.height >= doc_height * PAGE_FRAME_MIN_HEIGHT_SHARE
+        && !shows_page_frame_edge(dom, el)
+}
+
+/// Whether a page-sized box shows where it ends, which keeps it a card: a
+/// border, an outline, a shadow layer above [`FAINT_PAINT_ALPHA`]
+/// (swapno.in's `ring-black/5` sits at it), or a fill that differs from the
+/// surface under it (runlatent.ai's cream sheet on a dark page).
+///
+/// [`FAINT_PAINT_ALPHA`]: crate::checks::measures::FAINT_PAINT_ALPHA
+fn shows_page_frame_edge(dom: &dyn Dom, el: ElId) -> bool {
+    let bordered = ["Top", "Right", "Bottom", "Left"].iter().any(|side| border_side_shows(dom, el, side, None));
+    let outlined = !matches!(dom.style(el, "outlineStyle").as_str(), "" | "none")
+        && parse_float(&dom.style(el, "outlineWidth")) > 0.0;
+    let shadowed = crate::checks::measures::parse_shadow_layers(&dom.style(el, "boxShadow"))
+        .iter()
+        .any(|l| !l.inset && l.alpha > crate::checks::measures::FAINT_PAINT_ALPHA);
+    bordered || outlined || shadowed || fill_differs_from_surface(dom, el)
 }
 
 /// `heading-rhythm`: an element that takes part in normal flow and paints a
@@ -1623,12 +1640,31 @@ fn rhythm_spacer_paints(dom: &dyn Dom, el: ElId) -> bool {
     if rhythm_is_contents(dom, el) {
         return false;
     }
-    if rhythm_painted_background(dom, el).is_some() && rhythm_band_differs_from_backdrop(dom, el) {
+    if rhythm_painted_background(dom, el).is_some() && rhythm_spacer_fill_shows(dom, el) {
         return true;
     }
     rhythm_image_band(dom, el)
         || style_px(dom, el, "borderBottomWidth") > 0.0
         || crate::checks::measures::box_shadow_paints(&dom.style(el, "boxShadow"))
+}
+
+/// Whether a spacer's fill shows against what is behind it: the nearest
+/// ancestor that paints a fill or a background image band. A fill differs
+/// as [`rhythm_band_differs_from_backdrop`] reads it; a band painted only
+/// with an image (a `linear-gradient` section, a photo) is not read here,
+/// and the fill counts as shown, as before.
+fn rhythm_spacer_fill_shows(dom: &dyn Dom, el: ElId) -> bool {
+    let mut cur = dom.parent(el);
+    while let Some(c) = cur {
+        if rhythm_painted_background(dom, c).is_some() {
+            break;
+        }
+        if rhythm_image_band(dom, c) {
+            return true;
+        }
+        cur = dom.parent(c);
+    }
+    rhythm_band_differs_from_backdrop(dom, el)
 }
 
 /// A shadow host whose shadow tree lays out content: a box there with words,
@@ -5906,6 +5942,32 @@ mod tests {
         assert_eq!(build((0.0, 30.0, 1280.0, 3940.0)), 0, "the page wrapper");
         assert_eq!(build((90.0, 30.0, 1100.0, 3940.0)), 1, "a centred 1,100px panel");
         assert_eq!(build((0.0, 300.0, 1280.0, 900.0)), 1, "a full-width band over part of the page");
+        // A page-sized box that shows its edge stays a card (review of round
+        // 14): a border, or a fill apart from the page under it.
+        let edged = |styles: &[(&str, &str)]| {
+            let mut d = FakeDom::new();
+            let (html, body) = d.with_page();
+            d.set_rect(html, 0.0, 0.0, 1280.0, 4000.0);
+            d.el_mut(html).client_width = 1280.0;
+            d.set_style(body, "backgroundColor", "rgb(10, 11, 16)");
+            let outer = d.add(Some(body), "div");
+            card_styles(&mut d, outer, "rgb(255, 255, 255)");
+            d.set_styles(outer, &[("borderRadius", "0px"), ("boxShadow", "rgba(0, 0, 0, 0.05) 0px 0px 0px 1px")]);
+            d.set_styles(outer, styles);
+            d.set_rect(outer, 0.0, 30.0, 1280.0, 3940.0);
+            let inner = d.add(Some(outer), "div");
+            card_styles(&mut d, inner, "rgb(255, 255, 255)");
+            d.set_rect(inner, 200.0, 400.0, 340.0, 250.0);
+            d.add_text(inner, "Some card body text");
+            d.add_text(outer, "Outer text longer than ten");
+            check_layout(&d).len()
+        };
+        assert_eq!(edged(&[("backgroundColor", "rgb(245, 245, 242)")]), 1, "a cream sheet on a dark page");
+        assert_eq!(
+            edged(&[("borderTopWidth", "1px"), ("borderTopStyle", "solid"), ("borderTopColor", "rgb(200, 200, 200)")]),
+            1,
+            "a bordered page box"
+        );
     }
 
     /// Decision r6-t3-nested-cards-mockups (advisory): the panels of a drawn
@@ -6212,6 +6274,16 @@ mod tests {
         assert_eq!(build(Some("rgb(15, 22, 50)"), "rgb(15, 22, 50)"), 0, "a navy spacer on a navy band");
         assert_eq!(build(None, "rgb(15, 22, 50)"), 2, "a navy band on white is a block");
         assert_eq!(build(Some("rgb(15, 22, 50)"), "rgb(255, 255, 255)"), 2, "a white band on navy is a block");
+        // A band painted only with an image is not read: the spacer's fill
+        // is a block over it (review of round 14).
+        let mut d = FakeDom::new();
+        let (_h, body) = d.with_page();
+        let page = flow(&mut d, body, "div", (0.0, 0.0, 800.0, 1000.0), "");
+        d.set_styles(page, &[("backgroundImage", "linear-gradient(rgb(15, 22, 50), rgb(15, 22, 50))"), ("background", "rgba(0, 0, 0, 0) linear-gradient(rgb(15, 22, 50), rgb(15, 22, 50)) repeat scroll 0% 0% / auto padding-box border-box")]);
+        let s = flow(&mut d, page, "div", (0.0, 20.0, 800.0, 40.0), "");
+        d.set_style(s, "backgroundColor", "rgb(255, 255, 255)");
+        assert!(rhythm_image_band(&d, page), "the gradient bands the page box");
+        assert!(!rhythm_is_spacer(&d, s), "a white strip across a gradient band");
     }
 
     /// observations-35 row 12 (improved-rotary-phone-two.vercel.app 213861):

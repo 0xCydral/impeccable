@@ -3136,19 +3136,21 @@ fn text_without_code(dom: &dyn Dom, el: ElId) -> String {
 
 /// Whether `skipped-heading`'s outline reads on past `h` as if it were not
 /// there: a heading not painted at capture (taste call r9-t3, 2026-10-26)
-/// because it is not rendered (`display: none` on it or an ancestor,
-/// `visibility: hidden`), sits in a box that clips it out (a collapsed
-/// panel, a parked slide), or has no area. kfu.edu.sa's footer widgets and
-/// americanexpress.com's mega-menu titles wait in closed panels, and
-/// pgportal.gov.in's app promo h2 is hidden; a visitor reads the outline the
-/// page shows. A visually hidden heading (`.sr-only`) is written for the
-/// outline a screen reader reads, and stays in it, and so does one only
-/// faded out (a reveal waiting for the scroll) or turned away: those show.
+/// because it does not render (`display: none` on it or an ancestor,
+/// `visibility: hidden`, a closed `inert` dialog) or has no area.
+/// kfu.edu.sa's footer widgets and americanexpress.com's mega-menu titles
+/// wait in closed panels, and pgportal.gov.in's app promo h2 is hidden; a
+/// visitor reads the outline the page shows. A heading a clip cuts out
+/// stays: a carousel cycles its parked slides into view (sysco.com shows
+/// the skip on three of its four hero slides) and a scroller's items are
+/// reached by scrolling. So does a visually hidden heading (`.sr-only`),
+/// written for the outline a screen reader reads, and one only faded out (a
+/// reveal waiting for the scroll) or turned away: those show.
 fn outline_skips_unpainted(dom: &dyn Dom, h: ElId) -> bool {
     use super::painted::Unpainted;
     matches!(
         super::painted::unpainted_at_capture(dom, h, super::painted::OwnOpacity::Counts),
-        Some(Unpainted::NotRendered | Unpainted::ClippedOut | Unpainted::NoArea)
+        Some(Unpainted::NotRendered | Unpainted::NoArea)
     )
 }
 
@@ -3347,13 +3349,14 @@ fn widest_past_edge(dom: &dyn Dom, side: Side, vw: f64, limit: f64) -> Option<(E
 /// paragraphs in `past` and their ancestors below the root. Whatever else
 /// reaches past the edge there is held by a clip the walk above may not see
 /// (a clip path, paint containment, a shadow root), so only the boxes around
-/// the text count. A box that also runs past the other side of the viewport
-/// and lays its children out in a row is a track moved along under it
-/// (studying.jp's 5,700px `slick-track`, 1,184px to the left of the window
-/// to show its current slide), not the layout that cuts the text, and is
-/// passed over. A centred layout box too wide for the window on both sides
-/// (cloudlinks.cn's 1,614px footer) stacks its content and is still named.
-/// Ties go to the outer box.
+/// the text count. A box that also runs past the other side of the viewport,
+/// lays its children out in a row and is moved along by a translate (its
+/// own or its parent's) is a track (studying.jp's 5,700px `slick-track`,
+/// translated 1,200px to the left to show its current slide), not the
+/// layout that cuts the text, and is passed over. A centred layout box too
+/// wide for the window on both sides is still named, whether it stacks its
+/// content (cloudlinks.cn's 1,614px footer) or sets it in a row that
+/// nothing moves. Ties go to the outer box.
 fn widest_holding_text(dom: &dyn Dom, past: &[(ElId, Side, f64)], side: Side, vw: f64) -> Option<(ElId, f64)> {
     let root = dom.document_element();
     let mut best: Option<(ElId, f64)> = None;
@@ -3371,7 +3374,8 @@ fn widest_holding_text(dom: &dyn Dom, past: &[(ElId, Side, f64)], side: Side, vw
             if r.all_finite() && (r.width > 0.0 || r.height > 0.0) {
                 let d = side.past(r.left, r.right, vw);
                 let track = side.opposite().past(r.left, r.right, vw) >= 1.0
-                    && super::text_geometry::holds_row(dom, c);
+                    && super::text_geometry::holds_row(dom, c)
+                    && (translates_x(dom, c) || dom.parent(c).is_some_and(|p| translates_x(dom, p)));
                 if d >= 1.0 && !track && chain.map_or(true, |(_, b)| d + 0.5 >= b) {
                     chain = Some((c, d));
                 }
@@ -3385,6 +3389,29 @@ fn widest_holding_text(dom: &dyn Dom, past: &[(ElId, Side, f64)], side: Side, vw
         }
     }
     best
+}
+
+/// Whether `el` is moved on the x axis by a `transform` or `translate`: the
+/// translation of a `matrix()` or `matrix3d()`, or the `translate`
+/// property's first length, at a pixel or more.
+fn translates_x(dom: &dyn Dom, el: ElId) -> bool {
+    let transform = dom.style(el, "transform");
+    let numbers = |args: &str| -> Vec<f64> { args.split(',').map(|v| parse_float(v.trim())).collect() };
+    if let Some(args) = transform.strip_prefix("matrix3d(").and_then(|a| a.strip_suffix(')')) {
+        if numbers(args).get(12).is_some_and(|tx| tx.abs() >= 1.0) {
+            return true;
+        }
+    } else if let Some(args) = transform.strip_prefix("matrix(").and_then(|a| a.strip_suffix(')')) {
+        if numbers(args).get(4).is_some_and(|tx| tx.abs() >= 1.0) {
+            return true;
+        }
+    }
+    let translate = dom.style(el, "translate");
+    translate
+        .split_whitespace()
+        .next()
+        .map(parse_float)
+        .is_some_and(|tx| tx.is_finite() && tx.abs() >= 1.0)
 }
 
 /// Whether a box that hides or clips horizontal overflow cuts what `el`'s
@@ -6516,6 +6543,7 @@ mod tests {
         let track = d.add(Some(slider), "div");
         d.set_attr(track, "class", "slick-track");
         d.set_rect(track, -1184.0, 600.0, 5700.0, 300.0);
+        d.set_style(track, "transform", "matrix(1, 0, 0, 1, -1200, 0)");
         let slide = text_el(&mut d, track, "p", "A visitor's words on the next slide of the carousel.", "16px");
         d.set_style(slide, "lineHeight", "24px");
         d.set_rect(slide, 340.0, 620.0, 252.0, 48.0);
@@ -6531,6 +6559,11 @@ mod tests {
             vec!["text runs past the right edge of the 390px viewport and is cut off: div.reason__container reaches 606px past it, with text in 2 blocks"
                 .to_string()]
         );
+        // A row nothing moves (a centred flex row too wide for the window)
+        // is layout, and it is the name.
+        d.set_style(track, "transform", "none");
+        assert!(detail(&d)[0].contains("div.slick-track reaches 4126px"), "{:?}", detail(&d));
+        d.set_style(track, "transform", "matrix(1, 0, 0, 1, -1200, 0)");
         // A box as wide that stacks what it holds (cloudlinks.cn's centred
         // 1,614px footer) is layout, and it is still the name.
         d.set_rect(slide2, 340.0, 680.0, 252.0, 48.0);
@@ -7526,6 +7559,32 @@ mod tests {
             "an sr-only h2 stays in the outline"
         );
         assert!(page(&|d, h2| { d.set_style(h2, "opacity", "0"); }).is_empty(), "a reveal waiting at opacity 0");
+        // A parked slide's heading, which a clip cuts out at capture, stays
+        // in the outline: the carousel brings it into view.
+        let mut d = FakeDom::new();
+        let (html, body) = d.with_page();
+        d.set_rect(html, 0.0, 0.0, 1280.0, 2000.0);
+        d.set_rect(body, 0.0, 0.0, 1280.0, 2000.0);
+        let add = |d: &mut FakeDom, parent: ElId, tag: &str, text: &str, rect: (f64, f64, f64, f64)| {
+            let h = d.add(Some(parent), tag);
+            d.set_styles(h, &[("display", "block"), ("visibility", "visible"), ("opacity", "1")]);
+            d.set_rect(h, rect.0, rect.1, rect.2, rect.3);
+            d.add_text(h, text);
+            h
+        };
+        add(&mut d, body, "h1", "Title", (0.0, 0.0, 600.0, 30.0));
+        let slider = d.add(Some(body), "div");
+        d.set_styles(slider, &[("display", "block"), ("overflowX", "hidden"), ("overflowY", "hidden"), ("overflow", "hidden")]);
+        d.set_rect(slider, 0.0, 100.0, 600.0, 40.0);
+        d.el_mut(slider).client_width = 600.0;
+        d.el_mut(slider).client_height = 40.0;
+        add(&mut d, slider, "h2", "Parked slide", (700.0, 100.0, 600.0, 30.0));
+        add(&mut d, body, "h3", "Subsection", (0.0, 200.0, 600.0, 30.0));
+        assert_eq!(
+            super::super::painted::unpainted_at_capture(&d, d.children(slider)[0], super::super::painted::OwnOpacity::Counts),
+            Some(super::super::painted::Unpainted::ClippedOut)
+        );
+        assert!(check_page_quality_dom(&d).is_empty(), "a parked slide's heading stays in the outline");
     }
 
     /// r5-p29: a skip into the footer is chrome; a skip in the content, and

@@ -230,6 +230,9 @@
     .offer-panel h3 { font-size: 26px; line-height: 32px; }
     .offer-pill { display: inline-flex; height: 18px; align-items: center; padding: 0 10px; margin: 0 0 8px; background: #ffffff; color: #1b2a4a; border-radius: 9999px; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; }
     .offer-panel .kicker { color: #c9d3e6; }
+    .feature-card { position: relative; padding: 72px 40px 40px; background: #ffffff; border-radius: 16px; }
+    .feature-card h3 { font-size: 40px; line-height: 44px; }
+    .feature-card .kicker { position: absolute; top: 40px; left: 40px; margin: 0; }
   </style>
 </head>
 <body>
@@ -320,6 +323,14 @@
           <span class="offer-pill">What we offer</span>
           <h3>"Pill In Flow Over A Large Card Title"</h3>
           <p>A filled pill in the panel's flow over a 26px title reads as the panel's eyebrow too, and still flags.</p>
+        </div>
+      </section>
+
+      <section class="case">
+        <div class="feature-card">
+          <span class="kicker">Analytics</span>
+          <h3>"Absolute Eyebrow In A Card"</h3>
+          <p>An eyebrow placed absolutely inside the card's padding, in the card's colour, is no badge, and it still flags over a 40px title.</p>
         </div>
       </section>
     </section>

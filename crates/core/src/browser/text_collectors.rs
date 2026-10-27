@@ -84,11 +84,10 @@ pub fn is_kicker_card_context(dom: &dyn Dom, heading: ElId, kicker: ElId) -> boo
 /// card's own at any title size: void5.lovable.app's "Most popular"
 /// straddles the top edge of its pricing card over a 24px h3.
 fn kicker_in_painted_card(dom: &dyn Dom, heading: ElId, kicker: ElId) -> bool {
-    if kicker_heading_level(dom, heading) < 3.0
-        || (font_size_of(dom, heading) >= LEADING_DISPLAY_TYPE_PX && !kicker_is_badge(dom, kicker))
-    {
+    if kicker_heading_level(dom, heading) < 3.0 {
         return false;
     }
+    let display_size = font_size_of(dom, heading) >= LEADING_DISPLAY_TYPE_PX;
     let viewport = {
         let h = dom.inner_height();
         if num_truthy(h) {
@@ -104,21 +103,45 @@ fn kicker_in_painted_card(dom: &dyn Dom, heading: ElId, kicker: ElId) -> bool {
             return false;
         }
         if super::page_checks::is_card_like_dom(dom, c) {
-            return dom.rect(c).height < viewport && dom.contains(c, kicker);
+            return dom.rect(c).height < viewport
+                && dom.contains(c, kicker)
+                && (!display_size || kicker_is_badge(dom, kicker, c));
         }
         cur = dom.parent(c);
     }
     false
 }
 
-/// Whether `kicker` is pinned to its card as a badge: absolutely positioned,
-/// out of the flow the heading sits in. A filled pill in flow is not enough:
-/// integroai.tech sets its "What we do" eyebrow as an amber pill over a
-/// card's 24px title, and quoin.ai's "Early-adopter rate" pill in an offer
-/// panel has the same shape, so the in-flow pill keeps the size test.
-fn kicker_is_badge(dom: &dyn Dom, kicker: ElId) -> bool {
-    dom.style(kicker, "position") == "absolute"
+/// Whether `kicker` is pinned to `card` as a badge: absolutely positioned,
+/// out of the flow the heading sits in, and set on the card's top edge (its
+/// box reaching to within 2px of the card's top or across it:
+/// void5.lovable.app's `-top-3` "Most popular") or painted in a fill of its
+/// own apart from the card's. An eyebrow placed absolutely inside the
+/// card's padding, in the card's colour, is still an eyebrow. A filled pill
+/// in flow is not enough either: integroai.tech sets its "What we do"
+/// eyebrow as an amber pill over a card's 24px title, and quoin.ai's
+/// "Early-adopter rate" pill in an offer panel has the same shape, so the
+/// in-flow pill keeps the size test.
+fn kicker_is_badge(dom: &dyn Dom, kicker: ElId, card: ElId) -> bool {
+    if dom.style(kicker, "position") != "absolute" {
+        return false;
+    }
+    let (k, c) = (dom.rect(kicker), dom.rect(card));
+    let on_top_edge = k.all_finite() && c.all_finite() && k.top <= c.top + 2.0 && k.bottom > c.top - 2.0;
+    let own_fill = crate::color::parse_any_color(Some(&dom.style(kicker, "backgroundColor")))
+        .filter(|f| f.alpha_or_one() >= BADGE_MIN_FILL_ALPHA)
+        .is_some_and(|f| {
+            let card_fill = crate::color::parse_any_color(Some(&dom.style(card, "backgroundColor")));
+            card_fill.map_or(true, |cf| {
+                (f.r - cf.r).abs() > 3.0 || (f.g - cf.g).abs() > 3.0 || (f.b - cf.b).abs() > 3.0
+            })
+        });
+    on_top_edge || own_fill
 }
+
+/// The fill alpha a badge has to paint to read as its own colour
+/// ([`kicker_is_badge`]).
+const BADGE_MIN_FILL_ALPHA: f64 = 0.9;
 
 static HEADING_LEVEL_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^h([1-6])$").expect("HEADING_LEVEL_RE"));
@@ -635,6 +658,26 @@ pub fn check_em_dash_overuse_dom(dom: &dyn Dom) -> Vec<RuleHit> {
     hits(check_em_dash_overuse_less(Some(&text), list_separator_dashes(dom)))
 }
 
+/// Whether `term` is the whole text of an element inside `li` (a link, a
+/// `strong`, a `code`), a few levels down at most.
+fn term_is_own_element(dom: &dyn Dom, li: ElId, term: &str) -> bool {
+    let mut stack: Vec<(ElId, usize)> = dom.children(li).into_iter().map(|k| (k, 1)).collect();
+    let mut visited = 0usize;
+    while let Some((el, depth)) = stack.pop() {
+        visited += 1;
+        if visited > 32 {
+            return false;
+        }
+        if collapsed_text_content(dom, el) == term {
+            return true;
+        }
+        if depth < 3 {
+            stack.extend(dom.children(el).into_iter().map(|k| (k, depth + 1)));
+        }
+    }
+    false
+}
+
 /// The most words a list item's leading term has before the dash that
 /// separates it from its description ([`list_separator_dashes`]).
 const SEPARATOR_TERM_MAX_WORDS: usize = 6;
@@ -656,7 +699,9 @@ const SEPARATOR_MAX_ITEMS: usize = 2000;
 /// stop, not punctuation in a sentence: karmaboard.app's 20 "em dashes" are
 /// its widget list, takejournal.com's its docs index. The term is the
 /// item's leading text, up to [`SEPARATOR_TERM_MAX_WORDS`] words and no
-/// sentence end, a bullet or check glyph before it aside. Prose items
+/// sentence end, a bullet or check glyph before it aside, and it reads as a
+/// label: an element of its own, or followed by a description that opens
+/// capitalised or in an uncased script. The item has to be painted. Prose items
 /// whose dash falls later, and every dash in paragraphs, still count. Each
 /// item gives at most its first dash; an item that holds a nested list is
 /// read through its own items.
@@ -674,12 +719,27 @@ fn list_separator_dashes(dom: &dyn Dom) -> usize {
         let text = text.trim_start_matches(|c: char| !c.is_alphanumeric());
         let Some((term, rest)) = text.split_once('—') else { continue };
         let term = term.trim();
+        let rest = rest.trim();
         if term.is_empty()
             || term.chars().count() > SEPARATOR_TERM_MAX_CHARS
             || term.split_whitespace().count() > SEPARATOR_TERM_MAX_WORDS
             || term.contains(['.', '!', '?', '。', '！', '？'])
-            || rest.trim().is_empty()
+            || rest.is_empty()
         {
+            continue;
+        }
+        // The term reads as a label, not a clause: it is an element of its
+        // own (takejournal.com's linked titles), or what follows the dash
+        // opens like a description, capitalised or in a script with no case
+        // (karmaboard.app's "Weather — Current conditions"). Prose runs on in
+        // lowercase ("We ship every week — and every update is free").
+        let opens_description = rest.chars().next().is_some_and(|c| c.is_alphabetic() && !c.is_lowercase());
+        if !opens_description && !term_is_own_element(dom, li, term) {
+            continue;
+        }
+        // Text a visitor does not see is not in `innerText`, so its dashes
+        // were never counted (a closed menu at `visibility: hidden`).
+        if super::painted::unpainted_at_capture(dom, li, super::painted::OwnOpacity::Counts).is_some() {
             continue;
         }
         let key = dom.parent(li).and_then(|list| dom.parent(list));
@@ -1541,6 +1601,10 @@ mod tests {
             .map(|i| format!("Sentence {i} runs on for a good while before it turns — and then it ends."))
             .collect();
         assert_eq!(page("li", &prose, true), 1, "items whose dash falls after a clause");
+        let bullets: Vec<String> = (0..9)
+            .map(|i| format!("We ship update {i} — and every update is free for you."))
+            .collect();
+        assert_eq!(page("li", &bullets, true), 1, "short clauses that run on in lowercase");
         assert_eq!(page("p", &prose, false), 1, "eight prose sentences");
     }
 
