@@ -504,35 +504,91 @@ fn backdrop_layer_matches(dom: &dyn Dom, el: ElId) -> bool {
 }
 
 /// Whether the band `el` paints continues past `side` (0 top, 1 right, 2
-/// bottom, 3 left) into a sibling that abuts it there with the same fill:
+/// bottom, 3 left) into a box that abuts it there with the same fill:
 /// cencora.com stacks grey bands, and the edge between two of them is no
-/// edge at all.
+/// edge at all. The box is a sibling, or the next box in flow in a later
+/// component: the walk climbs up to [`SAME_FILL_CLIMB`] ancestors and, in
+/// each sibling that reaches the edge, descends up to [`SAME_FILL_DESCENT`]
+/// levels along it. americanexpress.com closes a grey `rich-text-grid`
+/// container where the next component's grey container starts, three
+/// wrappers away, and citigroup.com's white row runs into the white spacer
+/// row of the next grid.
 fn side_meets_same_fill(dom: &dyn Dom, el: ElId, rect: &Rect, side: usize) -> bool {
     let bg = dom.style(el, "backgroundColor");
     if css_color_is_transparent(Some(&bg)) {
         return false;
     }
-    let Some(parent) = dom.parent(el) else { return false };
-    dom.children(parent).into_iter().any(|s| {
-        if s == el || dom.style(s, "display") == "none" {
-            return false;
+    let across = |a0: f64, a1: f64, b0: f64, b1: f64| {
+        js::math_min(a1, b1) - js::math_max(a0, b0) >= (a1 - a0) * 0.9
+    };
+    // Whether `sr` lies against `rect` on `side` and runs along it.
+    let abuts = |sr: &Rect| match side {
+        0 => (sr.bottom - rect.top).abs() <= 1.5 && across(rect.left, rect.right, sr.left, sr.right),
+        2 => (sr.top - rect.bottom).abs() <= 1.5 && across(rect.left, rect.right, sr.left, sr.right),
+        1 => (sr.left - rect.right).abs() <= 1.5 && across(rect.top, rect.bottom, sr.top, sr.bottom),
+        _ => (sr.right - rect.left).abs() <= 1.5 && across(rect.top, rect.bottom, sr.top, sr.bottom),
+    };
+    // Whether `sr` reaches the line `side` of `rect` lies on, from beyond it:
+    // a box that holds an abutting one starts (or ends) on that line too.
+    let reaches = |sr: &Rect| match side {
+        0 => (sr.bottom - rect.top).abs() <= 1.5,
+        2 => (sr.top - rect.bottom).abs() <= 1.5,
+        1 => (sr.left - rect.right).abs() <= 1.5,
+        _ => (sr.right - rect.left).abs() <= 1.5,
+    };
+    let shown = |s: ElId| {
+        if dom.style(s, "display") == "none" {
+            return None;
         }
         let sr = dom.rect(s);
-        if !(sr.width > 0.0 && sr.height > 0.0) {
-            return false;
+        (sr.width > 0.0 && sr.height > 0.0).then_some(sr)
+    };
+    let mut budget = SAME_FILL_MAX_VISITS;
+    let mut node = el;
+    for _ in 0..=SAME_FILL_CLIMB {
+        let Some(parent) = dom.parent(node) else { return false };
+        for s in dom.children(parent) {
+            if s == node {
+                continue;
+            }
+            let Some(sr) = shown(s) else { continue };
+            if !reaches(&sr) {
+                continue;
+            }
+            // Down the abutting edge: the box itself, then its children that
+            // reach the same line.
+            let mut stack = vec![(s, sr, 0usize)];
+            while let Some((b, br, depth)) = stack.pop() {
+                if budget == 0 {
+                    return false;
+                }
+                budget -= 1;
+                if abuts(&br) && colors_nearly_match(Some(&bg), Some(&dom.style(b, "backgroundColor"))) {
+                    return true;
+                }
+                if depth < SAME_FILL_DESCENT {
+                    for k in dom.children(b) {
+                        if let Some(kr) = shown(k) {
+                            if reaches(&kr) {
+                                stack.push((k, kr, depth + 1));
+                            }
+                        }
+                    }
+                }
+            }
         }
-        let across = |a0: f64, a1: f64, b0: f64, b1: f64| {
-            js::math_min(a1, b1) - js::math_max(a0, b0) >= (a1 - a0) * 0.9
-        };
-        let abuts = match side {
-            0 => (sr.bottom - rect.top).abs() <= 1.5 && across(rect.left, rect.right, sr.left, sr.right),
-            2 => (sr.top - rect.bottom).abs() <= 1.5 && across(rect.left, rect.right, sr.left, sr.right),
-            1 => (sr.left - rect.right).abs() <= 1.5 && across(rect.top, rect.bottom, sr.top, sr.bottom),
-            _ => (sr.right - rect.left).abs() <= 1.5 && across(rect.top, rect.bottom, sr.top, sr.bottom),
-        };
-        abuts && colors_nearly_match(Some(&bg), Some(&dom.style(s, "backgroundColor")))
-    })
+        node = parent;
+    }
+    false
 }
+
+/// How many ancestors above the band [`side_meets_same_fill`] looks among
+/// the siblings of, the band's own level aside.
+const SAME_FILL_CLIMB: usize = 4;
+/// How many levels into a sibling [`side_meets_same_fill`] follows the edge.
+const SAME_FILL_DESCENT: usize = 6;
+/// The most boxes [`side_meets_same_fill`] reads for one side.
+const SAME_FILL_MAX_VISITS: usize = 200;
 
 /// The part of `inner` that falls inside `outer`, or `None` when the two miss
 /// each other.
@@ -2520,16 +2576,21 @@ pub fn check_quality(dom: &dyn Dom, q: &QualityInput) -> Vec<RuleHit> {
                 let side_names = ["top", "right", "bottom", "left"];
                 let mut flush_sides: Vec<&str> = Vec::new();
                 for s in 0..4 {
-                    let bg_bounds_side = bg_visible
-                        && !(full_bleed_bg_band && (s == 1 || s == 3))
-                        && !side_meets_same_fill(dom, el, rect, s);
-                    let side_bounded = border_visible[s] || outline_visible || bg_bounds_side;
-                    if side_bounded
-                        && pad[s] <= PAD_THRESHOLD
+                    if !(pad[s] <= PAD_THRESHOLD
                         && !children_insulate[s]
                         && !children_overflow[s]
-                        && text_flush[s]
+                        && text_flush[s])
                     {
+                        continue;
+                    }
+                    // Read last: whether the fill runs on past the side walks
+                    // the boxes around it.
+                    let side_bounded = border_visible[s]
+                        || outline_visible
+                        || (bg_visible
+                            && !(full_bleed_bg_band && (s == 1 || s == 3))
+                            && !side_meets_same_fill(dom, el, rect, s));
+                    if side_bounded {
                         flush_sides.push(side_names[s]);
                     }
                 }
@@ -3073,6 +3134,24 @@ fn text_without_code(dom: &dyn Dom, el: ElId) -> String {
     out
 }
 
+/// Whether `skipped-heading`'s outline reads on past `h` as if it were not
+/// there: a heading not painted at capture (taste call r9-t3, 2026-10-26)
+/// because it is not rendered (`display: none` on it or an ancestor,
+/// `visibility: hidden`), sits in a box that clips it out (a collapsed
+/// panel, a parked slide), or has no area. kfu.edu.sa's footer widgets and
+/// americanexpress.com's mega-menu titles wait in closed panels, and
+/// pgportal.gov.in's app promo h2 is hidden; a visitor reads the outline the
+/// page shows. A visually hidden heading (`.sr-only`) is written for the
+/// outline a screen reader reads, and stays in it, and so does one only
+/// faded out (a reveal waiting for the scroll) or turned away: those show.
+fn outline_skips_unpainted(dom: &dyn Dom, h: ElId) -> bool {
+    use super::painted::Unpainted;
+    matches!(
+        super::painted::unpainted_at_capture(dom, h, super::painted::OwnOpacity::Counts),
+        Some(Unpainted::NotRendered | Unpainted::ClippedOut | Unpainted::NoArea)
+    )
+}
+
 /// What counts as the page's footer for `skipped-heading`: the element, the
 /// landmark role, or the conventional id.
 pub const FOOTER_SELECTOR: &str = "footer, [role=\"contentinfo\"], #footer";
@@ -3105,7 +3184,7 @@ pub fn check_page_quality_from_doc_in(
     let mut prev_footer: Option<ElId> = None;
     let mut prev_opens_footer = false;
     for h in dom.query_all(None, "h1, h2, h3, h4, h5, h6").unwrap_or_default() {
-        if mockups.is_some_and(|m| m.declared(h)) {
+        if mockups.is_some_and(|m| m.declared(h)) || outline_skips_unpainted(dom, h) {
             continue;
         }
         let tag = dom.tag_name(h);
@@ -3181,6 +3260,13 @@ impl Side {
         match self {
             Side::Left => -left,
             Side::Right => right - vw,
+        }
+    }
+
+    fn opposite(self) -> Side {
+        match self {
+            Side::Left => Side::Right,
+            Side::Right => Side::Left,
         }
     }
 }
@@ -3261,7 +3347,13 @@ fn widest_past_edge(dom: &dyn Dom, side: Side, vw: f64, limit: f64) -> Option<(E
 /// paragraphs in `past` and their ancestors below the root. Whatever else
 /// reaches past the edge there is held by a clip the walk above may not see
 /// (a clip path, paint containment, a shadow root), so only the boxes around
-/// the text count. Ties go to the outer box.
+/// the text count. A box that also runs past the other side of the viewport
+/// and lays its children out in a row is a track moved along under it
+/// (studying.jp's 5,700px `slick-track`, 1,184px to the left of the window
+/// to show its current slide), not the layout that cuts the text, and is
+/// passed over. A centred layout box too wide for the window on both sides
+/// (cloudlinks.cn's 1,614px footer) stacks its content and is still named.
+/// Ties go to the outer box.
 fn widest_holding_text(dom: &dyn Dom, past: &[(ElId, Side, f64)], side: Side, vw: f64) -> Option<(ElId, f64)> {
     let root = dom.document_element();
     let mut best: Option<(ElId, f64)> = None;
@@ -3278,7 +3370,9 @@ fn widest_holding_text(dom: &dyn Dom, past: &[(ElId, Side, f64)], side: Side, vw
             let r = dom.rect(c);
             if r.all_finite() && (r.width > 0.0 || r.height > 0.0) {
                 let d = side.past(r.left, r.right, vw);
-                if d >= 1.0 && chain.map_or(true, |(_, b)| d + 0.5 >= b) {
+                let track = side.opposite().past(r.left, r.right, vw) >= 1.0
+                    && super::text_geometry::holds_row(dom, c);
+                if d >= 1.0 && !track && chain.map_or(true, |(_, b)| d + 0.5 >= b) {
                     chain = Some((c, d));
                 }
             }
@@ -5046,6 +5140,54 @@ mod tests {
         );
     }
 
+    /// observations-1010 row 13 (americanexpress.com 10140003): the grey
+    /// band ends where the next component's grey container starts, three
+    /// wrappers away. The fill runs on and the bottom is no edge. A white
+    /// page after the band, or the next component's container in another
+    /// grey, is.
+    #[test]
+    fn cramped_padding_band_continues_into_the_next_component() {
+        let page = |next_fill: Option<&str>| -> (FakeDom, ElId) {
+            let mut d = FakeDom::new();
+            let (_h, body) = d.with_page();
+            d.set_style(body, "backgroundColor", "rgb(255, 255, 255)");
+            let grid = d.add(Some(body), "div");
+            d.set_rect(grid, 0.0, 0.0, 1280.0, 600.0);
+            let comp = d.add(Some(grid), "div");
+            d.set_rect(comp, 0.0, 100.0, 1280.0, 48.0);
+            let section = d.add(Some(comp), "section");
+            d.set_rect(section, 0.0, 100.0, 1280.0, 48.0);
+            let band = d.add(Some(section), "div");
+            d.set_attr(band, "class", "container");
+            d.set_rect(band, 24.0, 100.0, 1232.0, 48.0);
+            d.set_styles(band, &[("display", "block"), ("position", "static"), ("backgroundColor", "rgb(236, 237, 238)")]);
+            let copy = text_el(&mut d, band, "p", "Copy that runs to the bottom edge", "14px");
+            d.set_styles(copy, &[("paddingTop", "12px"), ("paddingLeft", "16px"), ("paddingRight", "16px")]);
+            d.set_rect(copy, 24.0, 100.0, 1232.0, 48.0);
+            d.set_text_rect(copy, 40.0, 127.0, 300.0, 20.0);
+            if let Some(fill) = next_fill {
+                let next = d.add(Some(grid), "div");
+                d.set_rect(next, 0.0, 148.0, 1280.0, 400.0);
+                let inner = d.add(Some(next), "section");
+                d.set_rect(inner, 0.0, 148.0, 1280.0, 400.0);
+                let white = d.add(Some(inner), "div");
+                d.set_style(white, "backgroundColor", "rgb(255, 255, 255)");
+                d.set_rect(white, 0.0, 148.0, 1280.0, 400.0);
+                let container = d.add(Some(white), "div");
+                d.set_style(container, "backgroundColor", fill);
+                d.set_rect(container, 24.0, 148.0, 1232.0, 400.0);
+            }
+            (d, band)
+        };
+        let bottom = vec!["<div> \"container\": children flush against bg on bottom (no inset)"];
+        let (d, band) = page(Some("rgb(236, 237, 238)"));
+        assert!(cramped(&d, band).is_empty(), "the next component's grey runs on");
+        let (d, band) = page(Some("rgb(224, 231, 255)"));
+        assert_eq!(cramped(&d, band), bottom, "another fill below");
+        let (d, band) = page(None);
+        assert_eq!(cramped(&d, band), bottom, "the white page below");
+    }
+
     /// observations-28 row 13: sides a reader sees no edge on. A band that
     /// runs on into a sibling of the same fill (cencora.com), a fill laid on
     /// a positioned layer of the same colour (hp.com), and a line a clipping
@@ -6346,6 +6488,60 @@ mod tests {
         assert!(past(&d)[0].starts_with("text runs past the right edge"), "{:?}", past(&d));
     }
 
+    /// observations-1010 row 19 (studying.jp 10139146): the viewport clips a
+    /// 980px column, and a slider's track beside it runs 4,000px past the
+    /// edge holding a slide's text. The track is not what cuts that text,
+    /// and the name is the column.
+    #[test]
+    fn page_overflow_passes_over_a_slider_track() {
+        let copy = "A note set in a column laid out at a fixed desktop width for every screen.";
+        let mut d = FakeDom::new();
+        let (html, body) = d.with_page();
+        d.inner_width = 390.0;
+        d.set_rect(html, 0.0, 0.0, 390.0, 2400.0);
+        d.el_mut(html).client_width = 390.0;
+        d.el_mut(html).scroll_width = 390.0;
+        d.set_rect(body, 0.0, 0.0, 390.0, 2400.0);
+        d.set_style(body, "overflowX", "hidden");
+        let column = d.add(Some(body), "div");
+        d.set_attr(column, "class", "reason__container");
+        d.set_rect(column, 16.0, 100.0, 980.0, 400.0);
+        let note = text_el(&mut d, column, "p", copy, "16px");
+        d.set_style(note, "lineHeight", "24px");
+        d.set_rect(note, 16.0, 120.0, 980.0, 24.0);
+        d.set_text_rect(note, 16.0, 122.0, 477.0, 20.0);
+        let slider = d.add(Some(body), "div");
+        d.set_attr(slider, "class", "voice__list");
+        d.set_rect(slider, 16.0, 600.0, 300.0, 300.0);
+        let track = d.add(Some(slider), "div");
+        d.set_attr(track, "class", "slick-track");
+        d.set_rect(track, -1184.0, 600.0, 5700.0, 300.0);
+        let slide = text_el(&mut d, track, "p", "A visitor's words on the next slide of the carousel.", "16px");
+        d.set_style(slide, "lineHeight", "24px");
+        d.set_rect(slide, 340.0, 620.0, 252.0, 48.0);
+        d.set_text_rect(slide, 340.0, 622.0, 252.0, 44.0);
+        // A second slide beside the first: the track lays out a row.
+        let slide2 = text_el(&mut d, track, "p", "Another visitor's words on a slide further along the track.", "16px");
+        d.set_style(slide2, "lineHeight", "24px");
+        d.set_rect(slide2, 620.0, 620.0, 252.0, 48.0);
+        d.set_text_rect(slide2, 620.0, 622.0, 252.0, 44.0);
+        let detail = |d: &FakeDom| -> Vec<String> { check_page_overflow_dom(d).into_iter().map(|f| f.detail).collect() };
+        assert_eq!(
+            detail(&d),
+            vec!["text runs past the right edge of the 390px viewport and is cut off: div.reason__container reaches 606px past it, with text in 2 blocks"
+                .to_string()]
+        );
+        // A box as wide that stacks what it holds (cloudlinks.cn's centred
+        // 1,614px footer) is layout, and it is still the name.
+        d.set_rect(slide2, 340.0, 680.0, 252.0, 48.0);
+        d.set_text_rect(slide2, 340.0, 682.0, 252.0, 44.0);
+        assert_eq!(
+            detail(&d),
+            vec!["text runs past the right edge of the 390px viewport and is cut off: div.slick-track reaches 4126px past it, with text in 3 blocks"
+                .to_string()]
+        );
+    }
+
     /// A bare `div` is named by its id, the nearest ancestor below the body
     /// with an id or a class, or the start of its text (centene.com named a
     /// bare `div` as the widest element).
@@ -7291,6 +7487,45 @@ mod tests {
         let f = check_page_quality_dom(&d);
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].detail, "<h1> \"Title\" followed by <h3> \"true facts\" (missing h2)");
+    }
+
+    /// Taste call r9-t3: the outline skips a heading not painted at
+    /// capture and reads on as if it were not there, so a skip that runs
+    /// through one reports against the heading before it. A visually hidden
+    /// heading and one only faded out (a reveal) stay in the outline.
+    #[test]
+    fn skipped_heading_reads_the_outline_the_page_paints() {
+        let page = |middle: &dyn Fn(&mut FakeDom, ElId)| -> Vec<String> {
+            let mut d = FakeDom::new();
+            let (html, body) = d.with_page();
+            d.set_rect(html, 0.0, 0.0, 1280.0, 2000.0);
+            d.set_rect(body, 0.0, 0.0, 1280.0, 2000.0);
+            let shown = |d: &mut FakeDom, tag: &str, text: &str, y: f64| {
+                let h = d.add(Some(body), tag);
+                d.set_styles(h, &[("display", "block"), ("visibility", "visible"), ("opacity", "1")]);
+                d.set_rect(h, 0.0, y, 600.0, 30.0);
+                d.add_text(h, text);
+                h
+            };
+            shown(&mut d, "h1", "Title", 0.0);
+            let h2 = shown(&mut d, "h2", "Section", 100.0);
+            middle(&mut d, h2);
+            shown(&mut d, "h3", "Subsection", 200.0);
+            check_page_quality_dom(&d).into_iter().map(|f| f.detail).collect()
+        };
+        assert!(page(&|_, _| {}).is_empty(), "h1, h2, h3");
+        let skip = vec!["<h1> \"Title\" followed by <h3> \"Subsection\" (missing h2)".to_string()];
+        assert_eq!(page(&|d, h2| { d.set_style(h2, "display", "none"); }), skip, "a hidden h2");
+        assert_eq!(page(&|d, h2| { d.set_style(h2, "visibility", "hidden"); }), skip, "an invisible h2");
+        assert!(
+            page(&|d, h2| {
+                d.set_styles(h2, &[("position", "absolute"), ("clip", "rect(0px, 0px, 0px, 0px)"), ("overflow", "hidden")]);
+                d.set_rect(h2, 0.0, 100.0, 1.0, 1.0);
+            })
+            .is_empty(),
+            "an sr-only h2 stays in the outline"
+        );
+        assert!(page(&|d, h2| { d.set_style(h2, "opacity", "0"); }).is_empty(), "a reveal waiting at opacity 0");
     }
 
     /// r5-p29: a skip into the footer is chrome; a skip in the content, and

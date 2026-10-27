@@ -1271,7 +1271,7 @@ pub fn check_layout(dom: &dyn Dom) -> Vec<ElFinding> {
         }
         let mut parent = dom.parent(el);
         while let Some(p) = parent {
-            if is_card_like_dom(dom, p) {
+            if is_card_like_dom(dom, p) && !is_page_frame(dom, p) {
                 // A panel not painted at capture (a closed mega-nav panel
                 // held at `visibility: hidden`) is not a card anyone sees,
                 // a band along the card's own edges is part of it, and a
@@ -1309,6 +1309,32 @@ pub fn check_layout(dom: &dyn Dom) -> Vec<ElFinding> {
         }
     }
     findings
+}
+
+/// The share of the document's height a box spanning the viewport's width
+/// has to cover to be the page itself ([`is_page_frame`]).
+const PAGE_FRAME_MIN_HEIGHT_SHARE: f64 = 0.75;
+
+/// Whether `el` is the page, not a card on it: a box from the viewport's
+/// left edge across its whole width that covers at least
+/// [`PAGE_FRAME_MIN_HEIGHT_SHARE`] of the document's height. swapno.in
+/// wraps the whole page in `div#outer-wrapper` with a Tailwind
+/// `ring-black/5`, and the cards on the page sat inside it as inner cards.
+/// A page whose width or height the capture did not measure has no frame.
+fn is_page_frame(dom: &dyn Dom, el: ElId) -> bool {
+    let Some(root) = dom.document_element() else { return false };
+    let client = dom.client_width(root);
+    let vw = if client.is_finite() && client > 0.0 { client } else { dom.inner_width() };
+    let scrolled = dom.scroll_height(root);
+    let doc_height = if scrolled.is_finite() { math_max(dom.rect(root).height, scrolled) } else { dom.rect(root).height };
+    if !(vw.is_finite() && vw > 0.0 && doc_height.is_finite() && doc_height > 0.0) {
+        return false;
+    }
+    let r = dom.rect(el);
+    r.all_finite()
+        && r.left <= 1.0
+        && r.width >= vw - 1.0
+        && r.height >= doc_height * PAGE_FRAME_MIN_HEIGHT_SHARE
 }
 
 /// `heading-rhythm`: an element that takes part in normal flow and paints a
@@ -1565,7 +1591,7 @@ fn rhythm_is_spacer(dom: &dyn Dom, el: ElId) -> bool {
 
 fn rhythm_is_empty_box(dom: &dyn Dom, el: ElId, depth: usize) -> bool {
     let tag = tag_lower(dom, el);
-    if rhythm_paints_edge(dom, el, "Bottom")
+    if rhythm_spacer_paints(dom, el)
         || RHYTHM_MEDIA_TAGS.contains(&tag.as_str())
         || RHYTHM_CONTROL_TAGS.contains(&tag.as_str())
     {
@@ -1582,6 +1608,27 @@ fn rhythm_is_empty_box(dom: &dyn Dom, el: ElId, depth: usize) -> bool {
     }
     let children = rhythm_rendered_children(dom, el);
     children.is_empty() || (depth > 0 && children.into_iter().all(|k| rhythm_is_empty_box(dom, k, depth - 1)))
+}
+
+/// Whether an empty box paints something a reader sees as a block: a
+/// background image that bands it, a bottom border, a shadow, or a fill that
+/// differs from the nearest painted background behind it
+/// ([`rhythm_band_differs_from_backdrop`]). A fill the colour of what is
+/// behind it draws no edge: citigroup.com stacks empty `GridRow` spacers
+/// painted the colour of their section (a 15px white row in a white band, an
+/// 87px navy row on the navy footer), and each holds space open exactly as
+/// an unpainted spacer does. A spacer in a colour of its own is a divider and
+/// stays a block.
+fn rhythm_spacer_paints(dom: &dyn Dom, el: ElId) -> bool {
+    if rhythm_is_contents(dom, el) {
+        return false;
+    }
+    if rhythm_painted_background(dom, el).is_some() && rhythm_band_differs_from_backdrop(dom, el) {
+        return true;
+    }
+    rhythm_image_band(dom, el)
+        || style_px(dom, el, "borderBottomWidth") > 0.0
+        || crate::checks::measures::box_shadow_paints(&dom.style(el, "boxShadow"))
 }
 
 /// A shadow host whose shadow tree lays out content: a box there with words,
@@ -5833,6 +5880,34 @@ mod tests {
         assert!(check_layout(&d).is_empty());
     }
 
+    /// observations-1010 row 7 (swapno.in 10139882): a box across the whole
+    /// viewport that covers most of the page is the page, not an outer card,
+    /// whatever ring it casts. A centred panel narrower than the viewport is
+    /// a card, and so is a full-width band that covers a part of the page.
+    #[test]
+    fn nested_cards_skip_the_page_frame() {
+        let build = |frame: (f64, f64, f64, f64)| {
+            let mut d = FakeDom::new();
+            let (html, body) = d.with_page();
+            d.set_rect(html, 0.0, 0.0, 1280.0, 4000.0);
+            d.el_mut(html).client_width = 1280.0;
+            let outer = d.add(Some(body), "div");
+            card_styles(&mut d, outer, "rgb(255, 255, 255)");
+            d.set_styles(outer, &[("borderRadius", "0px"), ("boxShadow", "rgba(0, 0, 0, 0.05) 0px 0px 0px 1px")]);
+            d.set_rect(outer, frame.0, frame.1, frame.2, frame.3);
+            let inner = d.add(Some(outer), "div");
+            card_styles(&mut d, inner, "rgb(255, 255, 255)");
+            d.set_style(inner, "border", "1px solid rgb(200, 200, 200)");
+            d.set_rect(inner, 200.0, 400.0, 340.0, 250.0);
+            d.add_text(inner, "Some card body text");
+            d.add_text(outer, "Outer text longer than ten");
+            check_layout(&d).len()
+        };
+        assert_eq!(build((0.0, 30.0, 1280.0, 3940.0)), 0, "the page wrapper");
+        assert_eq!(build((90.0, 30.0, 1100.0, 3940.0)), 1, "a centred 1,100px panel");
+        assert_eq!(build((0.0, 300.0, 1280.0, 900.0)), 1, "a full-width band over part of the page");
+    }
+
     /// Decision r6-t3-nested-cards-mockups (advisory): the panels of a drawn
     /// product mockup report as advisory, in a framed demo (r5-p26's
     /// structure) or under an HTML `role="img"`.
@@ -6104,6 +6179,39 @@ mod tests {
         let worded = flow(&mut d, body, "div", (0.0, 200.0, 800.0, 40.0), "");
         flow(&mut d, worded, "div", (0.0, 200.0, 800.0, 40.0), "Words");
         assert!(!rhythm_is_spacer(&d, worded));
+    }
+
+    /// observations-1010 row 3 (citigroup.com 10140212, 10140309): an empty
+    /// spacer row painted the colour of the band behind it is space, as an
+    /// unpainted one is; a spacer in a colour of its own is a divider and the
+    /// heading under it still sits 0px from a block.
+    #[test]
+    fn rhythm_spacer_filled_like_its_band_is_space() {
+        let build = |band: Option<&str>, spacer: &str| {
+            let mut d = FakeDom::new();
+            let (_h, body) = d.with_page();
+            let page = flow(&mut d, body, "div", (0.0, 0.0, 800.0, 1000.0), "");
+            if let Some(band) = band {
+                d.set_style(page, "backgroundColor", band);
+            }
+            let mut y = 0.0;
+            for i in 0..2 {
+                flow(&mut d, page, "p", (0.0, y, 800.0, 20.0), "The paragraph that closes the section above this heading");
+                y += 20.0;
+                let s = flow(&mut d, page, "div", (0.0, y, 800.0, 40.0), "");
+                d.set_style(s, "backgroundColor", spacer);
+                y += 40.0;
+                let section = flow(&mut d, page, "section", (0.0, y, 800.0, 200.0), "");
+                flow(&mut d, section, "h2", (0.0, y, 800.0, 30.0), &format!("Section title {i}"));
+                flow(&mut d, section, "p", (0.0, y + 54.0, 800.0, 100.0), "What the heading introduces");
+                y += 200.0;
+            }
+            check_heading_rhythm_dom(&d).len()
+        };
+        assert_eq!(build(None, "rgb(255, 255, 255)"), 0, "a white spacer on the white canvas");
+        assert_eq!(build(Some("rgb(15, 22, 50)"), "rgb(15, 22, 50)"), 0, "a navy spacer on a navy band");
+        assert_eq!(build(None, "rgb(15, 22, 50)"), 2, "a navy band on white is a block");
+        assert_eq!(build(Some("rgb(15, 22, 50)"), "rgb(255, 255, 255)"), 2, "a white band on navy is a block");
     }
 
     /// observations-35 row 12 (improved-rotary-phone-two.vercel.app 213861):
