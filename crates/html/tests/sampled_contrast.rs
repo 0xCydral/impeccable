@@ -1791,3 +1791,41 @@ fn a_custom_property_the_pseudo_declares_sets_its_own_inset() {
     let found = site.contrast(&css, body);
     assert!(sampled_on("light.png", &found), "{found:?}");
 }
+
+#[test]
+fn a_custom_property_only_rule_on_another_selector_sets_the_pseudos_paint() {
+    let site = Site::new("pseudo-var-other-selector");
+    let body = "<div class=\"hero dark\"><p>White copy</p></div>";
+    let p = " p { position: relative; color: #fdfdfd; }";
+    // A rule on another selector naming only custom properties reaches the
+    // merge where it matches: the dark scrim it sets is what paints.
+    let css = format!(".hero {{ --scrim: transparent; background: url(light.png); position: relative; }} .hero::before {{ content: ''; position: absolute; inset: 0; background: var(--scrim); }} .dark::before {{ --scrim: rgba(0, 0, 0, 0.7); }}{p}");
+    let found = site.contrast(&css, body);
+    assert!(found.is_empty(), "{found:?}");
+    // One that takes the paint away counts the same way.
+    let css = format!(".hero {{ --scrim: rgba(0, 0, 0, 0.7); background: url(light.png); position: relative; }} .hero::before {{ content: ''; position: absolute; inset: 0; background: var(--scrim); }} .dark::before {{ --scrim: transparent; }}{p}");
+    let found = site.contrast(&css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
+    // One on a selector the element does not match is not read.
+    let css = format!(".hero {{ --scrim: transparent; background: url(light.png); position: relative; }} .hero::before {{ content: ''; position: absolute; inset: 0; background: var(--scrim); }} .other::before {{ --scrim: rgba(0, 0, 0, 0.7); }}{p}");
+    let found = site.contrast(&css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
+}
+
+#[test]
+fn the_pseudos_custom_properties_resolve_against_each_other_whatever_the_order() {
+    let site = Site::new("pseudo-var-order");
+    let body = "<div class=hero><p>White copy</p></div>";
+    let p = " p { position: relative; color: #fdfdfd; }";
+    // A `var()` in one of the pseudo's own custom properties reads the
+    // pseudo's own value of the other, declared before or after it, over
+    // the one the element would hand down.
+    for own in [
+        "--scrim: var(--tone); --tone: rgba(0, 0, 0, 0.7);",
+        "--tone: rgba(0, 0, 0, 0.7); --scrim: var(--tone);",
+    ] {
+        let css = format!(".hero {{ --tone: transparent; background: url(light.png); position: relative; }} .hero::before {{ content: ''; position: absolute; inset: 0; {own} background: var(--scrim); }}{p}");
+        let found = site.contrast(&css, body);
+        assert!(found.is_empty(), "{own}: {found:?}");
+    }
+}

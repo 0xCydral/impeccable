@@ -564,13 +564,23 @@ fn pseudo_paints_a_box(decls: &IndexMap<String, String>) -> bool {
     }
 }
 
+/// Whether a `::before` / `::after` rule that names no geometry or paint
+/// can still change what the merged read sees: it names `content` (the box
+/// turned on or off) or a custom property (a `--scrim` the paint reads).
+/// Such a rule is matched against the candidate elements, never looked up
+/// over the document (`names_pseudo_paint_or_geometry`).
+fn completes_pseudo_elsewhere(decls: &IndexMap<String, (String, DeclMeta)>) -> bool {
+    decls.keys().any(|k| k == "content" || k.starts_with("--"))
+}
+
 /// Whether a `::before` / `::after` rule names the geometry, the paint, or
 /// the box's visibility the merged read below needs, so its matches are
 /// worth looking up over the document. A rule naming only `content` (an
-/// icon font's, by the thousand) cannot complete an overlay on its own; it
-/// is matched against the elements those rules found instead, since one
-/// that turns the box on or off from another selector must reach the
-/// merge too.
+/// icon font's, by the thousand) or only custom properties cannot complete
+/// an overlay on its own; it is matched against the elements those rules
+/// found instead (`completes_pseudo_elsewhere`), since one that turns the
+/// box on or off, or sets what the paint reads, from another selector must
+/// reach the merge too.
 fn names_pseudo_paint_or_geometry(decls: &IndexMap<String, (String, DeclMeta)>) -> bool {
     [
         "position",
@@ -606,8 +616,10 @@ fn names_pseudo_paint_or_geometry(decls: &IndexMap<String, (String, DeclMeta)>) 
 /// may take the paint away. Every value is resolved against the element's
 /// own custom properties first (`custom_props`, the computed pass's map
 /// for the element, inherited and inline values included), under those the
-/// pseudo's own rules declare (a `--scrim` on `.hero::before` wins over the
-/// element's, the pseudo-element inheriting the rest), and a shorthand
+/// pseudo's own rules declare (a `--scrim` on `.hero::before`, or on
+/// `.dark::before` for the elements that match it, wins over the element's,
+/// the pseudo-element inheriting the rest, and one that references another
+/// reads the pseudo's own value whatever the order), and a shorthand
 /// that held a `var()` is split once resolved: a `background` into its
 /// color and image parts, an `inset` into the sides it sets
 /// (`split_resolved_inset`).
@@ -617,8 +629,18 @@ fn mark_pseudo_paint(
     ids: &[NodeId],
     custom_props: &CustomProps,
 ) {
+    // The pseudo's own custom properties over the element's: every winner
+    // goes in as written first, and each is then resolved against the whole
+    // set, as CSS reads a `var()` in one of them against the
+    // pseudo-element's own computed values whatever the declaration order
+    // (`--scrim: var(--tone); --tone: ...` reads the pseudo's `--tone`, not
+    // the element's). The resolver follows chained references, so the order
+    // the keys resolve in does not matter either.
     let own_props: Option<CustomProps> = decls.keys().any(|k| k.starts_with("--")).then(|| {
         let mut layered = custom_props.clone();
+        for (name, value) in decls.iter().filter(|(k, _)| k.starts_with("--")) {
+            layered.insert(name.clone(), value.clone());
+        }
         for (name, value) in decls.iter().filter(|(k, _)| k.starts_with("--")) {
             let resolved = super::checks_shim::resolve_var_refs(value, &layered);
             layered.insert(name.clone(), resolved);
@@ -836,10 +858,12 @@ pub fn build_static_style_map(
                     }
                 }
             }
-            // A rule naming only `content` is matched against those
-            // elements alone, never looked up over the document: one that
-            // turns the box on (`.enabled::before { content: '' }`) or off
-            // from another selector merges where it matches.
+            // A rule naming only `content`, or only custom properties, is
+            // matched against those elements alone, never looked up over
+            // the document: one that turns the box on (`.enabled::before {
+            // content: '' }`) or off, or sets the `--scrim` the paint reads
+            // (`.dark::before { --scrim: rgba(0, 0, 0, 0.7) }`), from
+            // another selector merges where it matches.
             let candidates: Vec<NodeId> = {
                 let mut ids: Vec<NodeId> = pseudo_by_node.keys().map(|(id, _)| *id).collect();
                 ids.dedup();
@@ -847,7 +871,7 @@ pub fn build_static_style_map(
             };
             if !candidates.is_empty() {
                 for ((base, after), decls) in &pseudo_merged {
-                    if names_pseudo_paint_or_geometry(decls) || !decls.contains_key("content") {
+                    if names_pseudo_paint_or_geometry(decls) || !completes_pseudo_elsewhere(decls) {
                         continue;
                     }
                     let Some(ids) = doc.matching_ids_quiet(base, &candidates) else {
