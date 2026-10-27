@@ -9,7 +9,9 @@
 //! (`customPropMap` is `null`, `overrides` is `null`).
 
 use super::checks_shim::CustomProps;
-use super::shorthand::{background_paint_parts, expand_shorthand_slot, names_background_geometry};
+use super::shorthand::{
+    background_paint_parts, expand_shorthand_slot, names_background_geometry, VAR_ANYWHERE_RE,
+};
 use super::{
     apply_static_declaration, collect_static_css_rules, collect_static_css_rules_from,
     compare_static_priority, is_static_inherited_prop, make_default_style,
@@ -314,15 +316,58 @@ fn inset_sides(value: &str) -> [String; 4] {
 
 const SIDES: [&str; 4] = ["top", "right", "bottom", "left"];
 
+/// The marker an `inset` shorthand holding a `var()` leaves in each side
+/// slot (#560), `from-inset(<the shorthand as written>)`: how many values
+/// the shorthand holds, and so which side each sets, is known only once
+/// the property resolves (`--edges: 0 0` is two values from one token), so
+/// the split waits for the computed pass (`split_resolved_inset`). The name
+/// holds no `var(`, which the resolver would take for the call itself.
+const FROM_INSET: &str = "from-inset";
+
+/// What an `inset` shorthand puts in the four side slots: its sides, read
+/// as CSS reads them, or, while it holds a `var()`, the whole shorthand
+/// under the `from-inset` marker in every slot, for the split once resolved.
+fn inset_side_slots(value: &str) -> [String; 4] {
+    if VAR_ANYWHERE_RE.is_match(value) {
+        let marker = format!("{FROM_INSET}({})", js::trim(value));
+        return [marker.clone(), marker.clone(), marker.clone(), marker];
+    }
+    inset_sides(value)
+}
+
+/// The side slots of a pseudo once its values resolved: a slot still
+/// holding the shorthand's `from-inset(...)` takes its own side of the
+/// resolved shorthand (`inset: var(--edges)` with `--edges: 0 0` puts `0`
+/// on every side), while a slot a later side declaration won keeps that
+/// side's value. A shorthand the resolver could not read stays as it came,
+/// which no side reads as zero.
+fn split_resolved_inset(decls: &mut IndexMap<String, String>) {
+    for (i, side) in SIDES.iter().enumerate() {
+        let Some(inner) = decls
+            .get(*side)
+            .and_then(|v| v.strip_prefix(FROM_INSET))
+            .and_then(|v| v.strip_prefix('('))
+            .and_then(|v| v.strip_suffix(')'))
+        else {
+            continue;
+        };
+        let resolved = inset_sides(inner)[i].clone();
+        decls.insert(side.to_string(), resolved);
+    }
+}
+
 /// The declarations of one `::before` / `::after` rule, by lowercased
 /// property, with `inset` expanded to its four sides in declaration order
-/// so a side named later wins, as it does in CSS.
+/// so a side named later wins, as it does in CSS. An `inset` holding a
+/// `var()` leaves its marker in the sides (`inset_side_slots`); this
+/// sheet-wide read resolves no side, so it takes the marker for a side not
+/// known to be zero.
 fn pseudo_decls(rule: &CssRule) -> IndexMap<String, String> {
     let mut decls: IndexMap<String, String> = IndexMap::new();
     for d in &rule.declarations {
         let key = js::to_lower_case(&d.prop);
         if key == "inset" {
-            for (side, value) in SIDES.iter().zip(inset_sides(&d.value)) {
+            for (side, value) in SIDES.iter().zip(inset_side_slots(&d.value)) {
                 decls.insert(side.to_string(), value);
             }
         }
@@ -463,10 +508,13 @@ fn put_pseudo_decl(
 /// the same way. Winners already expanded this way merge key by key
 /// (`put_pseudo_decl`), never through here again: a replay would hand a
 /// longhand's slot back to a shorthand of the same priority that it had
-/// already beaten. Values are stored as written: a shorthand holding a
-/// `var()` goes whole into both slots, and the computed pass resolves every
-/// value against the element's own custom properties before it reads them
-/// (`mark_pseudo_paint`), splitting the shorthand again then.
+/// already beaten. Values are stored as written: a `background` holding a
+/// `var()` goes whole into both slots and an `inset` holding one goes whole
+/// into every side slot under the `from-inset` marker (`inset_side_slots`),
+/// and the computed pass resolves every value against the element's own
+/// custom properties before it reads them (`mark_pseudo_paint`), splitting
+/// each shorthand again then. The priority still decides slot by slot, so a
+/// side declared after such an `inset` wins its slot from the marker.
 fn merge_pseudo_decl(
     map: &mut IndexMap<String, (String, DeclMeta)>,
     key: &str,
@@ -479,7 +527,7 @@ fn merge_pseudo_decl(
         put_pseudo_decl(map, "background-color", &color, meta);
         put_pseudo_decl(map, "background-image", &image, meta);
     } else if key == "inset" {
-        for (side, side_value) in SIDES.iter().zip(inset_sides(value)) {
+        for (side, side_value) in SIDES.iter().zip(inset_side_slots(value)) {
             put_pseudo_decl(map, side, &side_value, meta);
         }
     }
@@ -557,16 +605,28 @@ fn names_pseudo_paint_or_geometry(decls: &IndexMap<String, (String, DeclMeta)>) 
 /// may come from different rules, on one selector or two, and a later rule
 /// may take the paint away. Every value is resolved against the element's
 /// own custom properties first (`custom_props`, the computed pass's map
-/// for the element, inherited and inline values included), and a shorthand
-/// that held a `var()` is split into its color and image parts once
-/// resolved.
+/// for the element, inherited and inline values included), under those the
+/// pseudo's own rules declare (a `--scrim` on `.hero::before` wins over the
+/// element's, the pseudo-element inheriting the rest), and a shorthand
+/// that held a `var()` is split once resolved: a `background` into its
+/// color and image parts, an `inset` into the sides it sets
+/// (`split_resolved_inset`).
 fn mark_pseudo_paint(
     doc: &mut StaticDocument,
     decls: &IndexMap<String, String>,
     ids: &[NodeId],
     custom_props: &CustomProps,
 ) {
-    let decls: IndexMap<String, String> = decls
+    let own_props: Option<CustomProps> = decls.keys().any(|k| k.starts_with("--")).then(|| {
+        let mut layered = custom_props.clone();
+        for (name, value) in decls.iter().filter(|(k, _)| k.starts_with("--")) {
+            let resolved = super::checks_shim::resolve_var_refs(value, &layered);
+            layered.insert(name.clone(), resolved);
+        }
+        layered
+    });
+    let custom_props = own_props.as_ref().unwrap_or(custom_props);
+    let mut decls: IndexMap<String, String> = decls
         .iter()
         .map(|(k, v)| {
             (
@@ -575,6 +635,7 @@ fn mark_pseudo_paint(
             )
         })
         .collect();
+    split_resolved_inset(&mut decls);
     let decls = &decls;
     if !pseudo_covers_box(decls) || !pseudo_paints_a_box(decls) {
         return;

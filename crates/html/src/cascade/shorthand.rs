@@ -940,7 +940,7 @@ static BG_IMAGE_SPLIT_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)(?:repeating-)?(?:linear|radial|conic)-gradient\(|url\(")
         .expect("BG_IMAGE_SPLIT_RE")
 });
-static VAR_ANYWHERE_RE: Lazy<Regex> =
+pub(super) static VAR_ANYWHERE_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"(?i)var\(").expect("VAR_ANYWHERE_RE"));
 static OUTLINE_STYLE_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)^(none|hidden|solid|dashed|dotted|double|groove|ridge|inset|outset)$")

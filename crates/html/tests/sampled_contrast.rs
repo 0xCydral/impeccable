@@ -1741,3 +1741,50 @@ fn a_boxless_wrapper_at_a_hidden_opacity_does_not_hide_the_text() {
         assert!(found.is_empty(), "{opacity}: {found:?}");
     }
 }
+
+#[test]
+fn an_inset_held_in_a_custom_property_is_read_once_resolved() {
+    let site = Site::new("inset-var");
+    let body = "<div class=hero><p>White copy</p></div>";
+    // The shorthand is split into its sides only once the property has
+    // resolved, so `0 0` and `0` both stretch the pseudo over the host.
+    for edges in ["0 0", "0", "0 0 0 0"] {
+        let css = format!(":root {{ --edges: {edges}; }} .hero {{ background: url(light.png); position: relative; }} .hero::before {{ content: ''; position: absolute; inset: var(--edges); background: rgba(0, 0, 0, 0.7); }} p {{ position: relative; color: #fdfdfd; }}");
+        let found = site.contrast(&css, body);
+        assert!(found.is_empty(), "{edges}: {found:?}");
+    }
+    // The property may be the element's own.
+    let css = ".hero { --edges: 0 0; background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: var(--edges); background: rgba(0, 0, 0, 0.7); } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(found.is_empty(), "{found:?}");
+    // A bottom offset held in the property keeps it off the box, and a
+    // later side still wins over the resolved shorthand.
+    let css = ":root { --edges: 0 0 200px; } .hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: var(--edges); background: rgba(0, 0, 0, 0.7); } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
+    let css = ":root { --edges: 0 0; } .hero { background: url(light.png); position: relative; } .hero::before { content: ''; position: absolute; inset: var(--edges); background: rgba(0, 0, 0, 0.7); } .hero::before { top: 200px; } p { position: relative; color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
+}
+
+#[test]
+fn a_custom_property_the_pseudo_declares_sets_its_own_inset() {
+    let site = Site::new("inset-own-var");
+    let body = "<div class=hero><p>White copy</p></div>";
+    let p = " p { position: relative; color: #fdfdfd; }";
+    // A property declared on the pseudo's own rule is read there, over the
+    // element's, which the pseudo-element inherits.
+    for (host, own) in [("", "0 0"), ("--edges: 0 0 200px;", "0")] {
+        let css = format!(".hero {{ {host} background: url(light.png); position: relative; }} .hero::before {{ --edges: {own}; content: ''; position: absolute; inset: var(--edges); background: rgba(0, 0, 0, 0.7); }}{p}");
+        let found = site.contrast(&css, body);
+        assert!(found.is_empty(), "{host} / {own}: {found:?}");
+    }
+    // One that references the element's resolves through it.
+    let css = format!(".hero {{ --gap: 0; background: url(light.png); position: relative; }} .hero::before {{ --edges: var(--gap) var(--gap); content: ''; position: absolute; inset: var(--edges); background: rgba(0, 0, 0, 0.7); }}{p}");
+    let found = site.contrast(&css, body);
+    assert!(found.is_empty(), "{found:?}");
+    // The pseudo's own value wins even when it keeps the box off the host.
+    let css = format!(".hero {{ --edges: 0; background: url(light.png); position: relative; }} .hero::before {{ --edges: 0 0 200px; content: ''; position: absolute; inset: var(--edges); background: rgba(0, 0, 0, 0.7); }}{p}");
+    let found = site.contrast(&css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
+}
