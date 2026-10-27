@@ -359,6 +359,18 @@ fn split_resolved_inset(decls: &mut IndexMap<String, String>) {
     }
 }
 
+/// The key a `::before` / `::after` declaration is merged under: the
+/// property lowercased, except a custom property, whose name is
+/// case-sensitive (`--Scrim` is not `--scrim`) and is kept as written so a
+/// `var()` finds it.
+fn pseudo_prop_key(prop: &str) -> String {
+    if prop.starts_with("--") {
+        prop.to_string()
+    } else {
+        js::to_lower_case(prop)
+    }
+}
+
 /// The declarations of one `::before` / `::after` rule, by lowercased
 /// property, with `inset` expanded to its four sides in declaration order
 /// so a side named later wins, as it does in CSS. An `inset` holding a
@@ -368,7 +380,7 @@ fn split_resolved_inset(decls: &mut IndexMap<String, String>) {
 fn pseudo_decls(rule: &CssRule) -> IndexMap<String, String> {
     let mut decls: IndexMap<String, String> = IndexMap::new();
     for d in &rule.declarations {
-        let key = js::to_lower_case(&d.prop);
+        let key = pseudo_prop_key(&d.prop);
         if key == "inset" {
             for (side, value) in SIDES.iter().zip(inset_side_slots(&d.value)) {
                 decls.insert(side.to_string(), value);
@@ -833,7 +845,7 @@ pub fn build_static_style_map(
                                 order: rule.order,
                                 inline: false,
                             };
-                            merge_pseudo_decl(merged, &js::to_lower_case(&d.prop), &d.value, &meta);
+                            merge_pseudo_decl(merged, &pseudo_prop_key(&d.prop), &d.value, &meta);
                         }
                         continue;
                     }

@@ -230,6 +230,30 @@ static BG_IMAGE_CALL_RE: Lazy<Regex> = Lazy::new(|| {
     )
     .expect("BG_IMAGE_CALL_RE")
 });
+// A function call at the head of a token, and the colour functions among
+// them.
+static VALUE_FUNCTION_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)^-?[a-z][a-z0-9-]*\(").expect("VALUE_FUNCTION_RE"));
+static COLOR_FUNCTION_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?i)^(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix|color-contrast|light-dark|device-cmyk)\(",
+    )
+    .expect("COLOR_FUNCTION_RE")
+});
+
+/// A function call in a layer that is neither an image, a `var()`, nor a
+/// colour: a math or environment function the position and size grammars
+/// do not name (`round()`, `clamp()`, `mod()`, `anchor()`). It is kept in
+/// the slot it stands in, where the readers take it for a value they do
+/// not know (#560), rather than dropped for the slot's default, which
+/// would read a shifted image as covering.
+fn is_unread_value_function(token: &str) -> bool {
+    VALUE_FUNCTION_RE.is_match(token)
+        && !BG_IMAGE_CALL_RE.is_match(token)
+        && !VAR_HEAD_TOKEN_RE.is_match(token)
+        && !COLOR_FUNCTION_RE.is_match(token)
+}
+
 static CSS_WIDE_KEYWORD_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?i)^(?:inherit|initial|unset|revert|revert-layer)$").expect("CSS_WIDE_KEYWORD_RE")
 });
@@ -277,9 +301,12 @@ static BG_ATTACHMENT_RE: Lazy<Regex> =
 /// The per-layer lists of a `background` shorthand (`url(a) center / cover
 /// no-repeat, url(b)` -> repeat `no-repeat, repeat`, size `cover, auto`,
 /// position `center, 0% 0%`). An image call at the head of a token is
-/// dropped and the rest of the token kept; any other function is a value
-/// and stays whole, so `/ calc(100% / 3)` is stored for the compute loop to
-/// resolve instead of collapsing to `auto`. A layer holding a `var()`
+/// dropped and the rest of the token kept; any other function but a colour
+/// is a value and stays whole, so `/ calc(100% / 3)` is stored for the
+/// compute loop to resolve instead of collapsing to `auto`, and one the
+/// grammar does not name (`0 round(nearest, 200px, 1px)`) is kept where it
+/// stands for the readers to find unknown (`is_unread_value_function`)
+/// rather than dropped for the slot's default. A layer holding a `var()`
 /// anywhere outside its image call is stored whole in every slot, as the
 /// shorthand's own `from-shorthand(<the layer's tokens>)`: the parser
 /// cannot see what the `var()` holds (a position, a size behind its slash,
@@ -347,17 +374,25 @@ pub fn parse_static_background_layers(value: &str) -> LayerLists {
             // is what follows the slash, one or two values; what precedes it
             // is the last position component.
             if let Some((before, after)) = split_size_slash(token) {
-                if !before.is_empty() && position.len() < 4 && BG_POSITION_RE.is_match(before) {
+                if !before.is_empty()
+                    && position.len() < 4
+                    && (BG_POSITION_RE.is_match(before) || is_unread_value_function(before))
+                {
                     position.push(size_component(before));
                 }
                 in_size = true;
                 size.clear();
-                if !after.is_empty() && BG_SIZE_RE.is_match(after) {
+                if !after.is_empty()
+                    && (BG_SIZE_RE.is_match(after) || is_unread_value_function(after))
+                {
                     size.push(size_component(after));
                 }
                 continue;
             }
-            if in_size && size.len() < 2 && BG_SIZE_RE.is_match(token) {
+            if in_size
+                && size.len() < 2
+                && (BG_SIZE_RE.is_match(token) || is_unread_value_function(token))
+            {
                 size.push(size_component(token));
                 continue;
             }
@@ -374,7 +409,9 @@ pub fn parse_static_background_layers(value: &str) -> LayerLists {
                 attachment = Some(js::to_lower_case(token));
                 continue;
             }
-            if position.len() < 4 && BG_POSITION_RE.is_match(token) {
+            if position.len() < 4
+                && (BG_POSITION_RE.is_match(token) || is_unread_value_function(token))
+            {
                 position.push(size_component(token));
             }
         }
@@ -606,7 +643,8 @@ pub fn names_background_geometry(value: &str) -> bool {
                     && (BG_REPEAT_RE.is_match(t)
                         || BG_POSITION_RE.is_match(t)
                         || BG_SIZE_RE.is_match(t)
-                        || BG_ATTACHMENT_OR_BOX_RE.is_match(t))
+                        || BG_ATTACHMENT_OR_BOX_RE.is_match(t)
+                        || is_unread_value_function(t))
             };
             match split_size_slash(token) {
                 Some((before, after)) => {
@@ -681,7 +719,8 @@ pub fn expand_shorthand_slot(prop: &str, value: &str) -> (String, bool) {
 
 /// A shorthand token the background grammar reads as geometry rather than
 /// paint: a repeat, position, size, box, or attachment keyword, a length or
-/// percentage, a size slash, or `none`.
+/// percentage, a size slash, `none`, or a math function that is no colour
+/// (`is_unread_value_function`).
 fn is_background_geometry_token(token: &str) -> bool {
     token.eq_ignore_ascii_case("none")
         || split_size_slash(token).is_some()
@@ -690,6 +729,7 @@ fn is_background_geometry_token(token: &str) -> bool {
         || BG_SIZE_RE.is_match(token)
         || BG_BOX_RE.is_match(token)
         || BG_ATTACHMENT_RE.is_match(token)
+        || is_unread_value_function(token)
 }
 
 /// The color and the image list a `background` shorthand paints, for the

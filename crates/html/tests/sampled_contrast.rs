@@ -1861,3 +1861,44 @@ fn a_reset_on_the_pseudo_takes_the_elements_value_or_paints_nothing() {
         assert!(sampled_on("light.png", &found), "{reset}: {found:?}");
     }
 }
+
+#[test]
+fn a_mixed_case_custom_property_on_the_pseudo_keeps_its_spelling() {
+    let site = Site::new("pseudo-var-case");
+    let body = "<div class=hero><p>White copy</p></div>";
+    let p = " p { position: relative; color: #fdfdfd; }";
+    // Custom property names are case-sensitive: `--Scrim` is not `--scrim`,
+    // so the pseudo's own value is found and the fallback is not taken.
+    let css = format!(".hero {{ background: url(light.png); position: relative; }} .hero::before {{ --Scrim: transparent; content: ''; position: absolute; inset: 0; background: var(--Scrim, rgba(0, 0, 0, 0.7)); }}{p}");
+    let found = site.contrast(&css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
+    let css = format!(".hero {{ background: url(light.png); position: relative; }} .hero::before {{ --Scrim: rgba(0, 0, 0, 0.7); content: ''; position: absolute; inset: 0; background: var(--Scrim, transparent); }}{p}");
+    let found = site.contrast(&css, body);
+    assert!(found.is_empty(), "{found:?}");
+    // The element's own custom properties are the cascade's, keyed
+    // lowercased, so a mixed-case name is found only where the pseudo
+    // declares it; on the element it misses and the fallback is taken.
+}
+
+#[test]
+fn a_position_function_the_parser_cannot_read_leaves_the_image_unknown() {
+    let site = Site::new("position-function");
+    let body = "<div class=hero><p>White copy</p></div>";
+    // A position the parser cannot read (`round()`, `clamp()`) can shift
+    // the image off the box and expose the fallback colour above it, so the
+    // layer is not known to cover: the analytic pair (white on #111) stands
+    // and nothing is sampled.
+    for shifted in [
+        "0 round(nearest, 200px, 1px)",
+        "0 clamp(0px, 10vh, 200px)",
+        "round(nearest, 200px, 1px) 0",
+    ] {
+        let css = format!(".hero {{ background: #111 url(light.png) {shifted} / 100% 100% no-repeat; }} p {{ color: #fdfdfd; }}");
+        let found = site.contrast(&css, body);
+        assert!(found.is_empty(), "{shifted}: {found:?}");
+    }
+    // One the parser reads keeps covering.
+    let css = ".hero { background: #111 url(light.png) 0 0 / 100% 100% no-repeat; } p { color: #fdfdfd; }";
+    let found = site.contrast(css, body);
+    assert!(sampled_on("light.png", &found), "{found:?}");
+}
