@@ -323,6 +323,21 @@ pub(crate) fn gradient_layers_are_dot_texture(dom: &dyn Dom, node: ElId, image: 
 /// cell's area times the dot's alpha, and still be texture over the fill.
 const DOT_TEXTURE_MAX_INK: f64 = 0.15;
 
+/// A gradient argument split into its leading colour (a token, or a whole
+/// function call such as `rgba(26, 26, 31, 0.13)`) and the rest.
+fn leading_colour(arg: &str) -> Option<(&str, &str)> {
+    match arg.find('(') {
+        Some(open) if !arg[..open].contains(char::is_whitespace) => {
+            let close = arg.rfind(')')?;
+            Some((&arg[..=close], &arg[close + 1..]))
+        }
+        _ => Some(match arg.split_once(char::is_whitespace) {
+            Some((c, r)) => (c, r),
+            None => (arg, ""),
+        }),
+    }
+}
+
 /// A `radial-gradient` layer that paints a dot: its colour stops are opaque
 /// enough to see first (alpha over 0.05), then transparent to the end, with
 /// every position in pixels. The dot's radius (the first transparent stop's
@@ -337,26 +352,15 @@ fn radial_dot(layer: &str) -> Option<(f64, f64)> {
     // (`ellipse 4px 32px` paints far more of a tall cell).
     let shape = split_top_level_commas(inner).into_iter().next().unwrap_or_default();
     let shape = js::trim(&shape).to_string();
-    if crate::color::parse_any_color(Some(shape.split_ascii_whitespace().next().unwrap_or(""))).is_none()
-        && !shape.starts_with("circle")
-    {
+    let starts_with_colour = leading_colour(&shape).is_some_and(|(c, _)| crate::color::parse_any_color(Some(c)).is_some());
+    if !starts_with_colour && !shape.starts_with("circle") {
         return None;
     }
     let mut coloured: Vec<(f64, Option<f64>)> = Vec::new();
     let mut clear: Vec<Option<f64>> = Vec::new();
     for arg in split_top_level_commas(inner) {
         let arg = js::trim(&arg).to_string();
-        // The colour is the leading token, or the leading function call.
-        let (colour, rest) = match arg.find('(') {
-            Some(open) if !arg[..open].contains(char::is_whitespace) => {
-                let close = arg.rfind(')')?;
-                (&arg[..=close], &arg[close + 1..])
-            }
-            _ => match arg.split_once(char::is_whitespace) {
-                Some((c, r)) => (c, r),
-                None => (arg.as_str(), ""),
-            },
-        };
+        let (colour, rest) = leading_colour(&arg)?;
         let Some(c) = crate::color::parse_any_color(Some(colour)) else {
             // The shape and position argument, allowed only first.
             if coloured.is_empty() && clear.is_empty() {

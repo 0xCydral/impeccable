@@ -882,6 +882,10 @@ mod tests {
         assert!(!dots(&d));
         paint(&mut d, "radial-gradient(circle, rgb(34, 34, 34) 3px, rgba(0, 0, 0, 0) 3px)", "7px 7px");
         assert!(!dots(&d));
+        // The default shape with a spaced colour first, in a square cell, is
+        // a circle too (#1201 review).
+        paint(&mut d, "radial-gradient(rgba(26, 26, 31, 0.13) 1px, rgba(0, 0, 0, 0) 1.4px)", "24px 24px");
+        assert!(dots(&d));
         // An ellipse is not read as a circle's area (#1201 review).
         paint(&mut d, "radial-gradient(4px 32px, rgb(17, 17, 17) 3px, rgba(0, 0, 0, 0) 3px)", "8px 64px");
         assert!(!dots(&d));
