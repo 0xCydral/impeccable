@@ -79,12 +79,6 @@ pub fn in_framed_demo_dom(dom: &dyn Dom, el: ElId) -> bool {
     text_context::in_framed_demo(&DomNode::new(dom, el))
 }
 
-/// Whether `control` is a card built as a button around a drawn frame that
-/// holds `el` ([`text_context::is_card_button`]).
-pub fn is_card_button_dom(dom: &dyn Dom, control: ElId, el: ElId) -> bool {
-    text_context::is_card_button(&DomNode::new(dom, control), &DomNode::new(dom, el))
-}
-
 /// Whether the element is itself a framed HTML demo, by structure.
 pub fn is_demo_frame_dom(dom: &dyn Dom, el: ElId) -> bool {
     text_context::is_demo_frame(&DomNode::new(dom, el))

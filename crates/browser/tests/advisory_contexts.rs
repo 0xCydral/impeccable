@@ -228,11 +228,10 @@ fn text_in_a_framed_demo_is_advisory() {
         "adv-footnote",
         "adv-beside",
         // Round 14 (row 1, decision r14-t1): a bar after a glow layer or at
-        // the padding edge, a card built as a button around a frame, a
-        // caption labelled up to a comma or called fictional, a phone.
+        // the padding edge, a caption labelled up to a comma or called
+        // fictional, a phone with a status bar.
         "adv-glow",
         "adv-padded",
-        "adv-card-button",
         "adv-comma",
         "adv-fictional",
         "adv-phone",
@@ -264,10 +263,14 @@ fn text_in_a_framed_demo_is_advisory() {
         "fail-sample-unframed",
         "fail-sample-button",
         "fail-sample-says",
-        "fail-plan-button",
         "fail-phone-no-clock",
         "fail-phone-shell",
         "fail-comma-prose",
+        "fail-reel",
+        "fail-talk",
+        "fail-app-header",
+        "fail-caption-sample",
+        "fail-caption-fictional",
     ] {
         assert_eq!(on(&f, rule, class), ["warning"], "{class}: {f:#?}");
     }
@@ -311,16 +314,20 @@ fn nested_cards_in_a_mockup_are_advisory() {
 }
 
 /// Row 16 of observations-1010: tiny-text tests SVG text at the size the
-/// viewBox scale draws it, and says so in the snippet.
+/// viewBox scale and an even scale on the text draw it; the snippet keeps the
+/// computed size, so corpus clusters do not split.
 #[test]
 fn svg_text_is_read_at_its_drawn_size() {
     let Some(f) = scan("tiny-text-svg.html") else { return };
     let snippets = |class: &str| -> Vec<&str> {
         f.iter().filter(|r| r.0 == "tiny-text" && r.2.contains(class)).map(|r| r.1.as_str()).collect()
     };
-    assert_eq!(snippets("fail-shrunk"), ["14px body text (drawn at 7px)"], "{f:#?}");
-    assert_eq!(snippets("fail-near"), ["10.5px body text (drawn at 11.99px)"], "{f:#?}");
+    assert_eq!(snippets("fail-shrunk"), ["14px body text"], "{f:#?}");
+    assert_eq!(snippets("fail-near"), ["10.5px body text"], "{f:#?}");
     assert_eq!(snippets("fail-no-viewbox"), ["10px body text"], "{f:#?}");
     assert!(snippets("pass-enlarged").is_empty(), "{f:#?}");
     assert!(snippets("pass-scaled").is_empty(), "{f:#?}");
+    assert_eq!(snippets("fail-text-scaled"), ["14px body text"], "{f:#?}");
+    assert!(snippets("pass-text-scaled").is_empty(), "{f:#?}");
+    assert_eq!(snippets("fail-skewed"), ["10px body text"], "{f:#?}");
 }

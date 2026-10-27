@@ -378,9 +378,9 @@ const SAMPLE_CAPTION_MAX_WORDS: usize = 16;
 /// heading, a table cell, a list item or code.
 const SAMPLE_CAPTION_TAGS: &[&str] =
     &["p", "span", "div", "small", "em", "i", "strong", "b", "figcaption"];
-/// Words that say the panel is made up whatever follows them: the caption
-/// cue of decision r14-t1 ("a caption calling it illustrative or
-/// fictional").
+/// Words that say the panel is made up: the caption cue of decision r14-t1
+/// ("a caption calling it illustrative or fictional"). `illustrative` counts
+/// whatever follows it, `fictional` only alone or said of data or a company.
 const ILLUSTRATIVE_WORDS: &[&str] = &["illustrative", "fictional"];
 /// How far above a frame a caption beside it is looked for. ascenix.co's
 /// "Sample data" note closes a tab set three wrappers above each panel.
@@ -404,9 +404,12 @@ pub fn is_sample_caption(text: &str) -> bool {
     }
     // The label ends at the first word that closes a sentence or carries a
     // separator. A mark inside a word ("example.com/pricing") closes nothing.
-    // A comma closes it too: usedefinite.com's "Illustrative values, shown
-    // only to explain each workflow." is labelled by its first two words.
-    const ENDS: &[char] = &['.', '!', '?', ':', ';', ',', '。', '：', '，'];
+    // A comma closes it only once the label holds an illustrative word:
+    // usedefinite.com's "Illustrative values, shown only to explain each
+    // workflow." is labelled by its first two words, while "Sample data,
+    // exports and reports are kept for 30 days" is a sentence.
+    const ENDS: &[char] = &['.', '!', '?', ':', ';', '。', '：'];
+    const COMMAS: &[char] = &[',', '，'];
     const SEPARATORS: &[&str] = &["·", "•", "|", "—", "–", "-"];
     let mut words: Vec<String> = Vec::new();
     for raw in all {
@@ -417,15 +420,23 @@ pub fn is_sample_caption(text: &str) -> bool {
         if !word.is_empty() {
             words.push(word);
         }
-        if raw.ends_with(ENDS) {
+        if raw.ends_with(ENDS)
+            || (raw.ends_with(COMMAS) && words.iter().any(|w| ILLUSTRATIVE_WORDS.contains(&w.as_str())))
+        {
             break;
         }
     }
     if !(1..=3).contains(&words.len()) {
         return false;
     }
-    if words.iter().any(|w| ILLUSTRATIVE_WORDS.contains(&w.as_str())) {
+    if words.iter().any(|w| w == "illustrative") {
         return true;
+    }
+    // `fictional` alone, or said of data or a company ("Fictional company
+    // data"); "Fictional worlds, real heartbreak." is a tagline.
+    if words[0] == "fictional" {
+        return words.get(1).is_none_or(|w| SAMPLE_NOUNS.contains(&w.as_str()) || w == "company")
+            && words.get(2).is_none_or(|w| SAMPLE_NOUNS.contains(&w.as_str()) || w == "only");
     }
     words.len() >= 2
         && SAMPLE_WORDS.contains(&words[0].as_str())
@@ -828,7 +839,7 @@ fn holds_status_clock<N: ContextNode>(c: &N, frame: (f64, f64, f64, f64)) -> boo
             let kids = n.children();
             if kids.is_empty() {
                 let in_band = b.1 >= frame.1 - 1.0 && b.0 >= frame.0 - 1.0 && b.0 + b.2 <= frame.0 + frame.2 + 1.0;
-                if in_band && CLOCK_RE.is_match(n.direct_text().trim()) {
+                if in_band && CLOCK_RE.is_match(n.direct_text().trim()) && in_status_bar(n, frame) {
                     return true;
                 }
             }
@@ -837,6 +848,31 @@ fn holds_status_clock<N: ContextNode>(c: &N, frame: (f64, f64, f64, f64)) -> boo
         level = next;
     }
     false
+}
+
+/// The tallest row a status bar takes, in px, and the share of the frame's
+/// width it spans at least.
+const STATUS_BAR_MAX_PX: f64 = 36.0;
+const STATUS_BAR_MIN_SHARE: f64 = 0.7;
+
+/// The clock sits in a status bar: its parent is a short row across the
+/// frame, the clock is the row's first or last child, and the row holds
+/// another child with no letters (a signal glyph, a battery, a notch).
+/// aproov.es pairs "9:41" with "●●● ▲", mypip.dev with a battery, and
+/// iubcr.vercel.app with a notch pill and "PKT". A duration badge on a video
+/// card or a start time on a schedule card is a lone box (round 14 review).
+fn in_status_bar<N: ContextNode>(clock: &N, frame: (f64, f64, f64, f64)) -> bool {
+    let Some(row) = clock.parent() else { return false };
+    let Some(r) = row.rect() else { return false };
+    if r.3 > STATUS_BAR_MAX_PX || r.2 < frame.2 * STATUS_BAR_MIN_SHARE {
+        return false;
+    }
+    let kids = row.children();
+    let edge = kids.first().is_some_and(|k| k.key() == clock.key())
+        || kids.last().is_some_and(|k| k.key() == clock.key());
+    edge && kids
+        .iter()
+        .any(|k| k.key() != clock.key() && !k.text().chars().any(char::is_alphabetic))
 }
 
 /// Elements whose text is source, not words on the page.
@@ -974,13 +1010,10 @@ fn framed_walk<N: ContextNode>(el: &N, mut passed_frame: bool) -> Option<Frame> 
             return None;
         }
         // A control inside the frame is still a control: adant.ai's tab
-        // buttons in its terminal card are clicked. A card built as a
-        // button around a drawn frame is not the control the text belongs
-        // to ([`is_card_button`]), so the walk goes on through it.
-        if ((tag == "a" && c.attr("href").is_some())
+        // buttons in its terminal card are clicked.
+        if (tag == "a" && c.attr("href").is_some())
             || DEMO_CONTROL_TAGS.contains(&tag.as_str())
-            || c.attr("role").is_some_and(|r| DEMO_CONTROL_ROLES.contains(&r.trim().to_lowercase().as_str())))
-            && !is_card_button(&c, el)
+            || c.attr("role").is_some_and(|r| DEMO_CONTROL_ROLES.contains(&r.trim().to_lowercase().as_str()))
         {
             return None;
         }
@@ -1024,43 +1057,6 @@ fn framed_walk<N: ContextNode>(el: &N, mut passed_frame: bool) -> Option<Frame> 
         cur = c.parent();
     }
     None
-}
-
-/// The text a button holds past which, with a drawn frame inside it, it is
-/// a card rather than one control: the browser engine's
-/// `FOCUSABLE_CONTROL_MAX_CHARS`.
-pub const CARD_BUTTON_MIN_CHARS: usize = 80;
-
-/// Whether `control`, a `button` or `role="button"` that `el` sits in, is a
-/// card built as a button: it holds more than [`CARD_BUTTON_MIN_CHARS`] of
-/// text, and a frame-sized frame box sits between it and `el`.
-/// engineforge.ai's 409 by 490px `<button>` cards each hold a bordered code
-/// panel, and mypip.dev's `role="button"` feature cards a bordered prompt
-/// box. The text in that frame is the frame's, not the label of the card's
-/// click. A toggle ("Cockpit", "Classic") holds a few words and no frame,
-/// and a plan card built as a button with three words on it stays a
-/// control. A box with no known size is no frame, so an engine without
-/// layout keeps every button a control.
-pub fn is_card_button<N: ContextNode>(control: &N, el: &N) -> bool {
-    let is_button = control.tag() == "button"
-        || control.attr("role").is_some_and(|r| r.trim().eq_ignore_ascii_case("button"));
-    if !is_button || control.key() == el.key() {
-        return false;
-    }
-    if collapse(&control.text()).encode_utf16().count() <= CARD_BUTTON_MIN_CHARS {
-        return false;
-    }
-    let mut framed = false;
-    let mut cur = el.parent();
-    for _ in 0..32 {
-        let Some(c) = cur else { return false };
-        if c.key() == control.key() {
-            return framed;
-        }
-        framed = framed || is_sized_frame_box(&c);
-        cur = c.parent();
-    }
-    false
 }
 
 /// Whether the box itself is a framed HTML demo by the structure
@@ -2294,7 +2290,12 @@ mod tests {
     fn a_caption_label_ends_at_a_comma() {
         assert!(is_sample_caption("Illustrative values, shown only to explain each workflow."));
         assert!(is_sample_caption("Fictional company, invented figures."));
-        assert!(is_sample_caption("Sample data, refreshed nightly"));
+        // A comma closes only a label with an illustrative word in it, and
+        // `fictional` is said of data or a company (the review's probes).
+        assert!(!is_sample_caption("Sample data, exports and reports are kept for 30 days on every plan."));
+        assert!(!is_sample_caption("Sample data, refreshed nightly"));
+        assert!(!is_sample_caption("Fictional worlds, real heartbreak."));
+        assert!(!is_sample_caption("Fictional heroes"));
         assert!(!is_sample_caption("Illustrations, photos and video by our studio team in Berlin."));
         assert!(!is_sample_caption("Our sample, data and reports in one place"));
         // usedefinite.com 10136830: the caption itself keeps reporting.
@@ -2305,65 +2306,6 @@ mod tests {
         let note = wrap.add("p").text("Illustrative values, shown only to explain each workflow.");
         assert!(in_framed_demo(&label));
         assert!(!in_framed_demo(&note));
-    }
-
-    /// observations-1010 row 1, gap 2: a card built as a button around a
-    /// drawn frame does not stop the walk; a toggle and a short plan card
-    /// stay controls.
-    #[test]
-    fn a_card_built_as_a_button() {
-        let long = "Inspect the relevant implementation and where it lives in the project, then trace the call.";
-        let build = |tag: &str, role: Option<&str>, copy: &str, frame: bool| {
-            let (_t, body) = Tree::new();
-            let win = body.add("div").rect(0.0, 0.0, 1230.0, 600.0);
-            let bar = win.add("div").rect(0.0, 0.0, 1230.0, 36.0);
-            let lights = bar.add("div").rect(12.0, 12.0, 42.0, 10.0);
-            for i in 0..3 {
-                dot(&lights, 12.0 + 16.0 * i as f64);
-            }
-            let grid = win.add("div").rect(0.0, 36.0, 1230.0, 490.0);
-            let mut card = grid.add(tag).rect(0.0, 36.0, 409.0, 490.0);
-            if let Some(r) = role {
-                card = card.attr("role", r);
-            }
-            card.add("span").text(copy);
-            let holder = if frame {
-                framed(card.add("span").rect(20.0, 180.0, 365.0, 319.0))
-            } else {
-                card.add("span").rect(20.0, 180.0, 365.0, 319.0)
-            };
-            let label = holder.add("span").text("48").font(10.5);
-            (card, label)
-        };
-        let (card, label) = build("button", None, long, true);
-        assert!(is_card_button(&card, &label));
-        assert!(in_framed_demo(&label));
-        let (card, label) = build("div", Some("button"), long, true);
-        assert!(is_card_button(&card, &label));
-        assert!(in_framed_demo(&label));
-        // Twins: a plan card built as a button with three words on it, a
-        // long button with no frame inside, and a link card.
-        let (card, label) = build("button", None, "Pro plan", true);
-        assert!(!is_card_button(&card, &label));
-        assert!(!in_framed_demo(&label));
-        let (card, label) = build("button", None, long, false);
-        assert!(!is_card_button(&card, &label));
-        assert!(!in_framed_demo(&label));
-        let (card, label) = build("div", Some("tab"), long, true);
-        assert!(!is_card_button(&card, &label));
-        assert!(!in_framed_demo(&label));
-        // engineforge.ai's "Cockpit" toggle: the button is the text.
-        let (_t, body) = Tree::new();
-        let (_win, _bar, results) = window(&body);
-        let toggle = results.parent().unwrap().add("button").text("Cockpit").font(10.0);
-        assert!(!is_card_button(&toggle, &toggle));
-        assert!(!in_framed_demo(&toggle));
-        // No size, no frame: an engine without layout keeps the control.
-        let (_t, body) = Tree::new();
-        let card = body.add("button");
-        card.add("span").text(long);
-        let label = framed(card.add("span")).add("span").text("48");
-        assert!(!is_card_button(&card, &label));
     }
 
     /// A phone: 300 by 600, rounded and shadowed, a status bar with a 9:41
@@ -2427,6 +2369,52 @@ mod tests {
         let (_t, body) = Tree::new();
         let (device, _label) = phone(&body.add("div"), 300.0, 600.0, "9:41", 16.0);
         assert!(!is_phone_frame(&device));
+        // The clock has to sit in a status bar (round 14 review): a duration
+        // badge on a portrait video card, a start time on a talk card, and
+        // an app header with a title beside a time are not one.
+        let card = |build: &dyn Fn(&N)| {
+            let (_t, body) = page(1280.0);
+            let card = body
+                .add("div")
+                .rect(100.0, 400.0, 240.0, 427.0)
+                .style("borderRadius", "16px")
+                .style("backgroundColor", "rgb(17, 17, 17)");
+            build(&card);
+            card
+        };
+        let badge = card(&|c: &N| {
+            c.add("span").rect(112.0, 412.0, 30.0, 16.0).text("0:45");
+        });
+        assert!(!is_phone_frame(&badge), "a duration badge");
+        let talk = card(&|c: &N| {
+            let head = c.add("div").rect(100.0, 410.0, 240.0, 20.0);
+            head.add("span").rect(112.0, 412.0, 40.0, 16.0).text("09:30");
+        });
+        assert!(!is_phone_frame(&talk), "a start time alone in its row");
+        let header = card(&|c: &N| {
+            let head = c.add("div").rect(100.0, 400.0, 240.0, 32.0);
+            head.add("span").rect(112.0, 408.0, 120.0, 16.0).text("Central Station");
+            head.add("span").rect(290.0, 408.0, 40.0, 16.0).text("14:05");
+        });
+        assert!(!is_phone_frame(&header), "a title beside a time");
+        let tall = card(&|c: &N| {
+            let head = c.add("div").rect(100.0, 400.0, 240.0, 48.0);
+            head.add("span").rect(112.0, 410.0, 30.0, 16.0).text("9:41");
+            head.add("span").rect(300.0, 410.0, 30.0, 16.0).text("▲");
+        });
+        assert!(!is_phone_frame(&tall), "a row too tall for a status bar");
+        let narrow = card(&|c: &N| {
+            let head = c.add("div").rect(100.0, 400.0, 100.0, 24.0);
+            head.add("span").rect(112.0, 404.0, 30.0, 16.0).text("9:41");
+            head.add("i").rect(160.0, 404.0, 20.0, 10.0);
+        });
+        assert!(!is_phone_frame(&narrow), "a row that does not span the screen");
+        let bar = card(&|c: &N| {
+            let head = c.add("div").rect(100.0, 400.0, 240.0, 24.0);
+            head.add("span").rect(112.0, 404.0, 30.0, 16.0).text("9:41");
+            head.add("i").rect(290.0, 404.0, 20.0, 10.0);
+        });
+        assert!(is_phone_frame(&bar), "a clock and a battery");
         // Only a frame drawn as a device counts.
         let (_t, body) = page(1280.0);
         let (device, _label) = phone(&body.add("div"), 300.0, 600.0, "9:41", 16.0);

@@ -7,9 +7,9 @@
   SVG text is drawn at its computed size times the scale its svg takes from
   the viewBox: the rendered width over the viewBox width, the smaller axis
   under the default preserveAspectRatio. tiny-text tests that drawn size
-  (observations-1010 row 16, quoin.ai) and names it in the snippet when it
-  differs from the computed size. An svg without a viewBox keeps the
-  computed size.
+  (observations-1010 row 16, quoin.ai), times an even scale on the text or a
+  group around it. The snippet keeps the computed size. An svg without a
+  viewBox, or a skew between it and the text, keeps the computed size.
 -->
 <style>
   body { font-family: system-ui, sans-serif; font-size: 16px; color: #1a1a1a; background: #fff; margin: 24px; }
@@ -34,6 +34,16 @@
     <text x="10" y="40" font-size="10.5">3 agents at PAYG, as low as $3.75 an agent</text>
   </svg>
 
+  <!-- 14px under a group scaled to 0.5 in a 1:1 viewBox: drawn at 7px -->
+  <svg class="fail-text-scaled" width="400" height="100" viewBox="0 0 400 100">
+    <g transform="scale(0.5)"><text x="10" y="60" font-size="14">Three agents at forty dollars a seat</text></g>
+  </svg>
+
+  <!-- a skewed group: the computed size stands (10px) -->
+  <svg class="fail-skewed" width="200" height="100" viewBox="0 0 100 50">
+    <g transform="skewX(10)"><text x="5" y="30" font-size="10">Cited report with sources for every claim</text></g>
+  </svg>
+
   <!-- no viewBox: the computed size stands -->
   <svg class="fail-no-viewbox" width="400" height="100">
     <text x="10" y="40" font-size="10">Cited report with sources for every claim</text>
@@ -46,6 +56,11 @@
   <!-- 10px in a 200-unit viewBox drawn 400px wide: drawn at 20px -->
   <svg class="pass-enlarged" width="400" height="200" viewBox="0 0 200 100">
     <text x="10" y="30" font-size="10">Cited report with sources</text>
+  </svg>
+
+  <!-- 10px text scaled 1.5 on itself in a 1:1 viewBox: drawn at 15px -->
+  <svg class="pass-text-scaled" width="400" height="100" viewBox="0 0 400 100">
+    <text x="10" y="40" font-size="10" transform="scale(1.5)">Cited report with sources</text>
   </svg>
 
   <!-- 11px in a 300-unit viewBox drawn 420px wide: drawn at 15.4px -->

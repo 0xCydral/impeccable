@@ -44,6 +44,8 @@
   .status { height: 24px; padding: 8px 18px 0; font-size: 11px; }
   .phone .inner { width: 190px; }
   .phone h1 { font-size: 16px; margin: 8px 10px; }
+  .status { display: flex; justify-content: space-between; box-sizing: border-box; }
+  .battery { display: inline-block; width: 20px; height: 9px; border: 1px solid #111; border-radius: 3px; }
 </style>
 </head>
 <body>
@@ -79,7 +81,7 @@
 
   <!-- round 14: a phone-shaped shell that holds the page's h1 -->
   <div class="phone border rounded-3xl shadow-lg" id="fail-shell">
-    <div class="status">9:41</div>
+    <div class="status"><span>9:41</span><i class="battery"></i></div>
     <h1>Departures</h1>
     <div class="inner border rounded-xl" id="fail-shell-inner"><p>Gate B12, boarding at 10:40.</p><p>A second line makes it a surface, not a label.</p></div>
   </div>
@@ -141,7 +143,7 @@
 
   <!-- round 14: a phone with a status clock (aproov.es) -->
   <div class="phone border rounded-3xl shadow-lg" id="adv-phone">
-    <div class="status">9:41</div>
+    <div class="status"><span>9:41</span><i class="battery"></i></div>
     <div class="inner border rounded-xl" id="adv-phone-inner"><p>Newsletter, 4.2k readers</p><p>A second line makes it a surface, not a label.</p></div>
   </div>
 

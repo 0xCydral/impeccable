@@ -21,12 +21,12 @@
 
   Round 14 (row 1 of observations-1010, decision r14-t1): a title bar after
   an aria-hidden or absolute layer with no text, or at the box's padding
-  edge, still makes a window; a button that holds a long card and a drawn
-  frame is not the control of the text in that frame, while a short plan
-  button stays one; a caption label ends at a comma, and "fictional" names
-  a mock as "illustrative" does; a phone (a portrait frame with an h:mm clock
-  in its top 50px) is mock context unless it is the page's own shell (it
-  holds the page's h1). A phone shape with no clock says nothing.
+  edge, still makes a window; an illustrative caption's label ends at a
+  comma, and "fictional" said alone or of data or a company names a mock;
+  a phone (a portrait frame with an h:mm clock in a status bar in its top
+  50px) is mock context unless it is the page's own shell (it holds the
+  page's h1). A phone shape with no clock, a portrait card with a lone time
+  on it, and captions that only open with the words say nothing.
 
   No class here says mock, preview, terminal or code: those are exempt from
   two of the three rules already.
@@ -62,13 +62,21 @@
   .glow { position: absolute; top: 0; left: 0; width: 400px; height: 150px; }
   .padded { width: 352px; height: 102px; padding: 24px; }
   .padded .bar { width: 352px; }
-  .card-button { display: block; width: 376px; height: 112px; padding: 0; margin: 0; border: 0; background: #fff; font: inherit; text-align: left; }
-  .card-copy { display: block; font-size: 12px; padding: 4px 8px; }
-  .card-frame { display: block; width: 324px; height: 66px; margin: 0 8px; padding: 8px; border: 1px solid #d0d7de; border-radius: 10px; }
   .phone { width: 220px; height: 440px; margin: 0 0 24px; border-radius: 32px; background-color: #111111; box-shadow: 0 20px 40px rgba(0, 0, 0, 0.25); padding: 8px; box-sizing: border-box; }
   .screen { width: 204px; height: 424px; padding-bottom: 16px; box-sizing: border-box; border-radius: 24px; background-color: #ffffff; overflow: hidden; }
   .status { height: 24px; padding: 6px 16px 0; font-size: 10px; }
   .phone h1 { font-size: 16px; margin: 8px 16px; }
+  .reel { position: relative; width: 200px; height: 356px; margin: 0 0 24px; padding: 12px; box-sizing: border-box; border-radius: 16px; background-color: #1b1b1f; }
+  .reel .dur { position: absolute; top: 12px; left: 12px; font-size: 12px; color: #fff; }
+  .reel .small { position: absolute; bottom: 16px; left: 14px; color: #fff; }
+  .talk { width: 200px; height: 360px; margin: 0 0 24px; border: 1px solid #ddd; border-radius: 18px; box-sizing: border-box; }
+  .talk .t { display: block; padding: 16px 16px 0; font-size: 14px; }
+  .talk .small { padding: 12px 16px; }
+  .app { width: 240px; height: 480px; margin: 0 0 24px; border-radius: 24px; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2); background-color: #fff; overflow: hidden; }
+  .app .top { display: flex; justify-content: space-between; padding: 8px 16px; font-size: 13px; }
+  .app .small { padding: 12px 16px; }
+  .status { display: flex; justify-content: space-between; box-sizing: border-box; }
+  .battery { display: inline-block; width: 20px; height: 9px; border: 1px solid #111; border-radius: 3px; }
 </style>
 </head>
 <body>
@@ -154,17 +162,28 @@
     <p class="strip">Sample data</p>
   </div>
 
-  <!-- round 14: in a window, a plan card built as a button with three
-       words on it stays a control, frame or not -->
-  <div class="shot">
-    <div class="bar"><span class="lights"><i class="dot"></i><i class="dot"></i><i class="dot"></i></span></div>
-    <button type="button" class="card-button"><span class="card-copy">Pro plan</span><span class="card-frame"><span class="small fail-plan-button">Per seat</span></span></button>
-  </div>
-
   <!-- round 14: a phone shape with no status clock, and a phone-shaped app
        shell that is the page's own (it holds the h1) -->
   <div class="phone"><div class="screen"><div class="status">Inbox</div><span class="small fail-phone-no-clock">Two drafts</span></div></div>
-  <div class="phone"><div class="screen"><div class="status">9:41</div><h1>Departures</h1><span class="small fail-phone-shell">Gate B12</span></div></div>
+  <div class="phone"><div class="screen"><div class="status"><span>9:41</span><i class="battery"></i></div><h1>Departures</h1><span class="small fail-phone-shell">Gate B12</span></div></div>
+
+  <!-- round 14 review: a time alone on a portrait card is no status bar: a
+       video's duration badge, a talk's start time, and an app column whose
+       header sets a title beside the time -->
+  <div class="reel"><span class="dur">0:45</span><span class="small fail-reel">12K views</span></div>
+  <div class="talk"><span class="t">09:30</span><span class="small fail-talk">Main hall</span></div>
+  <div class="app"><div class="top"><span>Central Station</span><span>14:05</span></div><span class="small fail-app-header">Platform 4</span></div>
+
+  <!-- round 14 review: a comma closes only an illustrative label, and
+       "fictional" said of anything but data or a company is a tagline -->
+  <div class="set">
+    <div class="shot"><div class="pane"><span class="small fail-caption-sample">Exports this month</span></div></div>
+    <p class="note">Sample data, exports and reports are kept for 30 days on every plan.</p>
+  </div>
+  <div class="set">
+    <div class="shot"><div class="pane"><span class="small fail-caption-fictional">Hardback, 384 pages</span></div></div>
+    <p class="note">Fictional worlds, real heartbreak.</p>
+  </div>
 
   <!-- round 14: a long caption that only mentions the word is no label -->
   <div class="set">
@@ -250,13 +269,6 @@
     <div class="pane"><span class="small adv-padded">mymanagment.net</span></div>
   </div>
 
-  <!-- round 14 gap 2: a card built as a button around a drawn frame, in a
-       window (engineforge.ai's context cards) -->
-  <div class="shot">
-    <div class="bar"><span class="lights"><i class="dot"></i><i class="dot"></i><i class="dot"></i></span></div>
-    <button type="button" class="card-button"><span class="card-copy">Inspect the relevant implementation and where it lives in the project, then trace it.</span><span class="card-frame"><span class="small adv-card-button">player_controller.gd</span></span></button>
-  </div>
-
   <!-- round 14 gap 3: a caption labelled up to a comma (usedefinite.com),
        and a fictional one -->
   <div class="set">
@@ -269,7 +281,7 @@
   </div>
 
   <!-- round 14: a phone with a status clock in its top 50px (aproov.es) -->
-  <div class="phone"><div class="screen"><div class="status">9:41</div><span class="small adv-phone">Newsletter 4.2k</span></div></div>
+  <div class="phone"><div class="screen"><div class="status"><span>9:41</span><i class="battery"></i></div><span class="small adv-phone">Newsletter 4.2k</span></div></div>
 </div>
 
 </body>

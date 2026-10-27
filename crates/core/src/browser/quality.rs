@@ -89,23 +89,9 @@ const FOCUSABLE_CONTROL_MAX_CHARS: usize = 80;
 /// accordion item is a 358 by 531px focusable box around a code sample, a
 /// heading and a paragraph. So a `tabindex` box counts when its value is not
 /// negative and it holds at most [`FOCUSABLE_CONTROL_MAX_CHARS`] of text.
-///
-/// With `past_cards`, a card built as a button around a drawn frame
-/// ([`crate::checks::text_context::is_card_button`]) is not the control of
-/// the text in that frame; a control above the card still is.
-/// `undersized-ui-text` asks it that way only to decide whether a failing
-/// label is a control's when it weighs the advisory contexts, so the card
-/// moves severity and never what reports.
-fn is_in_control(dom: &dyn Dom, el: ElId, past_cards: bool) -> bool {
-    let mut from = Some(el);
-    let mut steps = 0;
-    while let Some(f) = from {
-        let Some(control) = closest_or_none(dom, f, INTERACTIVE) else { break };
-        steps += 1;
-        if !past_cards || steps > 8 || !super::text_context::is_card_button_dom(dom, control, el) {
-            return true;
-        }
-        from = dom.parent(control);
+fn is_in_control(dom: &dyn Dom, el: ElId) -> bool {
+    if matches_or_closest(dom, el, INTERACTIVE) {
+        return true;
     }
     let mut cur = Some(el);
     while let Some(c) = cur {
@@ -129,10 +115,38 @@ const SVG_TEXT_TAGS: &[&str] = &["text", "tspan", "textpath"];
 /// rendered size over its `viewBox` size, the smaller of the two axes as
 /// the default `preserveAspectRatio` (`meet`) fits it, the larger under
 /// `slice`, and the vertical axis, which sets glyph height, under `none`.
-/// `None` where the `svg` has no usable `viewBox` or no measured box, so the
-/// computed size stands. A transform inside the drawing is not read.
+/// A `transform` on the text or on a box between it and the `svg` (the
+/// computed value, else the attribute) multiplies in when it scales evenly,
+/// or only moves or turns the text. `None` where the `svg` has no usable
+/// `viewBox` or no measured box, or a transform between skews, tilts or
+/// scales the axes apart, so the computed size stands.
 fn svg_text_scale(dom: &dyn Dom, el: ElId) -> Option<f64> {
     let svg = closest_or_none(dom, el, "svg")?;
+    let mut inner = 1.0;
+    let mut cur = Some(el);
+    for _ in 0..32 {
+        let Some(c) = cur else { return None };
+        if c == svg {
+            break;
+        }
+        let computed = dom.style(c, "transform");
+        let value = if computed.trim().is_empty() || computed.trim() == "none" {
+            dom.attr(c, "transform").unwrap_or_default()
+        } else {
+            computed
+        };
+        let value = value.trim().to_ascii_lowercase();
+        if !value.is_empty() && value != "none" {
+            let t = crate::checks::text_context::read_transform(&value);
+            if t.tilt_3d || value.contains("skew") {
+                return None;
+            }
+            if value.contains("scale") || value.contains("matrix") {
+                inner *= t.uniform_scale?;
+            }
+        }
+        cur = dom.parent(c);
+    }
     let view_box = dom.attr(svg, "viewBox")?;
     let parts: Vec<f64> = view_box
         .split(|c: char| c.is_whitespace() || c == ',')
@@ -153,6 +167,7 @@ fn svg_text_scale(dom: &dyn Dom, el: ElId) -> Option<f64> {
     } else {
         sx.min(sy)
     };
+    let scale = scale * inner;
     scale.is_finite().then_some(scale).filter(|s| *s > 0.0)
 }
 
@@ -2884,15 +2899,10 @@ pub fn check_quality(dom: &dyn Dom, q: &QualityInput) -> Vec<RuleHit> {
         {
             // Fine print and text in a mockup report as advisory; a legal
             // or footnote block reports nothing.
-            let snippet = match svg_drawn {
-                Some(drawn) if (drawn - font_size).abs() >= 0.01 => format!(
-                    "{}px body text (drawn at {}px)",
-                    number_to_string(font_size),
-                    number_to_string(math_round(drawn * 100.0) / 100.0)
-                ),
-                _ => format!("{}px body text", number_to_string(font_size)),
-            };
-            let hit = fine_print_hit(RuleHit::new("tiny-text", snippet));
+            let hit = fine_print_hit(RuleHit::new(
+                "tiny-text",
+                format!("{}px body text", number_to_string(font_size)),
+            ));
             findings.extend(hit.map(|hit| if hit.is_advisory() { hit } else { advisory_if(hit, in_mock()) }));
         }
     }
@@ -2922,7 +2932,7 @@ pub fn check_quality(dom: &dyn Dom, q: &QualityInput) -> Vec<RuleHit> {
                 && crate::checks::text_rules::reads_as_code(&dt);
             let is_exempt_context = is_code_run || matches_or_closest(dom, el, EXEMPT_CONTEXT);
             if !is_exempt_context && !is_visually_hidden(dom, el) {
-                let is_interactive = is_in_control(dom, el, false);
+                let is_interactive = is_in_control(dom, el);
                 let is_furniture = is_furniture(dom, el);
                 let is_smallprint = matches_or_closest(dom, el, SMALLPRINT);
                 let floor = if !is_interactive && is_smallprint {
@@ -2946,11 +2956,8 @@ pub fn check_quality(dom: &dyn Dom, q: &QualityInput) -> Vec<RuleHit> {
                     // A label with no reading job (taste call r5-p3) and
                     // text in a mockup (r5-p26) report as advisory. A
                     // control's text is neither: a framed demo's controls
-                    // keep failing too, since a visitor can use them. A
-                    // card built as a button around a drawn frame is not
-                    // the control of the text in that frame (row 1, round
-                    // 14).
-                    let advisory = (!is_interactive || !is_in_control(dom, el, true))
+                    // keep failing too, since a visitor can use them.
+                    let advisory = !is_interactive
                         && (super::text_context::is_micro_label_dom(dom, el) || in_mock());
                     findings.push(advisory_if(
                         RuleHit::new(
