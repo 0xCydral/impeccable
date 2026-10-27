@@ -15,7 +15,7 @@ use crate::checks::rules::{
 };
 use crate::color::{color_to_hex, composite_color_over, contrast_ratio, Rgba};
 use crate::constants::{WCAG_LARGE_BOLD_TEXT_PX, WCAG_LARGE_TEXT_PX};
-use crate::js::{number_to_string, parse_float, to_fixed};
+use crate::js::{number_to_string, parse_float};
 
 /// Grid points per axis: 6x6 = 36 samples, sampling rather than scanning.
 const GRID: usize = 6;
@@ -483,21 +483,18 @@ pub fn sampled_contrast_pairs(
     if measured >= threshold {
         return Some(Sampled::Pass);
     }
-    let ratio_label = if to_fixed(measured, 1) == to_fixed(threshold, 1) {
-        to_fixed(measured, 2)
-    } else {
-        to_fixed(measured, 1)
-    };
+    // Both ratios print through the shared label, as `check_colors` prints
+    // its own: a failing ratio never reads as the bar it misses.
     let mut hit = RuleHit::new(
         "low-contrast",
         format!(
             "sampled (coarse) {}:1 (need {}:1) — text {} on {}; p90 of {} samples, median {}:1",
-            ratio_label,
+            crate::color::ratio_label(measured, threshold),
             number_to_string(threshold),
             color_to_hex(Some(&text)),
             ground,
             n,
-            to_fixed(median, 1)
+            crate::color::ratio_label(median, threshold)
         ),
     );
     // Just under the bar is advisory here as it is for the analytic pair.
@@ -586,6 +583,24 @@ mod tests {
             ink_unread: true,
             ..ink.clone()
         }));
+    }
+
+    #[test]
+    fn a_failing_ratio_never_prints_as_the_bar() {
+        // Gray 106 on gray 234 sits at 4.4959:1: one decimal would read
+        // `4.5`, two `4.50`; the label stays under the requirement, and so
+        // does the median's.
+        let ink = rgba(106.0, 106.0, 106.0, 1.0);
+        let ground: Vec<Rgba> = vec![rgba(234.0, 234.0, 234.0, 1.0); 36];
+        let Some(Sampled::Fail(hit)) =
+            sampled_contrast(&opts(ink, 16.0), "hero.png", &ground, 36, Ink::Text)
+        else {
+            panic!("gray 106 on gray 234 sits just under 4.5:1");
+        };
+        assert_eq!(
+            hit.snippet,
+            "sampled (coarse) 4.49:1 (need 4.5:1) — text #6a6a6a on hero.png; p90 of 36 samples, median 4.49:1"
+        );
     }
 
     #[test]
