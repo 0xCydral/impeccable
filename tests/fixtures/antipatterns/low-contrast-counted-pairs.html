@@ -65,6 +65,9 @@
   .lilac { color: #c9a3c8; }
   .grad-card { width: 520px; height: 120px; padding: 12px; background: linear-gradient(#dddddd, #eeeeee); }
   .grad-card p { margin: 0 0 8px; height: 20px; color: #bbbbbb; font-size: 14px; }
+  .plum { display: inline-block; width: 150px; height: 24px; margin: 0 16px 8px 0; color: #b6a6b6; }
+  .plum-small { font-size: 10px; }
+  .vend-mark { color: #b7a7a7; }
   .ok-name { color: #333333; }
   .ok-share { display: inline-block; width: 120px; height: 24px; margin: 0 16px 8px 0; color: #1d4ed8; }
 </style>
@@ -95,6 +98,13 @@
 
     <h3>A word reports, not a glyph</h3>
     <p class="row"><a class="mark" href="#m1" id="pass-mark-glyph">&#x1D54F;</a><a class="mark" href="#m2" id="flag-mark-word">Share on the web</a><a class="mark" href="#m3" id="pass-mark-mail">Share by mail</a></p>
+
+    <h3>A word with a finding of its own takes the report</h3>
+    <p class="row"><a class="plum" href="#p1" id="pass-plum-glyph">&#x1D54F;</a><a class="plum plum-small" href="#p2" id="flag-plum-small-word">Small worded link</a></p>
+
+    <h3>A vendor's word never takes the page's report</h3>
+    <p class="row"><a class="mark vend-mark" href="#v1" id="flag-vend-glyph">&#x1D54E;</a></p>
+    <div id="taboola-feed-marks"><a class="mark vend-mark" href="#v2" id="pass-vend-word">Sponsored worded link</a></div>
 
     <h3>An avatar initial and a tag on one pair</h3>
     <span class="av" id="adv-avatar-initial">AB</span>

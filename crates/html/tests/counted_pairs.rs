@@ -31,6 +31,9 @@ fn a_colour_pair_reports_once_and_counts_the_rest() {
             "2.1:1 (need 4.5:1) — text #b4b4b4 on #ffffff (and 1 more)",
             "1.8:1 (need 4.5:1) — text #c2c2c2 on #ffffff",
             "2.1:1 (need 4.5:1) — text #b5b5b5 on #ffffff (and 2 more)",
+            "2.3:1 (need 4.5:1) — text #b6a6b6 on #ffffff (and 1 more)",
+            // The file scan reads no vendor, so the feed's link is counted.
+            "2.3:1 (need 4.5:1) — text #b7a7a7 on #ffffff (and 1 more)",
             // The avatar initial (advisory) and the tags stay apart.
             "1.8:1 (need 4.5:1) — text #ffffff on #93c5fd",
             "1.8:1 (need 4.5:1) — text #ffffff on #93c5fd (and 1 more)",

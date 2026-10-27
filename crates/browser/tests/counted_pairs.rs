@@ -81,7 +81,13 @@ fn findings(engine: &BrowserEngine, port: u16, fixture: &str, rules: &[&str]) ->
 fn a_colour_pair_reports_once_and_counts_the_rest() {
     let Some(engine) = engine() else { return };
     let port = serve();
-    let found = findings(&engine, port, "low-contrast-counted-pairs.html", &["low-contrast"]);
+    let all = findings(&engine, port, "low-contrast-counted-pairs.html", &["low-contrast", "undersized-ui-text"]);
+    // The small worded link keeps its own finding beside the report it took.
+    assert!(
+        all.iter().any(|(rule, sel, _)| rule == "undersized-ui-text" && sel == "#flag-plum-small-word"),
+        "{all:#?}"
+    );
+    let found: Vec<(String, String, String)> = all.into_iter().filter(|(rule, _, _)| rule == "low-contrast").collect();
     let got: Vec<(&str, &str)> = found.iter().map(|(_, sel, snippet)| (sel.as_str(), snippet.as_str())).collect();
     assert_eq!(
         got,
@@ -99,6 +105,12 @@ fn a_colour_pair_reports_once_and_counts_the_rest() {
             ("#flag-lone-caption", "1.8:1 (need 4.5:1) — text #c2c2c2 on #ffffff"),
             // The first worded link reports, not the glyph before it.
             ("#flag-mark-word", "2.1:1 (need 4.5:1) — text #b5b5b5 on #ffffff (and 2 more)"),
+            // The worded copy takes the report even where it already holds
+            // a finding of its own (one group per element).
+            ("#flag-plum-small-word", "2.3:1 (need 4.5:1) — text #b6a6b6 on #ffffff (and 1 more)"),
+            // A vendor's worded copy never takes the page's report, and is
+            // not counted for it.
+            ("#flag-vend-glyph", "2.3:1 (need 4.5:1) — text #b7a7a7 on #ffffff"),
             // An advisory initial never speaks for the failing tags.
             ("#adv-avatar-initial", "1.8:1 (need 4.5:1) — text #ffffff on #93c5fd"),
             ("#flag-tag-first", "1.8:1 (need 4.5:1) — text #ffffff on #93c5fd (and 1 more)"),

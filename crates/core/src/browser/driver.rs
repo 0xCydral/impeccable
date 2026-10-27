@@ -2944,10 +2944,15 @@ pub fn collect_browser_findings(dom: &dyn Dom, config: &BrowserConfig) -> Collec
     let mut pair_copies: Vec<(ElId, ElId)> = Vec::new();
     for (owner, copy) in color_seen.take_copies() {
         let (Ok(owner), Ok(copy)) = (ElId::try_from(owner), ElId::try_from(copy)) else { continue };
+        // A copy counts only on the owner's side of the pair's other
+        // boundaries: a copy the pixels read never adds to a verdict they
+        // do not, and a vendor's copy never adds to the page's own.
         if pair_copies.contains(&(owner, copy))
             || scoped_ignore_active(dom, copy, "low-contrast")
             || mockups.declared(copy)
             || super::painted::unpainted_for(dom, copy, super::painted::PaintGate::Text).is_some()
+            || super::visual::routed_reason(dom, copy).is_some() != super::visual::routed_reason(dom, owner).is_some()
+            || crate::third_party::widget_vendor(dom, copy) != crate::third_party::widget_vendor(dom, owner)
         {
             continue;
         }
@@ -3254,6 +3259,10 @@ fn count_repeats(
         moved.entry(gi).or_default().push((copy, f));
     }
     let old = std::mem::take(groups);
+    // A copy that already holds a group anywhere takes the finding there, so
+    // one element never ends up with two groups.
+    let grouped: HashSet<ElId> = old.iter().map(|g| g.el).collect();
+    let targets: HashSet<ElId> = moved.values().flatten().map(|(c, _)| *c).collect();
     let mut joins: Vec<(ElId, BrowserFinding)> = Vec::new();
     for (gi, g) in old.into_iter().enumerate() {
         let el = g.el;
@@ -3264,12 +3273,12 @@ fn count_repeats(
             .filter(|(fi, _)| !drop.contains(&(gi, *fi)))
             .map(|(_, f)| f)
             .collect();
-        if !findings.is_empty() {
+        if !findings.is_empty() || targets.contains(&el) {
             groups.push(FindingGroup { el, findings });
         }
         for (copy, f) in moved.remove(&gi).unwrap_or_default() {
             joins.push((copy, f));
-            if !groups.iter().any(|g| g.el == copy) {
+            if !grouped.contains(&copy) && !groups.iter().any(|g| g.el == copy) {
                 groups.push(FindingGroup { el: copy, findings: Vec::new() });
             }
         }
