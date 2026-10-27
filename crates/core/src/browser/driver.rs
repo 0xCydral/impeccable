@@ -3307,12 +3307,13 @@ fn word_letters(dom: &dyn Dom, el: ElId) -> usize {
 }
 
 /// The panel an inner card sits in for `nested-cards`: its nearest
-/// card-like ancestor, as `check_layout` walks to it.
+/// card-like ancestor that is not the page's own frame, the test
+/// `check_layout` walks with.
 fn outer_card(dom: &dyn Dom, el: ElId) -> Option<ElId> {
     let mut parent = dom.parent(el);
     let mut steps = 0;
     while let Some(p) = parent {
-        if super::page_checks::is_card_like_dom(dom, p) {
+        if super::page_checks::is_card_like_dom(dom, p) && !super::page_checks::is_page_frame(dom, p) {
             return Some(p);
         }
         steps += 1;
