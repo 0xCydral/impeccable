@@ -563,7 +563,10 @@ fn side_meets_same_fill(dom: &dyn Dom, el: ElId, rect: &Rect, side: usize) -> bo
                     return false;
                 }
                 budget -= 1;
-                if abuts(&br) && colors_nearly_match(Some(&bg), Some(&dom.style(b, "backgroundColor"))) {
+                if abuts(&br)
+                    && colors_nearly_match(Some(&bg), Some(&dom.style(b, "backgroundColor")))
+                    && super::painted::painted_at_capture(dom, b)
+                {
                     return true;
                 }
                 if depth < SAME_FILL_DESCENT {
@@ -3149,7 +3152,7 @@ fn text_without_code(dom: &dyn Dom, el: ElId) -> String {
 fn outline_skips_unpainted(dom: &dyn Dom, h: ElId) -> bool {
     use super::painted::Unpainted;
     matches!(
-        super::painted::unpainted_at_capture(dom, h, super::painted::OwnOpacity::Counts),
+        super::painted::unpainted_text_box(dom, h),
         Some(Unpainted::NotRendered | Unpainted::NoArea)
     )
 }
@@ -7488,7 +7491,7 @@ mod tests {
         d.add_text(h1, "  Title   here ");
         let h3 = d.add(Some(body), "h3");
         d.add_text(h3, "Sub");
-        let f = check_page_quality_dom(&d);
+        let f = check_page_quality_measured(&mut d);
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].type_, "skipped-heading");
         assert_eq!(f[0].detail, "<h1> \"Title here\" followed by <h3> \"Sub\" (missing h2)");
@@ -7503,7 +7506,7 @@ mod tests {
         let script = d.add(Some(h5), "script");
         d.add_text(script, "document.write(writeIslamicDate(-1));");
         d.add_text(h5, "28 Rabi-uthani 1448 AH");
-        let f = check_page_quality_dom(&d);
+        let f = check_page_quality_measured(&mut d);
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].detail, "<h2> \"E-Paper\" followed by <h5> \"28 Rabi-uthani 1448 AH\" (missing h3)");
 
@@ -7517,9 +7520,21 @@ mod tests {
         d.add_text(h3, "true facts");
         let script = d.add(Some(h3), "script");
         d.add_text(script, "true");
-        let f = check_page_quality_dom(&d);
+        let f = check_page_quality_measured(&mut d);
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].detail, "<h1> \"Title\" followed by <h3> \"true facts\" (missing h2)");
+    }
+
+    /// [`check_page_quality_dom`] on a copy of `d` whose headings with no
+    /// recorded box are laid out one under another, as a page draws them:
+    /// a heading with no area leaves the outline (r9-t3).
+    fn check_page_quality_measured(d: &mut FakeDom) -> Vec<BrowserFinding> {
+        for (i, h) in d.query_all(None, "h1, h2, h3, h4, h5, h6").unwrap_or_default().into_iter().enumerate() {
+            if d.rect(h).width == 0.0 && d.rect(h).height == 0.0 {
+                d.set_rect(h, 0.0, 40.0 * i as f64, 600.0, 30.0);
+            }
+        }
+        check_page_quality_dom(d)
     }
 
     /// Taste call r9-t3: the outline skips a heading not painted at
@@ -7557,6 +7572,14 @@ mod tests {
             })
             .is_empty(),
             "an sr-only h2 stays in the outline"
+        );
+        assert_eq!(
+            page(&|d, h2| {
+                d.set_styles(h2, &[("height", "0px"), ("overflow", "hidden"), ("overflowY", "hidden")]);
+                d.set_rect(h2, 0.0, 100.0, 600.0, 0.0);
+            }),
+            skip,
+            "a collapsed h2 with no area"
         );
         assert!(page(&|d, h2| { d.set_style(h2, "opacity", "0"); }).is_empty(), "a reveal waiting at opacity 0");
         // A parked slide's heading, which a clip cuts out at capture, stays
@@ -7596,8 +7619,8 @@ mod tests {
             d.add_text(h, text);
             h
         };
-        let details = |d: &FakeDom| -> Vec<String> {
-            check_page_quality_dom(d).into_iter().map(|f| f.detail).collect()
+        let details = |d: &mut FakeDom| -> Vec<String> {
+            check_page_quality_measured(d).into_iter().map(|f| f.detail).collect()
         };
 
         // The footer's column titles follow the page's closing h2.
@@ -7612,7 +7635,7 @@ mod tests {
         heading(&mut d, footer, "h4", "Company");
         heading(&mut d, footer, "h6", "Legal");
         assert_eq!(
-            details(&d),
+            details(&mut d),
             vec![
                 "<h1> \"Products\" followed by <h3> \"Jet Fuel\" (missing h2)",
                 "<h4> \"Company\" followed by <h6> \"Legal\" (missing h5)",
@@ -7628,7 +7651,7 @@ mod tests {
         heading(&mut d, footer, "h2", "Ready to level up?");
         heading(&mut d, footer, "h4", "Products");
         heading(&mut d, footer, "h4", "Company");
-        assert_eq!(details(&d), Vec::<String>::new());
+        assert_eq!(details(&mut d), Vec::<String>::new());
 
         // A footer that opens on a column title: the skip after it is
         // between two footer headings.
@@ -7639,7 +7662,7 @@ mod tests {
         d.add_selector(footer, FOOTER_SELECTOR);
         heading(&mut d, footer, "h4", "Company");
         heading(&mut d, footer, "h6", "Legal");
-        assert_eq!(details(&d), vec!["<h4> \"Company\" followed by <h6> \"Legal\" (missing h5)"]);
+        assert_eq!(details(&mut d), vec!["<h4> \"Company\" followed by <h6> \"Legal\" (missing h5)"]);
 
         // A footer heading that opens the page continues no outline.
         let mut d = FakeDom::new();
@@ -7648,14 +7671,14 @@ mod tests {
         d.add_selector(footer, FOOTER_SELECTOR);
         heading(&mut d, footer, "h4", "Company");
         heading(&mut d, footer, "h6", "Legal");
-        assert_eq!(details(&d), vec!["<h4> \"Company\" followed by <h6> \"Legal\" (missing h5)"]);
+        assert_eq!(details(&mut d), vec!["<h4> \"Company\" followed by <h6> \"Legal\" (missing h5)"]);
 
         // The same headings with no footer around them.
         let mut d = FakeDom::new();
         let (_h, body) = d.with_page();
         heading(&mut d, body, "h2", "Ready to start?");
         heading(&mut d, body, "h4", "Solutions");
-        assert_eq!(details(&d), vec!["<h2> \"Ready to start?\" followed by <h4> \"Solutions\" (missing h3)"]);
+        assert_eq!(details(&mut d), vec!["<h2> \"Ready to start?\" followed by <h4> \"Solutions\" (missing h3)"]);
     }
 
     #[test]

@@ -1656,11 +1656,12 @@ fn rhythm_spacer_paints(dom: &dyn Dom, el: ElId) -> bool {
 fn rhythm_spacer_fill_shows(dom: &dyn Dom, el: ElId) -> bool {
     let mut cur = dom.parent(el);
     while let Some(c) = cur {
-        if rhythm_painted_background(dom, c).is_some() {
-            break;
-        }
+        // The image paints over the box's own colour, so it is read first.
         if rhythm_image_band(dom, c) {
             return true;
+        }
+        if rhythm_painted_background(dom, c).is_some() {
+            break;
         }
         cur = dom.parent(c);
     }
@@ -6284,6 +6285,9 @@ mod tests {
         d.set_style(s, "backgroundColor", "rgb(255, 255, 255)");
         assert!(rhythm_image_band(&d, page), "the gradient bands the page box");
         assert!(!rhythm_is_spacer(&d, s), "a white strip across a gradient band");
+        // So is one whose band also sets a white colour under the gradient.
+        d.set_style(page, "backgroundColor", "rgb(255, 255, 255)");
+        assert!(!rhythm_is_spacer(&d, s), "a white strip across a gradient over white");
     }
 
     /// observations-35 row 12 (improved-rotary-phone-two.vercel.app 213861):

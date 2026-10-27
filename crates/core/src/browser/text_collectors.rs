@@ -655,7 +655,8 @@ pub fn check_em_dash_overuse_dom(dom: &dyn Dom) -> Vec<RuleHit> {
         Some(t) => without_choice_lines(dom, &without_lone_dash_cells(&t)),
         None => dom.text_content(body),
     };
-    hits(check_em_dash_overuse_less(Some(&text), list_separator_dashes(dom)))
+    let rendered = collapse_ws(&text);
+    hits(check_em_dash_overuse_less(Some(&text), list_separator_dashes(dom, &rendered)))
 }
 
 /// Whether `term` is the whole text of an element inside `li` (a link, a
@@ -701,11 +702,12 @@ const SEPARATOR_MAX_ITEMS: usize = 2000;
 /// item's leading text, up to [`SEPARATOR_TERM_MAX_WORDS`] words and no
 /// sentence end, a bullet or check glyph before it aside, and it reads as a
 /// label: an element of its own, or followed by a description that opens
-/// capitalised or in an uncased script. The item has to be painted. Prose items
+/// capitalised or in an uncased script. The item has to be painted, and its
+/// term and dash have to be in the rendered text the count reads. Prose items
 /// whose dash falls later, and every dash in paragraphs, still count. Each
 /// item gives at most its first dash; an item that holds a nested list is
 /// read through its own items.
-fn list_separator_dashes(dom: &dyn Dom) -> usize {
+fn list_separator_dashes(dom: &dyn Dom, rendered: &str) -> usize {
     let mut groups: Vec<(Option<ElId>, usize)> = Vec::new();
     for li in dom.query_all(None, "li").unwrap_or_default().into_iter().take(SEPARATOR_MAX_ITEMS) {
         let r = dom.rect(li);
@@ -738,8 +740,12 @@ fn list_separator_dashes(dom: &dyn Dom) -> usize {
             continue;
         }
         // Text a visitor does not see is not in `innerText`, so its dashes
-        // were never counted (a closed menu at `visibility: hidden`).
-        if super::painted::unpainted_at_capture(dom, li, super::painted::OwnOpacity::Counts).is_some() {
+        // were never counted (a closed menu at `visibility: hidden`): the
+        // item has to be painted, and the term with its dash has to be in
+        // the rendered text the count was taken from.
+        if super::painted::unpainted_at_capture(dom, li, super::painted::OwnOpacity::Counts).is_some()
+            || !(rendered.contains(&format!("{term} —")) || rendered.contains(&format!("{term}—")))
+        {
             continue;
         }
         let key = dom.parent(li).and_then(|list| dom.parent(list));
@@ -1605,6 +1611,19 @@ mod tests {
             .map(|i| format!("We ship update {i} — and every update is free for you."))
             .collect();
         assert_eq!(page("li", &bullets, true), 1, "short clauses that run on in lowercase");
+        // Separator items whose text never reached the rendered text take
+        // nothing off the count of the dashes that did.
+        let mut d = FakeDom::new();
+        let (_html, body) = d.with_page();
+        let list = d.add(Some(body), "ul");
+        d.set_rect(list, 0.0, 0.0, 600.0, 200.0);
+        for t in ["Weather", "Flights", "Headlines"] {
+            let li = d.add(Some(list), "li");
+            d.set_rect(li, 0.0, 0.0, 600.0, 30.0);
+            d.add_text(li, &format!("{t} — Live in the menu panel."));
+        }
+        d.el_mut(body).inner_text = Some("a — b — c — d — e — f — g — h — i".to_string());
+        assert_eq!(check_em_dash_overuse_dom(&d).len(), 1, "eight prose dashes stand");
         assert_eq!(page("p", &prose, false), 1, "eight prose sentences");
     }
 
