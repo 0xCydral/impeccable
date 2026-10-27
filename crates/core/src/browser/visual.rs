@@ -3875,7 +3875,7 @@ pub fn css_plan(dom: &dyn Dom, node: ElId, text_color: Option<&Rgba>) -> CssPlan
                 // reaches here without one, so this branch is unreachable.
             }
         }
-        if URL_RE.is_match(&bg_image) {
+        if URL_RE.is_match(&painting_image) {
             // A `fixed` image is placed against the viewport, not against
             // the box, so the pixel under a point depends on the scroll
             // position this walk never models. Mapped onto the box it read
@@ -3886,16 +3886,21 @@ pub fn css_plan(dom: &dyn Dom, node: ElId, text_color: Option<&Rgba>) -> CssPlan
                     sample: json!({ "status": "unresolved", "reason": "fixed background image", "stop": true }),
                 };
             }
+            // The size and position are the first layer's, as they always
+            // were; where parked layers were left out, they are the first
+            // kept layer's (#1201 review: a photo under a parked underline
+            // is not drawn at the underline's size).
+            let layer = if kept.len() == all_layers.len() { 0 } else { kept.first().copied().unwrap_or(0) };
             let size = {
-                let v = get_layer_value(&dom.style(node, "backgroundSize"), 0);
+                let v = get_layer_value(&dom.style(node, "backgroundSize"), layer);
                 if v.is_empty() { "auto".to_string() } else { v }
             };
             let position = {
-                let v = get_layer_value(&dom.style(node, "backgroundPosition"), 0);
+                let v = get_layer_value(&dom.style(node, "backgroundPosition"), layer);
                 if v.is_empty() { "50% 50%".to_string() } else { v }
             };
             return CssPlan::Url {
-                url: first_css_url(&bg_image),
+                url: first_css_url(&painting_image),
                 size,
                 position,
             };
@@ -6370,6 +6375,24 @@ mod tests {
             CssPlan::Sample { sample } => {
                 assert_eq!(sample["method"], "analytic-gradient", "{sample}");
                 assert_ne!(sample["color"]["r"], 109.0, "{sample}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // A photo under a parked underline is drawn at its own size and
+        // position, not the underline's (#1201 review).
+        d.set_styles(
+            span,
+            &[
+                ("backgroundImage", "linear-gradient(rgb(109, 118, 124), rgb(109, 118, 124)), url(\"photo.png\")"),
+                ("backgroundSize", "0px 1px, cover"),
+                ("backgroundRepeat", "no-repeat, no-repeat"),
+                ("backgroundPosition", "0% 100%, 50% 20%"),
+            ],
+        );
+        match css_plan(&d, span, Some(&ink)) {
+            CssPlan::Url { url, size, position } => {
+                assert!(url.contains("photo.png"), "{url}");
+                assert_eq!((size.as_str(), position.as_str()), ("cover", "50% 20%"));
             }
             other => panic!("{other:?}"),
         }
