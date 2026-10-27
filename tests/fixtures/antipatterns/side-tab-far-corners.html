@@ -13,7 +13,8 @@
   A 3px or wider stripe reported before and keeps its wording.
 
   A border on one side of a circle is an arc of a ring (an orbit around an
-  icon, a spinner: observations-1010 row 6), on either axis. An accent band
+  icon, a spinner: observations-1010 row 6), on either axis. A 64px content
+  box with 80px of padding each side is a 224px pill, not a circle. An accent band
   across a rounded panel nobody sees (a closed mega-menu at opacity 0 and
   visibility: hidden, row 17) shows no band; the open panel reports.
 -->
@@ -33,6 +34,7 @@
   .ring { width: 64px; height: 64px; margin: 0 0 24px; border-radius: 9999px; box-sizing: border-box; }
   .pass-ring-arc-right { border-right: 2px solid #0d9488; }
   .pass-ring-arc-top { width: 80px; height: 80px; border-top: 2px solid #0d9488; }
+  .flag-padded-pill { width: 64px; height: 64px; padding: 0 80px; margin: 0 0 24px; border-radius: 32px; border-left: 4px solid #0d9488; background: #fdfdfd; }
   .menu { width: 400px; height: 140px; margin: 0 0 24px; }
   .menu-closed { opacity: 0; visibility: hidden; }
   .panel { width: 320px; height: 120px; padding: 16px; box-sizing: border-box; background: #fdfdfd; border-top: 3px solid #eb5747; border-radius: 4px; }
@@ -46,6 +48,7 @@
   <div class="card flag-right-far-rounded"><p>The mirror image: a 2px rule on the right, rounded on the left.</p></div>
   <div class="card flag-left-uneven-far"><p>Far corners of 12px and 6px: the smaller one is the radius.</p></div>
   <div class="card flag-left-wide-far-rounded"><p>A 4px rule reported before, as a stripe with no radius, and still does.</p></div>
+  <div class="flag-padded-pill"><p>Wide card</p></div>
   <div class="menu"><div class="panel flag-band-open-panel"><p>Services, pricing and support.</p></div></div>
 </div>
 

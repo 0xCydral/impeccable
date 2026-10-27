@@ -3425,6 +3425,10 @@ mod tests {
         assert!(pulses("@keyframes r3 { 0% { inset: 0; opacity: 1 } 100% { inset: -4px; opacity: 0 } }"));
         assert!(pulses("@keyframes r4 { 0% { width: 8px; height: 8px; margin-left: 0; margin-top: 0; opacity: 1 } 100% { width: 16px; height: 16px; margin-left: -4px; margin-top: -4px; opacity: 0 } }"));
         assert!(pulses("@keyframes r5 { 0% { top: 4px; bottom: 4px; opacity: 1 } 100% { top: -4px; bottom: -4px; opacity: 0 } }"));
+        // Zero in any unit is zero: `left: 0` to `left: 0%` does not move.
+        assert!(pulses("@keyframes z { 0% { left: 0; opacity: 1 } 100% { left: 0%; opacity: .3 } }"));
+        assert!(pulses("@keyframes z2 { 0% { top: 0px; opacity: 1 } 100% { top: -0.0em; opacity: .3 } }"));
+        assert!(!pulses("@keyframes z3 { 0% { left: 0; opacity: 1 } 100% { left: 50%; opacity: .3 } }"));
     }
 
     /// observations-1010 row 4: `DARK_BG_RE` reads the leading channel of a

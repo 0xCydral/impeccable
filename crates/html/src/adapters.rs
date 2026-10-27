@@ -566,16 +566,43 @@ pub fn check_element_radial_spotlight(el: &StaticElement<'_>, style: &StyleValue
 
 // ─── Element adapters ───────────────────────────────────────────────────────
 
-/// The `[width, height]` a static element declares in px, for the circle
-/// test in `check_borders`; `None` when either is unset or in another unit
-/// (no layout here to resolve it).
+/// The border-box `[width, height]` a static element declares in px, for
+/// the circle test in `check_borders`: `width` and `height`, plus padding
+/// and border on each side unless `box-sizing` is `border-box`. `None` when
+/// the size is unset, or any of those lengths is in a unit other than px
+/// (no layout here to resolve it), which skips the circle test.
 fn declared_px_size(style: &StyleValues) -> Option<[f64; 2]> {
-    let px = |prop: &str| -> Option<f64> {
+    let px = |prop: &str, unset_is_zero: bool| -> Option<f64> {
         let v = sv(style, prop).trim().to_ascii_lowercase();
+        if v.is_empty() {
+            return unset_is_zero.then_some(0.0);
+        }
+        if v == "0" {
+            return Some(0.0);
+        }
         let n: f64 = v.strip_suffix("px")?.trim().parse().ok()?;
-        (n.is_finite() && n > 0.0).then_some(n)
+        (n.is_finite() && n >= 0.0).then_some(n)
     };
-    Some([px("width")?, px("height")?])
+    let (w, h) = (px("width", false)?, px("height", false)?);
+    if !(w > 0.0 && h > 0.0) {
+        return None;
+    }
+    if sv(style, "boxSizing").trim().eq_ignore_ascii_case("border-box") {
+        return Some([w, h]);
+    }
+    let extra = |sides: [&str; 2]| -> Option<f64> {
+        let mut sum = 0.0;
+        for side in sides {
+            sum += px(&format!("padding{side}"), true)?;
+            // A border with no style draws nothing and takes no room.
+            let style_v = sv(style, &format!("border{side}Style")).trim().to_ascii_lowercase();
+            if !style_v.is_empty() && style_v != "none" && style_v != "hidden" {
+                sum += px(&format!("border{side}Width"), true)?;
+            }
+        }
+        Some(sum)
+    };
+    Some([w + extra(["Left", "Right"])?, h + extra(["Top", "Bottom"])?])
 }
 
 /// JS: checks.mjs#checkElementBorders(tag, style, overrides = null, resolvedRadius, el)

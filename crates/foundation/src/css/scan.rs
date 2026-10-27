@@ -613,10 +613,23 @@ fn keyframes_move_or_resize(body: &str) -> bool {
 /// An offset or margin in px: a length [`css_length_to_px`] reads, or a
 /// bare `0`.
 fn offset_px(v: &str) -> Option<f64> {
-    if js::trim(v) == "0" {
+    if is_zero_length(v) {
         return Some(0.0);
     }
     css_length_to_px(v)
+}
+
+/// Whether `v` is a zero in any unit (`0`, `0px`, `0%`, `-0.0em`): zero is
+/// zero whatever its unit, so `left: 0` to `left: 0%` is no move.
+fn is_zero_length(v: &str) -> bool {
+    let v = js::trim(v);
+    let digits = v.trim_start_matches(['-', '+']);
+    let end = digits.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(digits.len());
+    let (number, unit) = digits.split_at(end);
+    !number.is_empty()
+        && number.chars().any(|c| c.is_ascii_digit())
+        && number.chars().all(|c| c == '0' || c == '.')
+        && unit.chars().all(|c| c.is_ascii_alphabetic() || c == '%')
 }
 
 /// The box offsets and margins a keyframe step can move a dot with: one
