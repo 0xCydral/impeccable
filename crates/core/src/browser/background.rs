@@ -868,9 +868,17 @@ mod tests {
         paint(&mut d, "linear-gradient(90deg, rgb(227, 226, 224) 50%, rgb(248, 247, 244) 50%)", "24px 24px");
         let s = resolve_text_surface(&d, label, &|_| false, text, 14.0);
         assert!(s.samples.is_some_and(|v| v.contains(&Rgba::new(227.0, 226.0, 224.0, 1.0))), "{:?}", s.info);
-        // Dots in cells larger than a pattern are read as before.
+        // Dots in cells larger than a pattern, and grid lines (juskoe.vercel.app's
+        // `bg-grid`), are read as before.
+        let dots = |d: &FakeDom| super::super::text_layers::gradient_layers_are_dot_texture(d, body, &d.style(body, "backgroundImage"));
         paint(&mut d, "radial-gradient(circle, rgba(26, 26, 31, 0.6) 1px, rgba(0, 0, 0, 0) 1.4px)", "120px 120px");
-        assert!(!super::super::text_layers::gradient_layers_are_dot_texture(&d, body, &d.style(body, "backgroundImage")));
+        assert!(!dots(&d));
+        paint(
+            &mut d,
+            "linear-gradient(rgba(124, 58, 237, 0.12) 1px, rgba(0, 0, 0, 0) 1px), linear-gradient(90deg, rgba(124, 58, 237, 0.12) 1px, rgba(0, 0, 0, 0) 1px)",
+            "48px 48px",
+        );
+        assert!(!dots(&d));
     }
 
     /// wotsthat.com: a translucent highlight over an opaque pastel wheel, on

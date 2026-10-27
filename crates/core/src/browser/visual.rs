@@ -2045,11 +2045,14 @@ pub fn unread_reading(
     }
     let text = dom.direct_text_rect(el).unwrap_or_else(|| dom.rect(el));
     let hosts = icon_hosts(dom, el);
-    // A translucent fill the climb passed on its way to `found` (a dialog's
-    // scrim between the panel and the page under it) is the first layer:
-    // the reading chains down through it (observations-1010 row 8).
-    let (under, found) = match climb_layers(dom, el, el, &text, &hosts, &[], true) {
-        (LayerUnder::Detached(c), Some(scrim)) if c.alpha_or_one() < TRANSLUCENT_FILL_MAX_ALPHA && scrim != found => {
+    // A translucent fill the climb passed on its way to a fill or gradient
+    // (a dialog's scrim between the panel and the page under it) is the
+    // first layer: the reading chains down through it (observations-1010
+    // row 8). Over a picture the pixels still answer, as they did.
+    let (under, found) = match (under.0, climb_layers(dom, el, el, &text, &hosts, &[], true)) {
+        (LayerUnder::Detached(_) | LayerUnder::Gradient { .. }, (LayerUnder::Detached(c), Some(scrim)))
+            if c.alpha_or_one() < TRANSLUCENT_FILL_MAX_ALPHA && scrim != found =>
+        {
             (LayerUnder::Detached(c), scrim)
         }
         _ => (under.0, found),

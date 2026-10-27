@@ -278,13 +278,16 @@ fn gradient_is_decoration(layer: &str) -> bool {
             .any(|v| v > 0.0 && v <= HAIRLINE_MAX_PX)
 }
 
-/// Whether every background layer of a box is a dot or hairline pattern: a
-/// gradient [`gradient_is_decoration`] calls dots or hairlines, repeated in
-/// cells at most [`TEXTURE_MAX_CELL_PX`] on both axes. spacesheep.dev's body
-/// draws a 1px dot every 24px over its fill; the reader sees the fill, not
-/// the dot (observations-1010 row 8). An opaque checker has no transparent
-/// stop and is not one; a layer whose cell the style does not state is not
-/// one either.
+/// Whether every background layer of a box is a dot pattern: a
+/// `radial-gradient` [`gradient_is_decoration`] calls dots, repeated in cells
+/// at most [`TEXTURE_MAX_CELL_PX`] on both axes. spacesheep.dev's body draws a
+/// 1px dot every 24px over its fill; the reader sees the fill, not the dot
+/// (observations-1010 row 8). An opaque checker has no transparent stop and
+/// is not one; a layer whose cell the style does not state is not one
+/// either. Grid lines (`linear-gradient` hairlines) are left as they were
+/// read: on juskoe.vercel.app's `section.bg-grid` the lines' colour is what
+/// several of the page's failing words were reported on, and the corpus
+/// judged them harmful there.
 pub(crate) fn gradient_layers_are_dot_texture(dom: &dyn Dom, node: ElId, image: &str) -> bool {
     let sizes = split_top_level_commas(&js::to_lower_case(&dom.style(node, "backgroundSize")));
     let shorthand = split_top_level_commas(&js::to_lower_case(&dom.style(node, "background")));
@@ -294,7 +297,7 @@ pub(crate) fn gradient_layers_are_dot_texture(dom: &dyn Dom, node: ElId, image: 
         && layers.iter().enumerate().all(|(i, layer)| {
             let lower = js::to_lower_case(layer);
             let repeats = !shorthand.get(i).map_or(false, |s| s.contains("no-repeat"));
-            lower.contains("gradient(")
+            js::trim(&lower).starts_with("radial-gradient(")
                 && !lower.contains("url(")
                 && repeats
                 && explicit_cell(sizes[i % sizes.len()].as_str())
