@@ -1229,7 +1229,7 @@ Candidates in order: `<scripts>/detector/detect-antipatterns.mjs` (built skill l
     ```
     `<GUARDED>` = `[ ! -f "${CLAUDE_PROJECT_DIR}/.claude/skills/impeccable/scripts/hook.mjs" ] || ! { node -e "process.exit(Math.min(parseInt(process.versions.node,10),22)===22?0:1)" 2>/dev/null || { D="$HOME/.impeccable"; [ -f "$D/node-unsupported" ] || { mkdir -p "$D" 2>/dev/null && : > "$D/node-unsupported" 2>/dev/null && printf '%s' '{"systemMessage":"The impeccable design hook is not running: no Node 22 or newer on PATH. Install one, or remove the impeccable hook from your harness settings."}'; }; exit 0; }; } || node "${CLAUDE_PROJECT_DIR}/.claude/skills/impeccable/scripts/hook.mjs"` — i.e. missing file → exit 0 silently; node < 22 → one-time `{"systemMessage": ...}` on stdout (marker file `~/.impeccable/node-unsupported`), exit 0; else run hook.mjs with no args, stdin = the harness JSON event.
   - **Claude Code plugin** (`plugin/hooks/hooks.json`, also loaded by Grok Build via `CLAUDE_PLUGIN_ROOT`→`GROK_PLUGIN_ROOT` alias): same shape without `description`, path `${CLAUDE_PLUGIN_ROOT}/skills/impeccable/scripts/hook.mjs`. Each handler also carries a `windows` sibling (the `cmd /c if exist` form of `impeccable.cmd` with the path unquoted) that VS Code Copilot Chat runs on Windows, under PowerShell in the Copilot extension and `cmd.exe /c` in the agent host, and `command` runs the launcher through `sh` because the agent host syncs it without its executable bit, and `env` sets `IMPECCABLE_HOOK_HARNESS=vscode`, which ranks below the event-shape checks and makes the output carry `additionalContext` both top-level (agent host) and inside `hookSpecificOutput` (Copilot extension) (#1249).
-  - **Codex** project (`.codex/hooks.json`): matcher `"Edit|Write|apply_patch"`, path `.codex/skills/impeccable/scripts/hook.mjs` (build) or `.agents/skills/impeccable/scripts/hook.mjs` (CLI install / hook-admin), same guarded form with `systemMessage` notice, PostToolUse timeout 5 + Stop timeout 30. The CLI installer adds `commandWindows: if exist "<path>" (node "<path>" & exit /b)` for Codex entries. OpenAI plugin bundle (`dist/openai/impeccable/hooks/hooks.json`) uses `${PLUGIN_ROOT}/skills/impeccable/scripts/hook.mjs`.
+  - **Codex** project (`.codex/hooks.json`): matcher `"Edit|Write|apply_patch"`, path `.codex/skills/impeccable/scripts/hook.mjs` (build) or `.agents/skills/impeccable/scripts/hook.mjs` (CLI install / hook-admin), same guarded form with `systemMessage` notice, PostToolUse timeout 5 + Stop timeout 30. The CLI installer adds `commandWindows: if exist "<path>" (node "<path>" & exit /b)` for Codex entries. The OpenAI plugin bundle (`dist/openai/impeccable/`) ships no hook, because OpenAI's review rejects plugins that bundle one; `buildCodexPluginHooksManifest` (the `${PLUGIN_ROOT}/skills/impeccable/scripts/hook.mjs` form) is kept for the plugin installing its own hook.
   - **GitHub Copilot** (`.github/hooks/impeccable.json`):
     ```json
     { "version": 1, "hooks": { "postToolUse": [{ "type": "command", "matcher": "edit|create|apply_patch",
@@ -1433,7 +1433,7 @@ Retired as the installed Cursor hook: new manifests run `hook` on `postToolUse` 
 |---|---|---|---|---|---|
 | Claude Code (project) | `PostToolUse` matcher `Edit\|Write\|MultiEdit` (timeout 5), `Stop` (timeout 30) | `.claude/settings.json` (build) / `.claude/settings.local.json` (CLI install, hook-admin) | `hook.mjs` | `{"hookSpecificOutput":{"hookEventName":..,"additionalContext":..}}` | No (exit 0) |
 | Claude Code plugin / Grok plugin | same | `plugin/hooks/hooks.json` (`${CLAUDE_PLUGIN_ROOT}`) | `hook.mjs` | same | No |
-| Codex | `PostToolUse` matcher `Edit\|Write\|apply_patch`, `Stop` | `.codex/hooks.json` (+ `commandWindows` from CLI); OpenAI plugin `hooks/hooks.json` (`${PLUGIN_ROOT}`) | `hook.mjs` | same as Claude (harness `'claude'`); apply_patch paths parsed from `tool_input.command` | No |
+| Codex | `PostToolUse` matcher `Edit\|Write\|apply_patch`, `Stop` | `.codex/hooks.json` (+ `commandWindows` from CLI); none in the OpenAI plugin bundle | `hook.mjs` | same as Claude (harness `'claude'`); apply_patch paths parsed from `tool_input.command` | No |
 | Cursor | `postToolUse` matcher `^Write$` (timeout 5); no Stop | `.cursor/hooks.json`; Cursor plugin `hooks/hooks.json` (`${CURSOR_PLUGIN_ROOT}`) | launcher `hook` (was `hook-before-edit` on `preToolUse`) | `{"additional_context": ..}` (max 10,000 chars) | No |
 | GitHub Copilot | `postToolUse` matcher `edit\|create\|apply_patch` (`timeoutSec` 5), `bash` key | `.github/hooks/impeccable.json` | `hook.mjs` | `{"additionalContext": ..}` | No |
 | Grok Build (project) | `PostToolUse` `Edit\|Write\|MultiEdit`, `Stop` | `.grok/hooks/impeccable.json` | `hook.mjs` | Claude shape (stdout reportedly ignored by Grok) | No |
@@ -2167,3 +2167,29 @@ carrying a visual decision never creates a submitted receipt or accepts stale fi
 this rule to an existing unsubmitted draft. It verifies stored image blobs and
 current source integrity, preserves any new reviewer decisions, records the
 prior approval revision, and leaves packet revisions and old receipts unchanged.
+
+## Loop macOS app
+
+- `impeccable loop install [--version X.Y.Z] [--no-open]` installs the highest
+  pinned semver (or the requested pinned release) to `~/Applications/Impeccable Loop.app`.
+  An existing installation exits non-zero and directs the user to `update`.
+- `impeccable loop update [--no-open]` replaces an installed app with the highest
+  pinned version. An already current app exits 0. Quit Loop before updating.
+- Both commands open the installed app unless `--no-open` is passed. Other
+  platforms exit non-zero. Downloads require HTTPS, with local HTTP permitted
+  only for `localhost` or `127.0.0.1` fixture servers via `IMPECCABLE_DOWNLOAD_BASE`.
+- SHA-256 pins in `crates/cli/loop-checksums.txt` are compiled into the engine.
+  Missing pins or mismatches fail closed before extraction. The initial empty
+  manifest means no Loop release can be installed yet.
+- Downloads stage inside `~/Applications`; update preserves the old app until
+  the rename swap succeeds and restores it on failure. An interrupted swap's
+  backup is recovered on the next invocation. Installation holds an exclusive
+  process lock; a crash releases it automatically.
+
+Loop releases publish `impeccable-loop-<version>.zip` on tag `loop-v<version>`.
+Run `node scripts/check-loop-release.mjs --record <version>` to download and
+record a new pin; run without arguments to verify every recorded release.
+Existing pins cannot be overwritten with a different digest.
+**A new Loop version needs an engine release before `loop update` can see it.**
+That is intended at Loop's cadence: the pins live inside the checksummed engine
+binary, including for npx and PATH installs without an adjacent skill directory.
